@@ -30,6 +30,9 @@ ACTION_KEY_ALIASES = ("action", "actions")
 
 PROMPT_KEY_ALIASES = ("prompt", "task")
 
+EPISODE_INDEX_KEY_ALIASES = ("episode_index", "episode/index", "episode.index")
+FRAME_INDEX_KEY_ALIASES = ("frame_index", "frame/index", "frame.index", "index")
+
 IMAGE_KEY_ALIASES = {
     "cam_front": (
         "observation.images.cam_front",
@@ -313,14 +316,23 @@ class XHandTactileFlowInputs(transforms.DataTransformFn):
         if self.future_wrist_flow_key and self.future_wrist_flow_key in data:
             inputs["wrist_flow_img"] = _parse_image(data[self.future_wrist_flow_key])
         if self.scene_flow_root is not None:
-            inputs["scene_flow"] = _load_scene_flow_npz(
-                root=pathlib.Path(self.scene_flow_root),
-                episode_index=_to_scalar_int(data["episode_index"]),
-                frame_index=_to_scalar_int(data["frame_index"]),
-                future_step=self.scene_flow_future_step,
-                num_points=self.scene_flow_num_points,
-                required=self.scene_flow_required,
-            )
+            episode_key = _first_present(data, EPISODE_INDEX_KEY_ALIASES)
+            frame_key = _first_present(data, FRAME_INDEX_KEY_ALIASES)
+            if episode_key is not None and frame_key is not None:
+                inputs["scene_flow"] = _load_scene_flow_npz(
+                    root=pathlib.Path(self.scene_flow_root),
+                    episode_index=_to_scalar_int(data[episode_key]),
+                    frame_index=_to_scalar_int(data[frame_key]),
+                    future_step=self.scene_flow_future_step,
+                    num_points=self.scene_flow_num_points,
+                    required=self.scene_flow_required,
+                )
+            elif self.scene_flow_required:
+                available = ", ".join(sorted(map(str, data.keys())))
+                raise KeyError(
+                    "Missing episode/frame index for required 3D scene-flow lookup. "
+                    f"Available top-level keys: [{available}]"
+                )
 
         action_key = _first_present(data, ACTION_KEY_ALIASES)
         if action_key is not None:
