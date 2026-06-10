@@ -277,11 +277,4 @@ CUDA_VISIBLE_DEVICES=0 env/.venv/bin/python scripts/serve_policy.py --port=8990 
 
 
 
-rsync -av --progress \
-  /data/workspace/zhangshiqi/forceWAM/checkpoints/pi0_xhand_tactile_3dflow_vlm_lora_action_full/pi0_xhand_tactile_3dflow_vlm_lora_action_full/29999 \
-  sai@192.168.3.90:/home/sai/zsq/FactileLDM/checkpoints/pi0_xhand_tactile_3dflow_vlm_lora_action_full/pi0_xhand_tactile_3dflow_vlm_lora_action_full
-
-
-rsync -av --progress \
-  /data/workspace/zhangshiqi/forceWAM/checkpoints/pi0_xhand_lora_action_full/pi0_xhand_lora_action_full_30k_2gpu/29999 \
-  sai@192.168.3.90:/home/sai/zsq/FactileLDM/checkpoints/pi0_xhand_lora_action_full/pi0_xhand_lora_action_full_30k_2gpu
+ rsync -av --progress zhangshiqi@211.86.155.48:/data/workspace/zhangshiqi/forceWAM/checkpoints/pi0_xhand_tactile_forceonly_vlm_lora_action_full/pi0_xhand_tactile_forceonly_vlm_lora_action_full/29999 //home/sai/zsq/FactileLDM/checkpoints/pi0_xhand_tactile_forceonly_vlm_lora_action_full/pi0_xhand_tactile_forceonly_vlm_lora_action_full
