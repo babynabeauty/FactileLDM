@@ -214,7 +214,7 @@ setsid nohup env \
     --weight-loader.params-path /data/shared_workspace/zhangshiqi/hf/pi0_base_jax/pi0_base/params \
     > /data/workspace/zhangshiqi/forceWAM/logs/pi0_xhand_tactile_noflow_vlm_lora_action_full_30k_2gpu.log 2>&1 &
 
-#  pi0 + 2AE +loraVLM + frozenImageEncoder + factile + 3D displacement
+#  pi0 + 2AE +loraVLM + frozenImageEncoder（prejector train） + factile + 3D displacement
 setsid nohup env \
   HF_LEROBOT_HOME=/data/workspace/zhangshiqi/forceWAM \
   HF_HOME=/data/shared_workspace/zhangshiqi/hf \
@@ -232,6 +232,26 @@ setsid nohup env \
     --weight-loader.params-path /data/shared_workspace/zhangshiqi/hf/pi0_base_jax/pi0_base/params \
     --data.assets.assets-dir /data/workspace/zhangshiqi/forceWAM/assets/pi0_xhand_tactile_flow_vlm_lora_action_full
   > /data/workspace/zhangshiqi/forceWAM/logs/pi0_xhand_tactile_3dflow_vlm_lora_action_full_30k_1gpu.log 2>&1 &
+
+#  pi0 + 2AE +loraVLM + frozenImageEncoder + raw factile + 3D displacement
+setsid nohup env \
+  HF_LEROBOT_HOME=/data/workspace/zhangshiqi/forceWAM \
+  HF_HOME=/data/shared_workspace/zhangshiqi/hf \
+  CUDA_VISIBLE_DEVICES=7 \
+  XLA_PYTHON_CLIENT_PREALLOCATE=false \
+  env/.venv/bin/python scripts/train.py pi0_xhand_tactile_grid_flow \
+    --exp-name pi0_xhand_tactile_grid_flow \
+    --num-train-steps 30000 \
+    --batch-size 1 \
+    --num-workers 0 \
+    --save-interval 5000 \
+    --keep-period 10000 \
+    --no-wandb-enabled \
+    --overwrite \
+    --weight-loader.params-path /data/shared_workspace/zhangshiqi/hf/pi0_base_jax/pi0_base/params \
+    --data.assets.assets-dir /data/workspace/zhangshiqi/forceWAM/assets/pi0_xhand_tactile_flow_vlm_lora_action_full \
+  > /data/workspace/zhangshiqi/forceWAM/logs/pi0_xhand_tactile_grid_flow.log 2>&1 &
+
 
 单卡训练：
 ```bash
