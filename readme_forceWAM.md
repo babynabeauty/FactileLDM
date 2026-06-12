@@ -142,7 +142,7 @@ HF_HOME=/data/shared_workspace/zhangshiqi/hf \
 HF_DATASETS_CACHE=/data/workspace/zhangshiqi/forceWAM/.hf_datasets_cache \
 CUDA_VISIBLE_DEVICES=7 \
 env/.venv/bin/python scripts/compute_norm_stats.py \
-  --config-name pi0_xhand_tactile_flow_vlm_lora_action_full 
+  --config-name pi0_xhand_tactile_flow_full_finetune 
   
   <!-- --max-frames 10000 -->
 
@@ -151,7 +151,7 @@ HF_LEROBOT_HOME=/data/workspace/zhangshiqi/forceWAM \
 HF_HOME=/data/shared_workspace/zhangshiqi/hf \
 HF_DATASETS_CACHE=/data/workspace/zhangshiqi/forceWAM/.hf_datasets_cache \
 env/.venv/bin/python scripts/compute_norm_stats.py \
-  --config-name pi0_xhand_lora_action_full \
+  --config-name pi0_xhand_full_finetune \
   --max-frames 10000
 
 # pi0
@@ -163,8 +163,8 @@ setsid nohup env \
   CUDA_VISIBLE_DEVICES=4,5 \
   XLA_PYTHON_CLIENT_PREALLOCATE=false \
   /data/workspace/zhangshiqi/forceWAM/env/.venv/bin/python \
-  /data/workspace/zhangshiqi/forceWAM/scripts/train.py pi0_xhand_lora_action_full \
-    --exp-name pi0_xhand_lora_action_full_30k_2gpu \
+  /data/workspace/zhangshiqi/forceWAM/scripts/train.py pi0_xhand_full_finetune \
+    --exp-name pi0_xhand_full_finetune_30k_2gpu \
     --num-train-steps 30000 \
     --batch-size 2 \
     --num-workers 0 \
@@ -173,17 +173,17 @@ setsid nohup env \
     --no-wandb-enabled \
     --overwrite \
     --weight-loader.params-path /data/shared_workspace/zhangshiqi/hf/pi0_base_jax/pi0_base/params \
-  > /data/workspace/zhangshiqi/forceWAM/logs/pi0_xhand_lora_action_full_30k_2gpu.log 2>&1 &
+  > /data/workspace/zhangshiqi/forceWAM/logs/pi0_xhand_full_finetune_30k_2gpu.log 2>&1 &
 
-# pi0 + 2AE +loraVLM + frozenImageEncoder + factile + flow
+# pi0 + full VLM + full image encoder + 2AE full finetune + tactile + 2D flow
 setsid nohup env \
   HF_LEROBOT_HOME=/data/workspace/zhangshiqi/forceWAM \
   HF_HOME=/data/shared_workspace/zhangshiqi/hf \
   CUDA_VISIBLE_DEVICES=7 \
   XLA_PYTHON_CLIENT_PREALLOCATE=false \
   /data/workspace/zhangshiqi/forceWAM/env/.venv/bin/python \
-  /data/workspace/zhangshiqi/forceWAM/scripts/train.py pi0_xhand_tactile_flow_vlm_lora_action_full \
-    --exp-name pi0_xhand_tactile_flow_vlm_lora_action_full \
+  /data/workspace/zhangshiqi/forceWAM/scripts/train.py pi0_xhand_tactile_flow_full_finetune \
+    --exp-name pi0_xhand_tactile_flow_full_finetune \
     --num-train-steps 30000 \
     --batch-size 1 \
     --num-workers 0 \
@@ -193,17 +193,17 @@ setsid nohup env \
     --overwrite \
     --weight-loader.params-path /data/shared_workspace/zhangshiqi/hf/pi0_base_jax/pi0_base/params \
     --model.flow-vae-name /data/shared_workspace/zhangshiqi/hf/models--stabilityai--sdxl-vae \
-  > /data/workspace/zhangshiqi/forceWAM/logs/pi0_xhand_tactile_flow_vlm_lora_action_full_30k_1gpu.log 2>&1 &
+  > /data/workspace/zhangshiqi/forceWAM/logs/pi0_xhand_tactile_flow_full_finetune_30k_1gpu.log 2>&1 &
 
-# pi0 + 2AE +loraVLM + frozenImageEncoder + factile + noflow
+# pi0 + full VLM + full image encoder + 2AE full finetune + tactile + no flow
 setsid nohup env \
   HF_LEROBOT_HOME=/data/workspace/zhangshiqi/forceWAM \
   HF_HOME=/data/shared_workspace/zhangshiqi/hf \
   CUDA_VISIBLE_DEVICES=6,7 \
   XLA_PYTHON_CLIENT_PREALLOCATE=false \
   /data/workspace/zhangshiqi/forceWAM/env/.venv/bin/python \
-  /data/workspace/zhangshiqi/forceWAM/scripts/train.py pi0_xhand_tactile_noflow_vlm_lora_action_full \
-    --exp-name pi0_xhand_tactile_noflow_vlm_lora_action_full \
+  /data/workspace/zhangshiqi/forceWAM/scripts/train.py pi0_xhand_tactile_noflow_full_finetune \
+    --exp-name pi0_xhand_tactile_noflow_full_finetune \
     --num-train-steps 30000 \
     --batch-size 4 \
     --num-workers 0 \
@@ -212,16 +212,16 @@ setsid nohup env \
     --no-wandb-enabled \
     --overwrite \
     --weight-loader.params-path /data/shared_workspace/zhangshiqi/hf/pi0_base_jax/pi0_base/params \
-    > /data/workspace/zhangshiqi/forceWAM/logs/pi0_xhand_tactile_noflow_vlm_lora_action_full_30k_2gpu.log 2>&1 &
+    > /data/workspace/zhangshiqi/forceWAM/logs/pi0_xhand_tactile_noflow_full_finetune_30k_2gpu.log 2>&1 &
 
-#  pi0 + 2AE +loraVLM + frozenImageEncoder（prejector train） + factile + 3D displacement
+# pi0 + full VLM + full image encoder + 2AE full finetune + tactile + 3D displacement
 setsid nohup env \
   HF_LEROBOT_HOME=/data/workspace/zhangshiqi/forceWAM \
   HF_HOME=/data/shared_workspace/zhangshiqi/hf \
   CUDA_VISIBLE_DEVICES=7 \
   XLA_PYTHON_CLIENT_PREALLOCATE=false \
-  env/.venv/bin/python scripts/train.py pi0_xhand_tactile_3dflow_vlm_lora_action_full \
-    --exp-name pi0_xhand_tactile_3dflow_vlm_lora_action_full \
+  env/.venv/bin/python scripts/train.py pi0_xhand_tactile_3dflow_full_finetune \
+    --exp-name pi0_xhand_tactile_3dflow_full_finetune \
     --num-train-steps 30000 \
     --batch-size 1 \
     --num-workers 0 \
@@ -230,10 +230,10 @@ setsid nohup env \
     --no-wandb-enabled \
     --overwrite \
     --weight-loader.params-path /data/shared_workspace/zhangshiqi/hf/pi0_base_jax/pi0_base/params \
-    --data.assets.assets-dir /data/workspace/zhangshiqi/forceWAM/assets/pi0_xhand_tactile_flow_vlm_lora_action_full
-  > /data/workspace/zhangshiqi/forceWAM/logs/pi0_xhand_tactile_3dflow_vlm_lora_action_full_30k_1gpu.log 2>&1 &
+    --data.assets.assets-dir /data/workspace/zhangshiqi/forceWAM/assets/pi0_xhand_tactile_flow_full_finetune
+  > /data/workspace/zhangshiqi/forceWAM/logs/pi0_xhand_tactile_3dflow_full_finetune_30k_1gpu.log 2>&1 &
 
-#  pi0 + 2AE +loraVLM + frozenImageEncoder + raw factile + 3D displacement
+# pi0 + full VLM + full image encoder + 2AE full finetune + raw tactile + 2D flow
 setsid nohup env \
   HF_LEROBOT_HOME=/data/workspace/zhangshiqi/forceWAM \
   HF_HOME=/data/shared_workspace/zhangshiqi/hf \
@@ -249,7 +249,7 @@ setsid nohup env \
     --no-wandb-enabled \
     --overwrite \
     --weight-loader.params-path /data/shared_workspace/zhangshiqi/hf/pi0_base_jax/pi0_base/params \
-    --data.assets.assets-dir /data/workspace/zhangshiqi/forceWAM/assets/pi0_xhand_tactile_flow_vlm_lora_action_full \
+    --data.assets.assets-dir /data/workspace/zhangshiqi/forceWAM/assets/pi0_xhand_tactile_flow_full_finetune \
   > /data/workspace/zhangshiqi/forceWAM/logs/pi0_xhand_tactile_grid_flow.log 2>&1 &
 
 
@@ -264,17 +264,17 @@ CUDA_VISIBLE_DEVICES=5,6 XLA_PYTHON_CLIENT_MEM_FRACTION=0.95 uv run --no-sync sc
 3. 模型推理
 ```bash
 CUDA_VISIBLE_DEVICES=0 env/.venv/bin/python scripts/serve_policy.py --port=8990 policy:checkpoint \
---policy.config=pi0_xhand_tactile_flow_vlm_lora_action_full \
---policy.dir=checkpoints/pi0_xhand_tactile_flow_vlm_lora_action_full/pi0_xhand_tactile_flow_vlm_lora_action_full/29999
+--policy.config=pi0_xhand_tactile_flow_full_finetune \
+--policy.dir=checkpoints/pi0_xhand_tactile_flow_full_finetune/pi0_xhand_tactile_flow_full_finetune/29999
 
 CUDA_VISIBLE_DEVICES=0 env/.venv/bin/python scripts/serve_policy.py --port=8990 policy:checkpoint \
---policy.config=pi0_xhand_tactile_3dflow_vlm_lora_action_full \
---policy.dir=FactileLDM/checkpoints/pi0_xhand_tactile_3dflow_vlm_lora_action_full/pi0_xhand_tactile_3dflow_vlm_lora_action_full/29999
+--policy.config=pi0_xhand_tactile_3dflow_full_finetune \
+--policy.dir=FactileLDM/checkpoints/pi0_xhand_tactile_3dflow_full_finetune/pi0_xhand_tactile_3dflow_full_finetune/29999
 
 CUDA_VISIBLE_DEVICES=0 env/.venv/bin/python scripts/serve_policy.py --port=8990 policy:checkpoint \
---policy.config=pi0_xhand_lora_action_full \
---policy.dir=checkpoints/pi0_xhand_lora_action_full/pi0_xhand_lora_action_full_30k_2gpu/29999
+--policy.config=pi0_xhand_full_finetune \
+--policy.dir=checkpoints/pi0_xhand_full_finetune/pi0_xhand_full_finetune_30k_2gpu/29999
 
 
 
- rsync -av --progress zhangshiqi@211.86.155.48:/data/workspace/zhangshiqi/forceWAM/checkpoints/pi0_xhand_tactile_forceonly_vlm_lora_action_full/pi0_xhand_tactile_forceonly_vlm_lora_action_full/29999 //home/sai/zsq/FactileLDM/checkpoints/pi0_xhand_tactile_forceonly_vlm_lora_action_full/pi0_xhand_tactile_forceonly_vlm_lora_action_full
+ rsync -av --progress zhangshiqi@211.86.155.48:/data/workspace/zhangshiqi/forceWAM/checkpoints/pi0_xhand_tactile_forceonly_full_finetune/pi0_xhand_tactile_forceonly_full_finetune/29999 //home/sai/zsq/FactileLDM/checkpoints/pi0_xhand_tactile_forceonly_full_finetune/pi0_xhand_tactile_forceonly_full_finetune

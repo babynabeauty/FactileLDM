@@ -1032,11 +1032,11 @@ _CONFIGS = [
         ema_decay=None,
     ),
     TrainConfig(
-        name="pi0_xhand_lora_action_full",
+        name="pi0_xhand_full_finetune",
         model=pi0_config.Pi0Config(
             action_horizon=32,
             action_dim=32,
-            paligemma_variant="gemma_2b_lora",
+            paligemma_variant="gemma_2b",
             action_expert_variant="gemma_300m",
         ),
         data=LeRobotXHandPi0DataConfig(
@@ -1049,7 +1049,6 @@ _CONFIGS = [
             ),
         ),
         weight_loader=weight_loaders.CheckpointWeightLoader("checkpoints/pi0_base/params"),
-        freeze_filter=freeze_image_encoder_and_vlm_base_train_vlm_lora_action_experts(),
         num_train_steps=30_000,
         batch_size=1,
         num_workers=0,
@@ -1094,11 +1093,11 @@ _CONFIGS = [
         ema_decay=None,
     ),
     TrainConfig(
-        name="pi0_xhand_tactile_flow_vlm_lora_action_full",
+        name="pi0_xhand_tactile_flow_full_finetune",
         model=pi0_config.Pi0LatentFlowConfig(
             action_horizon=32,
             action_dim=32,
-            paligemma_variant="gemma_2b_lora",
+            paligemma_variant="gemma_2b",
             action_expert_variant="gemma_300m",
             effort_type=EffortType.MOT,
             effort_dim=15, #力触的维度 3 *5 
@@ -1125,7 +1124,6 @@ _CONFIGS = [
             ),
         ),
         weight_loader=weight_loaders.CheckpointWeightLoader("checkpoints/pi0_base/params"),
-        freeze_filter=freeze_image_encoder_and_vlm_base_train_vlm_lora_action_experts(),
         num_train_steps=30_000,
         batch_size=1,
         num_workers=0,
@@ -1134,11 +1132,11 @@ _CONFIGS = [
         ema_decay=None,
     ),
     TrainConfig(
-        name="pi0_xhand_tactile_noflow_vlm_lora_action_full",
+        name="pi0_xhand_tactile_noflow_full_finetune",
         model=pi0_config.Pi0LatentFlowConfig(
             action_horizon=32,
             action_dim=32,
-            paligemma_variant="gemma_2b_lora",
+            paligemma_variant="gemma_2b",
             action_expert_variant="gemma_300m",
             effort_type=EffortType.MOT,
             effort_dim=15,
@@ -1166,7 +1164,6 @@ _CONFIGS = [
             ),
         ),
         weight_loader=weight_loaders.CheckpointWeightLoader("checkpoints/pi0_base/params"),
-        freeze_filter=freeze_image_encoder_and_vlm_base_train_vlm_lora_action_experts(),
         num_train_steps=30_000,
         batch_size=1,
         num_workers=0,
@@ -1175,11 +1172,11 @@ _CONFIGS = [
         ema_decay=None,
     ),
     TrainConfig(
-        name="pi0_xhand_tactile_forceonly_vlm_lora_action_full",
+        name="pi0_xhand_tactile_forceonly_full_finetune",
         model=pi0_config.Pi0LatentFlowConfig(
             action_horizon=32,
             action_dim=32,
-            paligemma_variant="gemma_2b_lora",
+            paligemma_variant="gemma_2b",
             action_expert_variant="gemma_300m",
             effort_type=EffortType.MOT,
             effort_dim=15,
@@ -1208,7 +1205,6 @@ _CONFIGS = [
             ),
         ),
         weight_loader=weight_loaders.CheckpointWeightLoader("checkpoints/pi0_base/params"),
-        freeze_filter=freeze_image_encoder_and_vlm_base_train_vlm_lora_action_experts(),
         num_train_steps=30_000,
         batch_size=1,
         num_workers=0,
@@ -1217,11 +1213,11 @@ _CONFIGS = [
         ema_decay=None,
     ),
     TrainConfig(
-        name="pi0_xhand_tactile_3dflow_vlm_lora_action_full",
+        name="pi0_xhand_tactile_3dflow_full_finetune",
         model=pi0_config.Pi0LatentFlowConfig(
             action_horizon=32,
             action_dim=32,
-            paligemma_variant="gemma_2b_lora",
+            paligemma_variant="gemma_2b",
             action_expert_variant="gemma_300m",
             effort_type=EffortType.MOT,
             effort_dim=15,
@@ -1254,7 +1250,6 @@ _CONFIGS = [
             ),
         ),
         weight_loader=weight_loaders.CheckpointWeightLoader("checkpoints/pi0_base/params"),
-        freeze_filter=freeze_image_encoder_and_vlm_base_train_vlm_lora_action_experts(),
         num_train_steps=30_000,
         batch_size=1,
         num_workers=0,
