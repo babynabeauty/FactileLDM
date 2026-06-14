@@ -672,6 +672,47 @@ class LeRobotXHandPi0DataConfig(DataConfigFactory):
             rcs_sample_enable=self.rcs_sample_enable,
         )
 
+
+@dataclasses.dataclass(frozen=True)
+class LeRobotXHandTactileObsDataConfig(LeRobotXHandPi0DataConfig):
+    """Vanilla single-expert Pi0 with current XHand tactile observation."""
+
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        data_transforms = _transforms.Group(
+            inputs=[
+                xhand_policy.XHandTactileObsInputs(
+                    model_type=model_config.model_type,
+                    primary_image_key=self.primary_image_key,
+                    wrist_image_key=self.wrist_image_key,
+                    extra_image_key=self.extra_image_key,
+                    state_dim=self.action_dim,
+                )
+            ],
+            outputs=[xhand_policy.XHandTactileFlowOutputs(action_dim=self.action_dim)],
+        )
+
+        if self.use_delta_joint_actions:
+            delta_action_mask = _transforms.make_bool_mask(self.delta_action_mask_size, self.delta_action_mask_offset)
+            data_transforms = data_transforms.push(
+                inputs=[_transforms.DeltaActions(delta_action_mask)],
+                outputs=[_transforms.AbsoluteActions(delta_action_mask)],
+            )
+
+        if self.default_prompt and isinstance(self.repo_id, list):
+            raise ValueError("Using default prompt when using multiple dataset is incorrect.")
+
+        model_transforms = ModelTransformFactory(default_prompt=self.default_prompt)(model_config)
+        return dataclasses.replace(
+            self.create_base_config(assets_dirs, model_config),
+            data_transforms=data_transforms,
+            model_transforms=model_transforms,
+            action_sequence_keys=self.action_sequence_keys,
+            prompt_from_task=(self.default_prompt is None),
+            max_episodes=self.max_episodes,
+            rcs_sample_enable=self.rcs_sample_enable,
+        )
+
     
 @dataclasses.dataclass(frozen=True)
 class TrainConfig:
@@ -1049,6 +1090,36 @@ _CONFIGS = [
             ),
         ),
         weight_loader=weight_loaders.CheckpointWeightLoader("checkpoints/pi0_base/params"),
+        num_train_steps=30_000,
+        batch_size=1,
+        num_workers=0,
+        save_interval=1000,
+        keep_period=1000,
+        ema_decay=None,
+    ),
+    TrainConfig(
+        name="pi0_xhand_tactile_obs_ae_full_finetune",
+        model=pi0_config.Pi0Config(
+            action_horizon=32,
+            action_dim=32,
+            paligemma_variant="gemma_2b",
+            action_expert_variant="gemma_300m",
+            use_tactile_observation=True,
+            tactile_num_fingers=5,
+            tactile_dim_per_finger=3,
+        ),
+        data=LeRobotXHandTactileObsDataConfig(
+            repo_id="grasp_pipette_and_press_button_good_tactile_26ep",
+            primary_image_key="observation.images.cam_front",
+            wrist_image_key="observation.images.cam_right",
+            extra_image_key="observation.images.cam_left",
+            base_config=DataConfig(
+                prompt_from_task=True,
+            ),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "/workspace/mnt/sqzhang26/hf_weight/pi0_base/params"
+        ),
         num_train_steps=30_000,
         batch_size=1,
         num_workers=0,

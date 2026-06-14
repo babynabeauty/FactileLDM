@@ -97,6 +97,29 @@ class Pi0(_model.BaseModel):
             self.state_proj = nnx.Linear(config.action_dim, action_expert_config.width, rngs=rngs)
             self.action_time_mlp_in = nnx.Linear(2 * action_expert_config.width, action_expert_config.width, rngs=rngs)
             self.action_time_mlp_out = nnx.Linear(action_expert_config.width, action_expert_config.width, rngs=rngs)
+        self.use_tactile_observation = config.use_tactile_observation
+        self.tactile_num_fingers = config.tactile_num_fingers
+        self.tactile_dim_per_finger = config.tactile_dim_per_finger
+        if self.use_tactile_observation:
+            self.tactile_proj_in = nnx.Linear(
+                self.tactile_dim_per_finger,
+                action_expert_config.width,
+                rngs=rngs,
+            )
+            self.tactile_proj_out = nnx.Linear(
+                action_expert_config.width,
+                action_expert_config.width,
+                rngs=rngs,
+            )
+            self.tactile_norm = nnx.LayerNorm(num_features=action_expert_config.width, rngs=rngs)
+            self.tactile_finger_embedding = nnx.Param(
+                0.02
+                * jax.random.normal(
+                    rngs.params(),
+                    (self.tactile_num_fingers, action_expert_config.width),
+                    dtype=jnp.float32,
+                )
+            )
         self.action_out_proj = nnx.Linear(action_expert_config.width, config.action_dim, rngs=rngs)
 
         # This attribute gets automatically set by model.train() and model.eval().
@@ -155,6 +178,29 @@ class Pi0(_model.BaseModel):
             input_mask.append(jnp.ones((obs.state.shape[0], 1), dtype=jnp.bool_))
             # image/language inputs do not attend to state or actions
             ar_mask += [True]
+
+            if self.use_tactile_observation:
+                if obs.tactile is None:
+                    raise ValueError("Pi0 tactile-observation mode requires `observation.tactile`.")
+                expected_shape = (
+                    obs.state.shape[0],
+                    self.tactile_num_fingers,
+                    self.tactile_dim_per_finger,
+                )
+                if obs.tactile.shape != expected_shape:
+                    raise ValueError(
+                        f"Expected tactile shape {expected_shape}, got {obs.tactile.shape}."
+                    )
+                tactile_tokens = self.tactile_proj_in(obs.tactile)
+                tactile_tokens = nnx.swish(tactile_tokens)
+                tactile_tokens = self.tactile_proj_out(tactile_tokens)
+                tactile_tokens = self.tactile_norm(
+                    tactile_tokens + self.tactile_finger_embedding.value[None, :, :]
+                )
+                tokens.append(tactile_tokens)
+                input_mask.append(jnp.ones(tactile_tokens.shape[:2], dtype=jnp.bool_))
+                # State and tactile form one bidirectional observation block.
+                ar_mask += [False] * self.tactile_num_fingers
 
         action_tokens = self.action_in_proj(noisy_actions)
         # embed timestep using sine-cosine positional encoding with sensitivity in the range [0, 1]

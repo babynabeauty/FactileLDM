@@ -154,6 +154,19 @@ env/.venv/bin/python scripts/compute_norm_stats.py \
   --config-name pi0_xhand_full_finetune \
   --max-frames 10000
 
+# 单 action expert：当前帧 5x3 XHand 触觉作为 AE observation tokens
+cd /workspace/mnt/sqzhang26/FactileLDM
+mkdir -p .hf_cache .hf_datasets_cache logs
+
+CUDA_VISIBLE_DEVICES=5 \
+HF_LEROBOT_HOME=/workspace/mnt/sqzhang26/FactileLDM \
+HF_HOME=/workspace/mnt/sqzhang26/hf_weight \
+HF_DATASETS_CACHE=/workspace/mnt/sqzhang26/FactileLDM/.hf_datasets_cache \
+/workspace/mnt/sqzhang26/FactileLDM/env/.venv/bin/python \
+  /workspace/mnt/sqzhang26/FactileLDM/scripts/compute_norm_stats.py \
+  --config-name pi0_xhand_tactile_obs_ae_full_finetune \
+  --max-frames 10000
+
 # pi0
 mkdir -p /data/workspace/zhangshiqi/forceWAM/logs
 
@@ -174,6 +187,29 @@ setsid nohup env \
     --overwrite \
     --weight-loader.params-path /data/shared_workspace/zhangshiqi/hf/pi0_base_jax/pi0_base/params \
   > /data/workspace/zhangshiqi/forceWAM/logs/pi0_xhand_full_finetune_30k_2gpu.log 2>&1 &
+
+# pi0 + current 5x3 tactile observation tokens + single action expert
+cd /workspace/mnt/sqzhang26/FactileLDM
+mkdir -p .hf_cache .hf_datasets_cache logs
+
+setsid nohup env \
+  HF_LEROBOT_HOME=/workspace/mnt/sqzhang26/FactileLDM \
+  HF_HOME=/workspace/mnt/sqzhang26/hf_weight \
+  HF_DATASETS_CACHE=/workspace/mnt/sqzhang26/FactileLDM/.hf_datasets_cache \
+  CUDA_VISIBLE_DEVICES=4,5 \
+  XLA_PYTHON_CLIENT_PREALLOCATE=false \
+  /workspace/mnt/sqzhang26/FactileLDM/env/.venv/bin/python \
+  /workspace/mnt/sqzhang26/FactileLDM/scripts/train.py pi0_xhand_tactile_obs_ae_full_finetune \
+    --exp-name pi0_xhand_tactile_obs_ae_full_finetune_30k_2gpu \
+    --num-train-steps 30000 \
+    --batch-size 2 \
+    --num-workers 0 \
+    --save-interval 5000 \
+    --keep-period 10000 \
+    --no-wandb-enabled \
+    --overwrite \
+    --weight-loader.params-path /workspace/mnt/sqzhang26/hf_weight/pi0_base/params \
+  > /workspace/mnt/sqzhang26/FactileLDM/logs/pi0_xhand_tactile_obs_ae_full_finetune_30k_2gpu.log 2>&1 &
 
 # pi0 + full VLM + full image encoder + 2AE full finetune + tactile + 2D flow
 setsid nohup env \

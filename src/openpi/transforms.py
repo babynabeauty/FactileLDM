@@ -1,5 +1,6 @@
 from collections.abc import Callable, Mapping, Sequence
 import dataclasses
+import pathlib
 import re
 from typing import Protocol, TypeAlias, TypeVar, runtime_checkable
 
@@ -246,9 +247,66 @@ class _RaftFlowEstimator:
         else:
             raise ValueError(f"Unsupported RAFT model_name: {model_name}. Use 'large' or 'small'.")
 
-        weights = self._resolve_weights(weights_enum, weights_name)
-        self.transforms = weights.transforms() if weights is not None else None
-        self.model = model_fn(weights=weights, progress=True).to(self.device).eval()
+        local_weights_path = self._resolve_local_weights_path(weights_name)
+        if local_weights_path is not None:
+            self.transforms = weights_enum.DEFAULT.transforms()
+            self.model = model_fn(weights=None, progress=False)
+            checkpoint = torch.load(local_weights_path, map_location="cpu", weights_only=False)
+            state_dict = self._extract_state_dict(checkpoint)
+            try:
+                self.model.load_state_dict(state_dict, strict=True)
+            except RuntimeError as exc:
+                raise RuntimeError(
+                    f"RAFT checkpoint {local_weights_path} is not compatible with torchvision "
+                    f"raft_{model_name}. Use the matching torchvision RAFT checkpoint or model implementation."
+                ) from exc
+        else:
+            weights = self._resolve_weights(weights_enum, weights_name)
+            self.transforms = weights.transforms() if weights is not None else None
+            self.model = model_fn(weights=weights, progress=True)
+        self.model = self.model.to(self.device).eval()
+
+    @staticmethod
+    def _resolve_local_weights_path(weights_name: str | None) -> pathlib.Path | None:
+        if not isinstance(weights_name, str):
+            return None
+        path = pathlib.Path(weights_name).expanduser()
+        if not path.exists():
+            return None
+        if path.is_dir():
+            candidates = sorted(
+                candidate
+                for pattern in ("*.pth", "*.pt", "*.ckpt")
+                for candidate in path.rglob(pattern)
+            )
+            if len(candidates) != 1:
+                raise ValueError(
+                    f"Expected exactly one RAFT checkpoint under {path}, found {len(candidates)}: "
+                    f"{[str(candidate) for candidate in candidates[:10]]}"
+                )
+            path = candidates[0]
+        return path.resolve()
+
+    @staticmethod
+    def _extract_state_dict(checkpoint) -> dict[str, torch.Tensor]:
+        if not isinstance(checkpoint, dict):
+            raise TypeError(f"Expected a RAFT state-dict checkpoint, got {type(checkpoint).__name__}.")
+        for key in ("state_dict", "model_state_dict", "model"):
+            nested = checkpoint.get(key)
+            if isinstance(nested, dict):
+                checkpoint = nested
+                break
+        state_dict = {}
+        for key, value in checkpoint.items():
+            if not isinstance(value, torch.Tensor):
+                continue
+            for prefix in ("module.", "model."):
+                if key.startswith(prefix):
+                    key = key[len(prefix) :]
+            state_dict[key] = value
+        if not state_dict:
+            raise ValueError("The RAFT checkpoint does not contain a tensor state dict.")
+        return state_dict
 
     @staticmethod
     def _resolve_weights(weights_enum, weights_name: str | None):

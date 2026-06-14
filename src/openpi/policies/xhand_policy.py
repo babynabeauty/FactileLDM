@@ -27,6 +27,7 @@ STATE_KEY_ALIASES = (
 )
 
 ACTION_KEY_ALIASES = ("action", "actions")
+TACTILE_KEY_ALIASES = ("tactile", "observation.tactile", "observation/tactile")
 
 PROMPT_KEY_ALIASES = ("prompt", "task")
 
@@ -160,6 +161,29 @@ def _to_scalar_int(value) -> int:
     return int(arr.reshape(-1)[0])
 
 
+def _extract_current_calc_force(state: np.ndarray) -> np.ndarray:
+    required_dim = TACTILE_BLOCK_START + TACTILE_SENSOR_COUNT * TACTILE_BLOCK_SIZE
+    if state.shape[-1] < required_dim:
+        raise ValueError(
+            "XHand calc-force tactile extraction requires the full raw observation.state "
+            f"with at least {required_dim} values, got {state.shape[-1]}."
+        )
+    return np.stack(
+        [
+            state[
+                TACTILE_BLOCK_START
+                + sensor_id * TACTILE_BLOCK_SIZE
+                + TACTILE_CALC_FORCE_OFFSET : TACTILE_BLOCK_START
+                + sensor_id * TACTILE_BLOCK_SIZE
+                + TACTILE_CALC_FORCE_OFFSET
+                + 3
+            ]
+            for sensor_id in range(TACTILE_SENSOR_COUNT)
+        ],
+        axis=0,
+    ).astype(np.float32)
+
+
 def _load_scene_flow_npz(
     *,
     root: pathlib.Path,
@@ -255,6 +279,29 @@ class XHandPi0Inputs(transforms.DataTransformFn):
         hand_joint_pos_indices = 28 + 2 * np.arange(XHAND_JOINT_COUNT)
         proprio = np.concatenate([state[:6], state[hand_joint_pos_indices]], axis=0).astype(np.float32)
         return proprio[: self.state_dim]
+
+
+@dataclasses.dataclass(frozen=True)
+class XHandTactileObsInputs(XHandPi0Inputs):
+    """Adds the current five-finger resultant force as a Pi0 observation."""
+
+    def __call__(self, data: dict) -> dict:
+        inputs = super().__call__(data)
+        tactile_key = _first_present(data, TACTILE_KEY_ALIASES)
+        if tactile_key is not None:
+            tactile = np.asarray(data[tactile_key], dtype=np.float32)
+            if tactile.shape == (TACTILE_SENSOR_COUNT * 3,):
+                tactile = tactile.reshape(TACTILE_SENSOR_COUNT, 3)
+            if tactile.shape != (TACTILE_SENSOR_COUNT, 3):
+                raise ValueError(
+                    "Expected explicit XHand tactile observation with shape "
+                    f"({TACTILE_SENSOR_COUNT}, 3), got {tactile.shape}."
+                )
+        else:
+            state_seq = _as_state_sequence(_get_required(data, STATE_KEY_ALIASES, "observation.state"))
+            tactile = _extract_current_calc_force(state_seq[-1])
+        inputs["tactile"] = tactile
+        return inputs
 
 
 @dataclasses.dataclass(frozen=True)

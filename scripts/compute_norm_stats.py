@@ -80,7 +80,7 @@ def main(config_name: str, max_frames: int | None = None):
         )
 
     required_keys = ("state", "actions")
-    optional_keys = ("effort",)
+    optional_keys = ("effort", "tactile")
     stats = {key: normalize.RunningStats() for key in required_keys}
     warned_missing_required: set[str] = set()
 

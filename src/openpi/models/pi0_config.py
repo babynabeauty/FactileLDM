@@ -39,12 +39,21 @@ class Pi0Config(_model.BaseModelConfig):
     effort_dim: int | None = None
     # This config option is not used directly by the model, but it is read by the ModelTransformFactory.
     discrete_effort_input: bool = None  # type: ignore
+
+    # Inject the current tactile observation into the action-expert suffix.
+    use_tactile_observation: bool = False
+    tactile_num_fingers: int = 5
+    tactile_dim_per_finger: int = 3
     
     def __post_init__(self):
         if self.max_token_len is None:
             object.__setattr__(self, "max_token_len", 200 if self.pi05 else 48)
         if self.discrete_state_input is None:
             object.__setattr__(self, "discrete_state_input", self.pi05)
+        if self.use_tactile_observation and self.pi05:
+            raise ValueError("Current tactile observation tokens are only supported by Pi0, not Pi0.5.")
+        if self.tactile_num_fingers <= 0 or self.tactile_dim_per_finger <= 0:
+            raise ValueError("Tactile finger count and per-finger dimension must be positive.")
 
     @property
     @override
@@ -77,6 +86,14 @@ class Pi0Config(_model.BaseModelConfig):
                     "right_wrist_0_rgb": image_mask_spec,
                 },
                 state=jax.ShapeDtypeStruct([batch_size, self.action_dim], jnp.float32),
+                tactile=(
+                    jax.ShapeDtypeStruct(
+                        [batch_size, self.tactile_num_fingers, self.tactile_dim_per_finger],
+                        jnp.float32,
+                    )
+                    if self.use_tactile_observation
+                    else None
+                ),
                 tokenized_prompt=jax.ShapeDtypeStruct([batch_size, self.max_token_len], jnp.int32),
                 tokenized_prompt_mask=jax.ShapeDtypeStruct([batch_size, self.max_token_len], bool),
             )

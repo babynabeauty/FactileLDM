@@ -105,6 +105,8 @@ class Observation(Generic[ArrayT]):
     image_masks: dict[str, at.Bool[ArrayT, "*b"]]
     # Low-dimensional robot state.
     state: at.Float[ArrayT, "*b s"]
+    # Optional current tactile observation, e.g. five fingers x three force axes.
+    tactile: at.Float[ArrayT, "*b f d"] | None = None
     # Effort(joint torque).
     effort: at.Float[ArrayT, "*b n e"] | None = None
     # Optional flow image, in [-1, 1] float32.
@@ -154,6 +156,7 @@ class Observation(Generic[ArrayT]):
             images=data["image"],
             image_masks=data["image_mask"],
             state=data["state"],
+            tactile=data.get("tactile"),
             effort=data.get("effort", None),
             flow_img=data.get("flow_img"),
             wrist_flow_img=data.get("wrist_flow_img"),
@@ -260,6 +263,7 @@ def preprocess_observation(
         images=out_images,
         image_masks=out_masks,
         state=state,
+        tactile=observation.tactile,
         effort=effort,
         flow_img=observation.flow_img,
         wrist_flow_img=observation.wrist_flow_img,
