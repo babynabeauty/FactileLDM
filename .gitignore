@@ -8,6 +8,8 @@ outputs/
 test_demo_depth/
 flow_videos/
 .hf_datasets_cache/
+grasp_pipette_and_press_button_good_tactile_26ep/
+flow_videos/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
