@@ -1081,7 +1081,7 @@ _CONFIGS = [
             action_expert_variant="gemma_300m",
         ),
         data=LeRobotXHandPi0DataConfig(
-            repo_id="grasp_pipette_and_press_button",
+            repo_id="grasp_pipette_and_press_button_26ep",
             primary_image_key="observation.images.cam_front",
             wrist_image_key="observation.images.cam_right",
             extra_image_key="observation.images.cam_left",
@@ -1109,7 +1109,7 @@ _CONFIGS = [
             tactile_dim_per_finger=3,
         ),
         data=LeRobotXHandTactileObsDataConfig(
-            repo_id="grasp_pipette_and_press_button_good_tactile_26ep",
+            repo_id="grasp_pipette_and_press_button_26ep",
             primary_image_key="observation.images.cam_front",
             wrist_image_key="observation.images.cam_right",
             extra_image_key="observation.images.cam_left",
@@ -1144,7 +1144,7 @@ _CONFIGS = [
             use_future_rgb_instead_of_flow=False,
         ),
         data=LeRobotXHandTactileFlowDataConfig(
-            repo_id="grasp_pipette_and_press_button",
+            repo_id="grasp_pipette_and_press_button_26ep",
             state_delta_timestamps=tuple(list((4 * i - 36 for i in range(10))) + list(range(1, 33))),
             tactile_mode="raw_force",
             primary_image_key="observation.images.cam_front",
@@ -1182,7 +1182,7 @@ _CONFIGS = [
             use_future_rgb_instead_of_flow=False,
         ),
         data=LeRobotXHandTactileFlowDataConfig(
-            repo_id="grasp_pipette_and_press_button",
+            repo_id="grasp_pipette_and_press_button_26ep",
             state_delta_timestamps=tuple(list((4 * i - 36 for i in range(10))) + list(range(1, 33))),
             tactile_mode="calc_force",
             primary_image_key="observation.images.cam_front",
@@ -1222,7 +1222,7 @@ _CONFIGS = [
             use_future_rgb_instead_of_flow=False,
         ),
         data=LeRobotXHandTactileFlowDataConfig(
-            repo_id="grasp_pipette_and_press_button",
+            repo_id="grasp_pipette_and_press_button_26ep",
             state_delta_timestamps=tuple(list((4 * i - 36 for i in range(10))) + list(range(1, 33))),
             tactile_mode="calc_force",
             primary_image_key="observation.images.cam_front",
@@ -1262,7 +1262,7 @@ _CONFIGS = [
             use_future_rgb_instead_of_flow=False,
         ),
         data=LeRobotXHandTactileFlowDataConfig(
-            repo_id="grasp_pipette_and_press_button",
+            repo_id="grasp_pipette_and_press_button_26ep",
             state_delta_timestamps=tuple(list((4 * i - 36 for i in range(10))) + list(range(1, 33))),
             tactile_mode="calc_force",
             primary_image_key="observation.images.cam_front",
@@ -1304,7 +1304,7 @@ _CONFIGS = [
             use_future_rgb_instead_of_flow=False,
         ),
         data=LeRobotXHandTactileFlowDataConfig(
-            repo_id="grasp_pipette_and_press_button",
+            repo_id="grasp_pipette_and_press_button_26ep",
             state_delta_timestamps=tuple(list((4 * i - 36 for i in range(10))) + list(range(1, 33))),
             tactile_mode="calc_force",
             primary_image_key="observation.images.cam_front",

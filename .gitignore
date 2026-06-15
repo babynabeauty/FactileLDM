@@ -1,14 +1,14 @@
 # Data directories.
 assets/
 checkpoints/
-data/
+data*/
 wandb/
-grasp_pipette_and_press_button/
+grasp_pipette_and_press_button_*/
 outputs/
 test_demo_depth/
 flow_videos/
 .hf_datasets_cache/
-grasp_pipette_and_press_button_good_tactile_26ep/
+g26ep/
 flow_videos/
 
 # Byte-compiled / optimized / DLL files

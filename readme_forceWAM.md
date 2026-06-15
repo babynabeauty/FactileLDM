@@ -43,7 +43,7 @@ uv run --no-sync python scripts/add_force.py --repo_id llly/vga_0120
 ```bash
     CUDA_VISIBLE_DEVICES=4 \
 env/.venv/bin/python scripts/compute_lerobot_future_flow_video.py \
-  --repo-id /data/shared_workspace/zhangshiqi/dataset/tactile_xhand_ur7e/grasp_pipette_and_press_button \
+  --repo-id /data/shared_workspace/zhangshiqi/dataset/tactile_xhand_ur7e/grasp_pipette_and_press_button_26ep \
   --output-dir ./flow_videos \
   --future-step 32 \
   --overwrite
@@ -51,13 +51,13 @@ env/.venv/bin/python scripts/compute_lerobot_future_flow_video.py \
   setsid nohup env CUDA_VISIBLE_DEVICES=4 \
   /data/workspace/zhangshiqi/forceWAM/env/.venv/bin/python \
   /data/workspace/zhangshiqi/forceWAM/scripts/compute_lerobot_future_flow_video.py \
-  --repo-id /data/workspace/zhangshiqi/forceWAM/grasp_pipette_and_press_button \
+  --repo-id /data/workspace/zhangshiqi/forceWAM/grasp_pipette_and_press_button_26ep \
   --output-dir /data/workspace/zhangshiqi/forceWAM/flow_videos \
   --future-step 32 \
   > /data/workspace/zhangshiqi/forceWAM/flow_videos/compute_future_flow.log 2>&1 &
 
 # 处理3D点云
-DATA=/data/workspace/zhangshiqi/forceWAM/grasp_pipette_and_press_button
+DATA=/data/workspace/zhangshiqi/forceWAM/grasp_pipette_and_press_button_26ep
 OUT=/data/workspace/zhangshiqi/forceWAM/outputs/front_scene_flow_grasp_pipette_sam3_tracked_npz
 
 mkdir -p "$OUT"
@@ -91,7 +91,7 @@ done 2>&1 | tee "$OUT/batch.log"
 (3) 将光流视频添加到 LeRobot 数据集
 ```bash
   env/.venv/bin/python scripts/add_flow_videos_to_lerobot.py \
-  --repo-id /data/workspace/zhangshiqi/forceWAM/grasp_pipette_and_press_button \
+  --repo-id /data/workspace/zhangshiqi/forceWAM/grasp_pipette_and_press_button_26ep \
   --flow-videos-dir /data/workspace/zhangshiqi/forceWAM/flow_videos/videos \
   --map \
     cam_front=observation.future_flow.cam_front \
@@ -135,7 +135,7 @@ TrainConfig(
     ),
 开始模型训练：
 
-source /workspace/mnt/sqzhang26/FactileLDM/env/.venv/bin/activate
+source env/.venv/bin/activate
 
 # 归一化，根据config修改config-name 需要在config里面修改repo-id
 mkdir -p /data/workspace/zhangshiqi/forceWAM/.hf_datasets_cache
@@ -182,13 +182,13 @@ cd /workspace/mnt/sqzhang26/FactileLDM
 mkdir -p .hf_cache .hf_datasets_cache logs
 
 setsid nohup env \
-  HF_LEROBOT_HOME=/workspace/mnt/sqzhang26/FactileLDM \
+  HF_LEROBOT_HOME=. \
   HF_HOME=/workspace/mnt/sqzhang26/hf_weight \
-  HF_DATASETS_CACHE=/workspace/mnt/sqzhang26/FactileLDM/.hf_datasets_cache \
+  HF_DATASETS_CACHE=.hf_datasets_cache \
   CUDA_VISIBLE_DEVICES=0,1,2,3 \
   XLA_PYTHON_CLIENT_PREALLOCATE=false \
-  /workspace/mnt/sqzhang26/FactileLDM/env/.venv/bin/python \
-  /workspace/mnt/sqzhang26/FactileLDM/scripts/train.py pi0_xhand_tactile_obs_ae_full_finetune \
+  env/.venv/bin/python \
+  scripts/train.py pi0_xhand_tactile_obs_ae_full_finetune \
     --exp-name pi0_xhand_tactile_obs_ae_full_finetune_26ep_0614 \
     --num-train-steps 20000 \
     --batch-size 4 \
@@ -198,12 +198,12 @@ setsid nohup env \
     --no-wandb-enabled \
     --overwrite \
     --weight-loader.params-path /workspace/mnt/sqzhang26/hf_weight/pi0_base/params \
-    --data.assets.assets-dir /workspace/mnt/sqzhang26/FactileLDM/assets/pi0_xhand_tactile_flow_full_finetune \
-  > /workspace/mnt/sqzhang26/FactileLDM/logs/pi0_xhand_tactile_obs_ae_full_finetune_26ep_0614.log 2>&1 &
+    --data.assets.assets-dir assets/pi0_xhand_tactile_flow_full_finetune \
+  > logs/pi0_xhand_tactile_obs_ae_full_finetune_26ep_0615.log 2>&1 &
 
 # pi0 + full VLM + full image encoder + 2AE full finetune + tactile + 2D flow
 setsid nohup env \
-  HF_LEROBOT_HOME=/data/workspace/zhangshiqi/forceWAM \
+  HF_LEROBOT_HOME=. \
   HF_HOME=/data/shared_workspace/zhangshiqi/hf \
   CUDA_VISIBLE_DEVICES=7 \
   XLA_PYTHON_CLIENT_PREALLOCATE=false \
@@ -304,3 +304,27 @@ CUDA_VISIBLE_DEVICES=0 env/.venv/bin/python scripts/serve_policy.py --port=8990 
 
 
  rsync -av --progress zhangshiqi@211.86.155.48:/data/workspace/zhangshiqi/forceWAM/checkpoints/pi0_xhand_tactile_forceonly_full_finetune/pi0_xhand_tactile_forceonly_full_finetune/29999 //home/sai/zsq/FactileLDM/checkpoints/pi0_xhand_tactile_forceonly_full_finetune/pi0_xhand_tactile_forceonly_full_finetune
+
+# 压缩
+tar -czvf data.tar.gz grasp_pipette_and_press_button_26ep_26ep/
+# 解压
+tar -xzvf 文件名.tar.gz
+
+pip install awscli
+
+aws configure
+AWS Access Key ID [None]: URulYpw0hpArLO6SL8Z4ydO61GKN
+AWS Secret Access Key [None]: DW3uAAS84SG7pTM3KWs85O3w2dL6GC
+Default region name [None]: huhehaote-1
+Default output format [None]: json
+
+aws s3 ls s3://sqzhang26-2   --endpoint-url https://eos-huhehaote-1.cmecloud.cn
+
+#下载文件
+aws s3 cp s3://sqzhang26-2/data.tar.gz data.tar.gz \
+  --endpoint-url https://eos-huhehaote-1.cmecloud.cn
+
+#下载整个目录
+aws s3 cp s3://sqzhang26-2/path/to/folder ./folder \
+  --recursive \
+  --endpoint-url https://eos-huhehaote-1.cmecloud.cn
