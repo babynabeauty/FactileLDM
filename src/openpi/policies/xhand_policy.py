@@ -314,6 +314,7 @@ class XHandTactileFlowInputs(transforms.DataTransformFn):
 
     model_type: _model.ModelType
     tactile_mode: Literal["calc_force", "raw_force"] = "calc_force"
+    structured_tactile: bool = False
     tactile_history_frames: int = 10
     state_dim: int = 18
     primary_image_key: str = "observation.images.cam_front"
@@ -413,7 +414,11 @@ class XHandTactileFlowInputs(transforms.DataTransformFn):
                 ]
                 for sensor_id in range(TACTILE_SENSOR_COUNT)
             ]
-            tactile = np.concatenate(sensor_chunks, axis=-1)
+            tactile = (
+                np.stack(sensor_chunks, axis=-2)
+                if self.structured_tactile
+                else np.concatenate(sensor_chunks, axis=-1)
+            )
         elif self.tactile_mode == "raw_force":
             sensor_chunks = [
                 state_seq[

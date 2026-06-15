@@ -52,8 +52,12 @@ class CheckpointWeightLoader(WeightLoader):
         loaded_params = _model.restore_params(download.maybe_download(self.params_path), restore_type=np.ndarray)
         loaded_params = _augment_with_moe_shared_ffn_weights(loaded_params, params)
         loaded_params = _augment_with_mor_action_expert_weights(loaded_params, params)
-        # Add all missing LoRA weights.
-        return _merge_params(loaded_params, params, missing_regex=".*lora.*")
+        # Keep newly introduced adapters/tokenizers at their random initialization.
+        return _merge_params(
+            loaded_params,
+            params,
+            missing_regex=r".*(lora|force_tokenizer|future_query|future_force_decoder|student_query_).*",
+        )
 
 
 @dataclasses.dataclass(frozen=True)

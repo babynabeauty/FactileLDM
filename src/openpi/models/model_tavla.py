@@ -108,7 +108,8 @@ class Observation(Generic[ArrayT]):
     # Optional current tactile observation, e.g. five fingers x three force axes.
     tactile: at.Float[ArrayT, "*b f d"] | None = None
     # Effort(joint torque).
-    effort: at.Float[ArrayT, "*b n e"] | None = None
+    # Legacy effort is [*b,T,D]; structured dexterous force is [*b,T,F,3].
+    effort: ArrayT | None = None
     # Optional flow image, in [-1, 1] float32.
     flow_img: at.Float[ArrayT, "*b h w c"] | None = None
     # Optional wrist flow image, in [-1, 1] float32.

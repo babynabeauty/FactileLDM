@@ -144,12 +144,22 @@ class Normalize(DataTransformFn):
         )
 
     def _normalize(self, x, stats: NormStats):
+        if x.ndim >= 2 and stats.mean.shape[-1] == x.shape[-2] * x.shape[-1]:
+            original_shape = x.shape
+            x = x.reshape(*x.shape[:-2], -1)
+            normalized = (x - stats.mean) / (stats.std + 1e-6)
+            return normalized.reshape(original_shape)
         mean, std = stats.mean[..., : x.shape[-1]], stats.std[..., : x.shape[-1]]
         return (x - mean) / (std + 1e-6)
 
     def _normalize_quantile(self, x, stats: NormStats):
         assert stats.q01 is not None
         assert stats.q99 is not None
+        if x.ndim >= 2 and stats.q01.shape[-1] == x.shape[-2] * x.shape[-1]:
+            original_shape = x.shape
+            x = x.reshape(*x.shape[:-2], -1)
+            normalized = (x - stats.q01) / (stats.q99 - stats.q01 + 1e-6) * 2.0 - 1.0
+            return normalized.reshape(original_shape)
         q01, q99 = stats.q01[..., : x.shape[-1]], stats.q99[..., : x.shape[-1]]
         return (x - q01) / (q99 - q01 + 1e-6) * 2.0 - 1.0
 

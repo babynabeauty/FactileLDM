@@ -247,10 +247,27 @@ class Pi0LatentFlowConfig(Pi0Config):
     student_future_query_noise_scale_max: float = 0
     student_future_query_noise_start_ratio: float = 0
     student_future_query_noise_end_ratio: float = 0
+    structured_tactile: bool = False
+    tactile_history_offsets: tuple[int, ...] = (-18, -16, -14, -12, -10, -8, -6, -4, -2, 0)
+    future_tactile_segments: int = 8
+    future_steps_per_segment: int = 4
+    tactile_tokenizer_dim: int = 256
+    future_tactile_align_layer: int = 12
+    tactile_sample_hz: float = 15.0
 
     @override
     def __post_init__(self):
         super().__post_init__()
+        if self.structured_tactile:
+            if self.effort_dim != self.tactile_num_fingers * self.tactile_dim_per_finger:
+                raise ValueError("Structured tactile currently supports five per-finger 3D resultant forces only.")
+            if len(self.tactile_history_offsets) != self.force_input_frames:
+                raise ValueError("tactile_history_offsets length must equal force_input_frames.")
+            if self.future_tactile_segments * self.future_steps_per_segment != self.action_horizon:
+                raise ValueError("Future tactile segments must exactly cover action_horizon.")
+            if self.tactile_sample_hz <= 0:
+                raise ValueError("tactile_sample_hz must be positive.")
+            object.__setattr__(self, "distill_layer_indices", (self.future_tactile_align_layer,))
         if not 0 <= self.future_rgb_step <= self.action_horizon:
             raise ValueError(
                 f"future_rgb_step must satisfy 0 <= future_rgb_step <= action_horizon={self.action_horizon}, "
@@ -288,3 +305,89 @@ class Pi0LatentFlowConfig(Pi0Config):
     def create(self, rng: at.KeyArrayLike) -> "Pi0":
         from openpi.models.pi0_latent_flow import Pi0LatentFlow
         return Pi0LatentFlow(self, rngs=nnx.Rngs(rng))
+
+    @override
+    def inputs_spec(self, *, batch_size: int = 1):
+        image_spec = jax.ShapeDtypeStruct([batch_size, *_model.IMAGE_RESOLUTION, 3], jnp.float32)
+        image_mask_spec = jax.ShapeDtypeStruct([batch_size], jnp.bool_)
+        effort_shape = (
+            [
+                batch_size,
+                self.force_input_frames + self.action_horizon,
+                self.tactile_num_fingers,
+                self.tactile_dim_per_finger,
+            ]
+            if self.structured_tactile
+            else [batch_size, self.force_input_frames + self.action_horizon, int(self.effort_dim)]
+        )
+        with at.disable_typechecking():
+            observation_spec = _model_tavla.Observation(
+                images={key: image_spec for key in _model.IMAGE_KEYS},
+                image_masks={key: image_mask_spec for key in _model.IMAGE_KEYS},
+                state=jax.ShapeDtypeStruct([batch_size, self.action_dim], jnp.float32),
+                effort=jax.ShapeDtypeStruct(effort_shape, jnp.float32),
+                tokenized_prompt=jax.ShapeDtypeStruct([batch_size, self.max_token_len], jnp.int32),
+                tokenized_prompt_mask=jax.ShapeDtypeStruct([batch_size, self.max_token_len], bool),
+            )
+        return observation_spec, jax.ShapeDtypeStruct(
+            [batch_size, self.action_horizon, self.action_dim], jnp.float32
+        )
+
+
+@dataclasses.dataclass(frozen=True)
+class Pi0FutureTactileConfig(Pi0Config):
+    effort_type: str | None = EffortType.MOT
+    effort_dim: int | None = 15
+    force_input_frames: int = 10
+    tactile_history_offsets: tuple[int, ...] = (-18, -16, -14, -12, -10, -8, -6, -4, -2, 0)
+    future_tactile_segments: int = 8
+    future_steps_per_segment: int = 4
+    tactile_tokenizer_dim: int = 256
+    future_tactile_align_layer: int = 12
+    tactile_sample_hz: float = 15.0
+    future_tactile_latent_loss_weight: float = 0.1
+    future_force_loss_weight: float = 0.2
+    future_force_delta_loss_weight: float = 0.05
+
+    @override
+    def __post_init__(self):
+        super().__post_init__()
+        if self.pi05:
+            raise ValueError("Structured future tactile queries currently support Pi0 only.")
+        if len(self.tactile_history_offsets) != self.force_input_frames:
+            raise ValueError("tactile_history_offsets length must equal force_input_frames.")
+        if self.future_tactile_segments * self.future_steps_per_segment != self.action_horizon:
+            raise ValueError("Future tactile segments must exactly cover action_horizon.")
+        if self.effort_dim != self.tactile_num_fingers * self.tactile_dim_per_finger:
+            raise ValueError("Structured tactile currently supports per-finger 3D resultant forces only.")
+
+    @override
+    def create(self, rng: at.KeyArrayLike):
+        from openpi.models.pi0_future_tactile import Pi0FutureTactile
+
+        return Pi0FutureTactile(self, rngs=nnx.Rngs(rng))
+
+    @override
+    def inputs_spec(self, *, batch_size: int = 1):
+        image_spec = jax.ShapeDtypeStruct([batch_size, *_model.IMAGE_RESOLUTION, 3], jnp.float32)
+        image_mask_spec = jax.ShapeDtypeStruct([batch_size], jnp.bool_)
+        with at.disable_typechecking():
+            observation_spec = _model_tavla.Observation(
+                images={key: image_spec for key in _model.IMAGE_KEYS},
+                image_masks={key: image_mask_spec for key in _model.IMAGE_KEYS},
+                state=jax.ShapeDtypeStruct([batch_size, self.action_dim], jnp.float32),
+                effort=jax.ShapeDtypeStruct(
+                    [
+                        batch_size,
+                        self.force_input_frames + self.action_horizon,
+                        self.tactile_num_fingers,
+                        self.tactile_dim_per_finger,
+                    ],
+                    jnp.float32,
+                ),
+                tokenized_prompt=jax.ShapeDtypeStruct([batch_size, self.max_token_len], jnp.int32),
+                tokenized_prompt_mask=jax.ShapeDtypeStruct([batch_size, self.max_token_len], bool),
+            )
+        return observation_spec, jax.ShapeDtypeStruct(
+            [batch_size, self.action_horizon, self.action_dim], jnp.float32
+        )

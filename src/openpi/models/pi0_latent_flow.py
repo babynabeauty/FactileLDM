@@ -10,8 +10,8 @@ from openpi.models import model_tavla as _model
 from openpi.models import pi0_config
 from openpi.models import siglip as _siglip
 from openpi.models.pi0_tavla import make_attn_mask, posemb_sincos
+from openpi.models.tactile_tokenizer import DexterousForceTokenizer
 from openpi.shared import array_typing as at
-from openpi.shared.effort_type import EffortType
 
 
 _FLOW_VAE_REGISTRY: dict[str, tuple[FlaxAutoencoderKL, at.Params]] = {}
@@ -58,6 +58,23 @@ class Pi0LatentFlow(_model.BaseModel):
         self.effort_type = config.effort_type
 
         self.force_input_frames = int(config.force_input_frames)
+        self.structured_tactile = bool(config.structured_tactile)
+        self.tactile_num_fingers = int(config.tactile_num_fingers)
+        self.tactile_dim_per_finger = int(config.tactile_dim_per_finger)
+        self.future_tactile_segments = int(config.future_tactile_segments)
+        self.future_steps_per_segment = int(config.future_steps_per_segment)
+        self.future_force_token_count = (
+            self.future_tactile_segments * self.tactile_num_fingers if self.structured_tactile else 1
+        )
+        self.history_force_token_count = (
+            self.force_input_frames * self.tactile_num_fingers if self.structured_tactile else 1
+        )
+        self.history_times = tuple(
+            float(offset) / float(config.tactile_sample_hz) for offset in config.tactile_history_offsets
+        )
+        self.future_times = tuple(
+            float(step) / float(config.tactile_sample_hz) for step in range(1, config.action_horizon + 1)
+        )
         self.distill_layer_indices = tuple(int(i) for i in config.distill_layer_indices)
         self.student_action_loss_weight = float(config.student_action_loss_weight)
         self.teacher_action_loss_weight = float(config.teacher_action_loss_weight)
@@ -133,14 +150,44 @@ class Pi0LatentFlow(_model.BaseModel):
         self.action_out_proj_student = nnx.Linear(student_config.width, config.action_dim, rngs=rngs)
         self.action_out_proj_teacher = nnx.Linear(teacher_config.width, config.action_dim, rngs=rngs)
 
-        history_dim = self.force_input_frames * self.effort_dim_in
-        future_dim = config.action_horizon * self.effort_dim_in
-        self.history_force_proj_student = nnx.Linear(history_dim, student_config.width, rngs=rngs)
-        self.history_force_proj_teacher = nnx.Linear(history_dim, teacher_config.width, rngs=rngs)
-        self.future_force_proj_teacher = nnx.Linear(future_dim, teacher_config.width, rngs=rngs)
-        self.student_query = nnx.Param(
-            0.02 * jax.random.normal(rngs.params(), (student_config.width,), dtype=jnp.float32)
-        )
+        if self.structured_tactile:
+            tokenizer_kwargs = dict(
+                hidden_dim=config.tactile_tokenizer_dim,
+                num_fingers=self.tactile_num_fingers,
+                dim_per_finger=self.tactile_dim_per_finger,
+                future_segments=self.future_tactile_segments,
+                future_steps_per_segment=self.future_steps_per_segment,
+            )
+            self.student_force_tokenizer = DexterousForceTokenizer(
+                output_dim=student_config.width, rngs=rngs, **tokenizer_kwargs
+            )
+            self.teacher_force_tokenizer = DexterousForceTokenizer(
+                output_dim=teacher_config.width, rngs=rngs, **tokenizer_kwargs
+            )
+            self.student_query_base = nnx.Param(
+                0.02 * jax.random.normal(rngs.params(), (student_config.width,), dtype=jnp.float32)
+            )
+            self.student_query_segment_embedding = nnx.Param(
+                0.02
+                * jax.random.normal(
+                    rngs.params(), (self.future_tactile_segments, student_config.width), dtype=jnp.float32
+                )
+            )
+            self.student_query_finger_embedding = nnx.Param(
+                0.02
+                * jax.random.normal(
+                    rngs.params(), (self.tactile_num_fingers, student_config.width), dtype=jnp.float32
+                )
+            )
+        else:
+            history_dim = self.force_input_frames * self.effort_dim_in
+            future_dim = config.action_horizon * self.effort_dim_in
+            self.history_force_proj_student = nnx.Linear(history_dim, student_config.width, rngs=rngs)
+            self.history_force_proj_teacher = nnx.Linear(history_dim, teacher_config.width, rngs=rngs)
+            self.future_force_proj_teacher = nnx.Linear(future_dim, teacher_config.width, rngs=rngs)
+            self.student_query = nnx.Param(
+                0.02 * jax.random.normal(rngs.params(), (student_config.width,), dtype=jnp.float32)
+            )
         self.student_future_mask_token = nnx.Param(
             0.02 * jax.random.normal(rngs.params(), (student_config.width,), dtype=jnp.float32)
         )
@@ -225,8 +272,9 @@ class Pi0LatentFlow(_model.BaseModel):
         if observation.effort is None:
             raise ValueError("Pi0MORDualAlignForceFlow requires `observation.effort`.")
         effort = jnp.asarray(observation.effort, dtype=dtype)
-        if effort.ndim != 3:
-            raise ValueError(f"Expected effort with shape [B, T, D], got {effort.shape}.")
+        expected_ndim = 4 if self.structured_tactile else 3
+        if effort.ndim != expected_ndim:
+            raise ValueError(f"Expected effort with {expected_ndim} dimensions, got {effort.shape}.")
 
         future_effort = None
         if effort.shape[1] > self.action_horizon:
@@ -247,24 +295,44 @@ class Pi0LatentFlow(_model.BaseModel):
         return history_effort, future_effort
 
     def _project_history_force_student(
-        self, history_effort: at.Float[at.Array, "b h e"]
-    ) -> at.Float[at.Array, "b 1 d"]:
+        self, history_effort: at.Array
+    ) -> at.Array:
+        if self.structured_tactile:
+            return self.student_force_tokenizer.encode_history(
+                history_effort, jnp.asarray(self.history_times, dtype=jnp.float32)
+            )
         hidden = self.history_force_proj_student(einops.rearrange(history_effort, "b h e -> b (h e)"))
         return hidden[:, None, :]
 
     def _project_history_force_teacher(
-        self, history_effort: at.Float[at.Array, "b h e"]
-    ) -> at.Float[at.Array, "b 1 d"]:
+        self, history_effort: at.Array
+    ) -> at.Array:
+        if self.structured_tactile:
+            return self.teacher_force_tokenizer.encode_history(
+                history_effort, jnp.asarray(self.history_times, dtype=jnp.float32)
+            )
         hidden = self.history_force_proj_teacher(einops.rearrange(history_effort, "b h e -> b (h e)"))
         return hidden[:, None, :]
 
     def _project_future_force_teacher(
-        self, future_effort: at.Float[at.Array, "b h e"]
-    ) -> at.Float[at.Array, "b 1 d"]:
+        self, future_effort: at.Array
+    ) -> at.Array:
+        if self.structured_tactile:
+            return self.teacher_force_tokenizer.encode_future(
+                future_effort, jnp.asarray(self.future_times, dtype=jnp.float32)
+            )
         hidden = self.future_force_proj_teacher(einops.rearrange(future_effort, "b h e -> b (h e)"))
         return hidden[:, None, :]
 
     def _student_query_token(self, batch_size: int, dtype: jnp.dtype) -> at.Float[at.Array, "b 1 d"]:
+        if self.structured_tactile:
+            query = (
+                self.student_query_base.value[None, None, :]
+                + self.student_query_segment_embedding.value[:, None, :]
+                + self.student_query_finger_embedding.value[None, :, :]
+            )
+            query = einops.rearrange(query, "s f d -> (s f) d").astype(dtype)
+            return jnp.broadcast_to(query[None, :, :], (batch_size, query.shape[0], query.shape[1]))
         query = jnp.asarray(self.student_query.value, dtype=dtype)
         return jnp.broadcast_to(query[None, None, :], (batch_size, 1, query.shape[0]))
 
@@ -468,6 +536,14 @@ class Pi0LatentFlow(_model.BaseModel):
 
     def _build_suffix_ar_mask(self, action_len: int) -> at.Bool[at.Array, " s"]:
         active_flow_token_count = self.flow_token_count if self.use_future_flow else 0
+        if self.structured_tactile:
+            observation_count = 1 + self.history_force_token_count
+            future_count = self.future_force_token_count + active_flow_token_count
+            return jnp.array(
+                ([True] + [False] * (observation_count - 1))
+                + ([True] + [False] * (future_count - 1))
+                + ([True] + [False] * (action_len - 1))
+            )
         return jnp.array(
             [False, False] + [True] + ([False] * active_flow_token_count) + [True] + ([False] * (action_len - 1))
         )
@@ -629,7 +705,7 @@ class Pi0LatentFlow(_model.BaseModel):
     def embed_student_suffix(
         self,
         obs: _model.Observation,
-        history_effort: at.Float[at.Array, "b h e"],
+        history_effort: at.Array,
         noisy_actions: _model.Actions,
         timestep: at.Float[at.Array, " b"],
         *,
@@ -658,9 +734,12 @@ class Pi0LatentFlow(_model.BaseModel):
         state_token = self.state_proj_student(obs.state)[:, None, :]
         action_tokens, adarms_cond = self._embed_action_tokens(noisy_actions, timestep, expert="student")
 
-        tokens = jnp.concatenate(
-            [history_token, state_token, future_force_query, future_flow_queries, action_tokens], axis=1
+        suffix_parts = (
+            [state_token, history_token, future_force_query, future_flow_queries, action_tokens]
+            if self.structured_tactile
+            else [history_token, state_token, future_force_query, future_flow_queries, action_tokens]
         )
+        tokens = jnp.concatenate(suffix_parts, axis=1)
         input_mask = jnp.ones(tokens.shape[:2], dtype=jnp.bool_)
         ar_mask = self._build_suffix_ar_mask(action_tokens.shape[1])
         return tokens, input_mask, ar_mask, adarms_cond, force_clean_mask, flow_clean_mask, noised_token_rate
@@ -669,8 +748,8 @@ class Pi0LatentFlow(_model.BaseModel):
     def embed_teacher_suffix(
         self,
         obs: _model.Observation,
-        history_effort: at.Float[at.Array, "b h e"],
-        future_effort: at.Float[at.Array, "b f e"],
+        history_effort: at.Array,
+        future_effort: at.Array,
         noisy_actions: _model.Actions,
         timestep: at.Float[at.Array, " b"],
     ) -> tuple[
@@ -685,9 +764,12 @@ class Pi0LatentFlow(_model.BaseModel):
         state_token = self.state_proj_teacher(obs.state)[:, None, :]
         action_tokens, adarms_cond = self._embed_action_tokens(noisy_actions, timestep, expert="teacher")
 
-        tokens = jnp.concatenate(
-            [history_token, state_token, future_force_token, future_flow_tokens, action_tokens], axis=1
+        suffix_parts = (
+            [state_token, history_token, future_force_token, future_flow_tokens, action_tokens]
+            if self.structured_tactile
+            else [history_token, state_token, future_force_token, future_flow_tokens, action_tokens]
         )
+        tokens = jnp.concatenate(suffix_parts, axis=1)
         input_mask = jnp.ones(tokens.shape[:2], dtype=jnp.bool_)
         ar_mask = self._build_suffix_ar_mask(action_tokens.shape[1])
         return tokens, input_mask, ar_mask, adarms_cond
@@ -849,8 +931,10 @@ class Pi0LatentFlow(_model.BaseModel):
 
         force_losses = []
         flow_losses = []
-        future_force_slice = slice(2, 3)
-        flow_slice = slice(3, 3 + self.flow_token_count)
+        future_force_start = 1 + self.history_force_token_count if self.structured_tactile else 2
+        future_force_slice = slice(future_force_start, future_force_start + self.future_force_token_count)
+        flow_start = future_force_start + self.future_force_token_count
+        flow_slice = slice(flow_start, flow_start + self.flow_token_count)
         for student_hidden, teacher_hidden in zip(student_layer_hiddens, teacher_layer_hiddens, strict=True):
             student_force_hidden = self._project_prompt_distill(student_hidden[:, future_force_slice, :])
             teacher_force_hidden = jax.lax.stop_gradient(teacher_hidden[:, future_force_slice, :])

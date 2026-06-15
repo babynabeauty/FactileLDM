@@ -558,6 +558,7 @@ class LeRobotXHandTactileFlowDataConfig(DataConfigFactory):
     default_prompt: str | None = None
     state_delta_timestamps: Sequence[int] = ()
     tactile_mode: Literal["calc_force", "raw_force"] = "calc_force"
+    structured_tactile: bool = False
     primary_image_key: str = "observation.images.cam_front"
     wrist_image_key: str = "observation.images.cam_right"
     extra_image_key: str | None = "observation.images.cam_left"
@@ -578,6 +579,7 @@ class LeRobotXHandTactileFlowDataConfig(DataConfigFactory):
                 xhand_policy.XHandTactileFlowInputs(
                     model_type=model_config.model_type,
                     tactile_mode=self.tactile_mode,
+                    structured_tactile=self.structured_tactile,
                     tactile_history_frames=history_frames,
                     primary_image_key=self.primary_image_key,
                     wrist_image_key=self.wrist_image_key,
@@ -1081,7 +1083,7 @@ _CONFIGS = [
             action_expert_variant="gemma_300m",
         ),
         data=LeRobotXHandPi0DataConfig(
-            repo_id="grasp_pipette_and_press_button_26ep",
+            repo_id="grasp_pipette_and_press_button",
             primary_image_key="observation.images.cam_front",
             wrist_image_key="observation.images.cam_right",
             extra_image_key="observation.images.cam_left",
@@ -1109,7 +1111,7 @@ _CONFIGS = [
             tactile_dim_per_finger=3,
         ),
         data=LeRobotXHandTactileObsDataConfig(
-            repo_id="grasp_pipette_and_press_button_26ep",
+            repo_id="grasp_pipette_and_press_button",
             primary_image_key="observation.images.cam_front",
             wrist_image_key="observation.images.cam_right",
             extra_image_key="observation.images.cam_left",
@@ -1144,7 +1146,7 @@ _CONFIGS = [
             use_future_rgb_instead_of_flow=False,
         ),
         data=LeRobotXHandTactileFlowDataConfig(
-            repo_id="grasp_pipette_and_press_button_26ep",
+            repo_id="grasp_pipette_and_press_button",
             state_delta_timestamps=tuple(list((4 * i - 36 for i in range(10))) + list(range(1, 33))),
             tactile_mode="raw_force",
             primary_image_key="observation.images.cam_front",
@@ -1182,7 +1184,7 @@ _CONFIGS = [
             use_future_rgb_instead_of_flow=False,
         ),
         data=LeRobotXHandTactileFlowDataConfig(
-            repo_id="grasp_pipette_and_press_button_26ep",
+            repo_id="grasp_pipette_and_press_button",
             state_delta_timestamps=tuple(list((4 * i - 36 for i in range(10))) + list(range(1, 33))),
             tactile_mode="calc_force",
             primary_image_key="observation.images.cam_front",
@@ -1222,7 +1224,7 @@ _CONFIGS = [
             use_future_rgb_instead_of_flow=False,
         ),
         data=LeRobotXHandTactileFlowDataConfig(
-            repo_id="grasp_pipette_and_press_button_26ep",
+            repo_id="grasp_pipette_and_press_button",
             state_delta_timestamps=tuple(list((4 * i - 36 for i in range(10))) + list(range(1, 33))),
             tactile_mode="calc_force",
             primary_image_key="observation.images.cam_front",
@@ -1262,7 +1264,7 @@ _CONFIGS = [
             use_future_rgb_instead_of_flow=False,
         ),
         data=LeRobotXHandTactileFlowDataConfig(
-            repo_id="grasp_pipette_and_press_button_26ep",
+            repo_id="grasp_pipette_and_press_button",
             state_delta_timestamps=tuple(list((4 * i - 36 for i in range(10))) + list(range(1, 33))),
             tactile_mode="calc_force",
             primary_image_key="observation.images.cam_front",
@@ -1276,6 +1278,96 @@ _CONFIGS = [
             ),
         ),
         weight_loader=weight_loaders.CheckpointWeightLoader("checkpoints/pi0_base/params"),
+        num_train_steps=30_000,
+        batch_size=1,
+        num_workers=0,
+        save_interval=1000,
+        keep_period=1000,
+        ema_decay=None,
+    ),
+    TrainConfig(
+        name="pi0_xhand_tactile_structured_dual_ae",
+        model=pi0_config.Pi0LatentFlowConfig(
+            action_horizon=32,
+            action_dim=32,
+            paligemma_variant="gemma_2b",
+            action_expert_variant="gemma_300m",
+            effort_type=EffortType.MOT,
+            effort_dim=15,
+            force_input_frames=10,
+            structured_tactile=True,
+            tactile_history_offsets=(-18, -16, -14, -12, -10, -8, -6, -4, -2, 0),
+            future_tactile_segments=8,
+            future_steps_per_segment=4,
+            tactile_tokenizer_dim=256,
+            future_tactile_align_layer=12,
+            tactile_sample_hz=15.0,
+            future_force_align_loss_weight=0.1,
+            future_flow_align_loss_weight=0.0,
+            student_future_query_noise_scale_max=0.0,
+            use_future_flow=False,
+            use_future_rgb_instead_of_flow=False,
+        ),
+        data=LeRobotXHandTactileFlowDataConfig(
+            repo_id="grasp_pipette_and_press_button",
+            state_delta_timestamps=tuple(
+                [-18, -16, -14, -12, -10, -8, -6, -4, -2, 0] + list(range(1, 33))
+            ),
+            tactile_mode="calc_force",
+            structured_tactile=True,
+            primary_image_key="observation.images.cam_front",
+            wrist_image_key="observation.images.cam_right",
+            extra_image_key="observation.images.cam_left",
+            future_flow_key=None,
+            future_wrist_flow_key=None,
+            scene_flow_root=None,
+            base_config=DataConfig(prompt_from_task=True),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("checkpoints/pi0_base/params"),
+        num_train_steps=30_000,
+        batch_size=1,
+        num_workers=0,
+        save_interval=1000,
+        keep_period=1000,
+        ema_decay=None,
+    ),
+    TrainConfig(
+        name="pi0_xhand_tactile_structured_single_ae",
+        model=pi0_config.Pi0FutureTactileConfig(
+            action_horizon=32,
+            action_dim=32,
+            paligemma_variant="gemma_2b",
+            action_expert_variant="gemma_300m",
+            effort_type=EffortType.MOT,
+            effort_dim=15,
+            force_input_frames=10,
+            tactile_history_offsets=(-18, -16, -14, -12, -10, -8, -6, -4, -2, 0),
+            future_tactile_segments=8,
+            future_steps_per_segment=4,
+            tactile_tokenizer_dim=256,
+            future_tactile_align_layer=12,
+            tactile_sample_hz=15.0,
+            future_tactile_latent_loss_weight=0.1,
+            future_force_loss_weight=0.2,
+            future_force_delta_loss_weight=0.05,
+        ),
+        data=LeRobotXHandTactileFlowDataConfig(
+            repo_id="grasp_pipette_and_press_button",
+            state_delta_timestamps=tuple(
+                [-18, -16, -14, -12, -10, -8, -6, -4, -2, 0] + list(range(1, 33))
+            ),
+            tactile_mode="calc_force",
+            structured_tactile=True,
+            primary_image_key="observation.images.cam_front",
+            wrist_image_key="observation.images.cam_right",
+            extra_image_key="observation.images.cam_left",
+            future_flow_key=None,
+            future_wrist_flow_key=None,
+            scene_flow_root=None,
+            base_config=DataConfig(prompt_from_task=True),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("checkpoints/pi0_base/params"),
+        freeze_filter=nnx_utils.PathRegex(".*target_force_tokenizer.*"),
         num_train_steps=30_000,
         batch_size=1,
         num_workers=0,
@@ -1304,7 +1396,7 @@ _CONFIGS = [
             use_future_rgb_instead_of_flow=False,
         ),
         data=LeRobotXHandTactileFlowDataConfig(
-            repo_id="grasp_pipette_and_press_button_26ep",
+            repo_id="grasp_pipette_and_press_button",
             state_delta_timestamps=tuple(list((4 * i - 36 for i in range(10))) + list(range(1, 33))),
             tactile_mode="calc_force",
             primary_image_key="observation.images.cam_front",
