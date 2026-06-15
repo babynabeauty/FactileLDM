@@ -31,6 +31,6 @@ exec setsid env \
     --keep-period 10000 \
     --no-wandb-enabled \
     --overwrite \
-    --weight-loader.params-path /data/shared_workspace/zhangshiqi/hf/pi0_base_jax/pi0_base/params \
+    --weight-loader.params-path checkpoints/pi0_base/params \
     --data.assets.assets-dir /data/workspace/zhangshiqi/forceWAM/assets/pi0_xhand_tactile_flow_vlm_lora_action_full \
   >> "$TRAIN_LOG" 2>&1

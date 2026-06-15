@@ -140,7 +140,6 @@ source env/.venv/bin/activate
 # 归一化，根据config修改config-name 需要在config里面修改repo-id
 mkdir -p /data/workspace/zhangshiqi/forceWAM/.hf_datasets_cache
 HF_LEROBOT_HOME=/data/workspace/zhangshiqi/forceWAM \
-HF_HOME=/data/shared_workspace/zhangshiqi/hf \
 HF_DATASETS_CACHE=/data/workspace/zhangshiqi/forceWAM/.hf_datasets_cache \
 CUDA_VISIBLE_DEVICES=7 \
 env/.venv/bin/python scripts/compute_norm_stats.py \
@@ -150,7 +149,6 @@ env/.venv/bin/python scripts/compute_norm_stats.py \
 
 CUDA_VISIBLE_DEVICES="5" \
 HF_LEROBOT_HOME=/data/workspace/zhangshiqi/forceWAM \
-HF_HOME=/data/shared_workspace/zhangshiqi/hf \
 HF_DATASETS_CACHE=/data/workspace/zhangshiqi/forceWAM/.hf_datasets_cache \
 env/.venv/bin/python scripts/compute_norm_stats.py \
   --config-name pi0_xhand_full_finetune \
@@ -161,7 +159,6 @@ mkdir -p /data/workspace/zhangshiqi/forceWAM/logs
 
 setsid nohup env \
   HF_LEROBOT_HOME=/data/workspace/zhangshiqi/forceWAM \
-  HF_HOME=/data/shared_workspace/zhangshiqi/hf \
   CUDA_VISIBLE_DEVICES=4,5 \
   XLA_PYTHON_CLIENT_PREALLOCATE=false \
   /data/workspace/zhangshiqi/forceWAM/env/.venv/bin/python \
@@ -174,7 +171,7 @@ setsid nohup env \
     --keep-period 10000 \
     --no-wandb-enabled \
     --overwrite \
-    --weight-loader.params-path /data/shared_workspace/zhangshiqi/hf/pi0_base_jax/pi0_base/params \
+    --weight-loader.params-path checkpoints/pi0_base/params \
   > /data/workspace/zhangshiqi/forceWAM/logs/pi0_xhand_full_finetune_30k_2gpu.log 2>&1 &
 
 # pi0 + current 5x3 tactile observation tokens + single action expert
@@ -183,7 +180,6 @@ mkdir -p .hf_cache .hf_datasets_cache logs
 
 setsid nohup env \
   HF_LEROBOT_HOME=. \
-  HF_HOME=/workspace/mnt/sqzhang26/hf_weight \
   HF_DATASETS_CACHE=.hf_datasets_cache \
   CUDA_VISIBLE_DEVICES=0,1,2,3 \
   XLA_PYTHON_CLIENT_PREALLOCATE=false \
@@ -204,7 +200,6 @@ setsid nohup env \
 # pi0 + full VLM + full image encoder + 2AE full finetune + tactile + 2D flow
 setsid nohup env \
   HF_LEROBOT_HOME=. \
-  HF_HOME=/data/shared_workspace/zhangshiqi/hf \
   CUDA_VISIBLE_DEVICES=7 \
   XLA_PYTHON_CLIENT_PREALLOCATE=false \
   /data/workspace/zhangshiqi/forceWAM/env/.venv/bin/python \
@@ -217,14 +212,13 @@ setsid nohup env \
     --keep-period 10000 \
     --no-wandb-enabled \
     --overwrite \
-    --weight-loader.params-path /data/shared_workspace/zhangshiqi/hf/pi0_base_jax/pi0_base/params \
+    --weight-loader.params-path checkpoints/pi0_base/params \
     --model.flow-vae-name /data/shared_workspace/zhangshiqi/hf/models--stabilityai--sdxl-vae \
   > /data/workspace/zhangshiqi/forceWAM/logs/pi0_xhand_tactile_flow_full_finetune_30k_1gpu.log 2>&1 &
 
 # pi0 + full VLM + full image encoder + 2AE full finetune + tactile + no flow
 setsid nohup env \
   HF_LEROBOT_HOME=/data/workspace/zhangshiqi/forceWAM \
-  HF_HOME=/data/shared_workspace/zhangshiqi/hf \
   CUDA_VISIBLE_DEVICES=6,7 \
   XLA_PYTHON_CLIENT_PREALLOCATE=false \
   /data/workspace/zhangshiqi/forceWAM/env/.venv/bin/python \
@@ -237,13 +231,12 @@ setsid nohup env \
     --keep-period 10000 \
     --no-wandb-enabled \
     --overwrite \
-    --weight-loader.params-path /data/shared_workspace/zhangshiqi/hf/pi0_base_jax/pi0_base/params \
+    --weight-loader.params-path checkpoints/pi0_base/params \
     > /data/workspace/zhangshiqi/forceWAM/logs/pi0_xhand_tactile_noflow_full_finetune_30k_2gpu.log 2>&1 &
 
 # pi0 + full VLM + full image encoder + 2AE full finetune + tactile + 3D displacement
 setsid nohup env \
   HF_LEROBOT_HOME=/data/workspace/zhangshiqi/forceWAM \
-  HF_HOME=/data/shared_workspace/zhangshiqi/hf \
   CUDA_VISIBLE_DEVICES=7 \
   XLA_PYTHON_CLIENT_PREALLOCATE=false \
   env/.venv/bin/python scripts/train.py pi0_xhand_tactile_3dflow_full_finetune \
@@ -255,14 +248,13 @@ setsid nohup env \
     --keep-period 10000 \
     --no-wandb-enabled \
     --overwrite \
-    --weight-loader.params-path /data/shared_workspace/zhangshiqi/hf/pi0_base_jax/pi0_base/params \
+    --weight-loader.params-path checkpoints/pi0_base/params \
     --data.assets.assets-dir /data/workspace/zhangshiqi/forceWAM/assets/pi0_xhand_tactile_flow_full_finetune
   > /data/workspace/zhangshiqi/forceWAM/logs/pi0_xhand_tactile_3dflow_full_finetune_30k_1gpu.log 2>&1 &
 
 # pi0 + full VLM + full image encoder + 2AE full finetune + raw tactile + 2D flow
 setsid nohup env \
   HF_LEROBOT_HOME=/data/workspace/zhangshiqi/forceWAM \
-  HF_HOME=/data/shared_workspace/zhangshiqi/hf \
   CUDA_VISIBLE_DEVICES=7 \
   XLA_PYTHON_CLIENT_PREALLOCATE=false \
   env/.venv/bin/python scripts/train.py pi0_xhand_tactile_grid_flow \
@@ -274,7 +266,7 @@ setsid nohup env \
     --keep-period 10000 \
     --no-wandb-enabled \
     --overwrite \
-    --weight-loader.params-path /data/shared_workspace/zhangshiqi/hf/pi0_base_jax/pi0_base/params \
+    --weight-loader.params-path checkpoints/pi0_base/params \
     --data.assets.assets-dir /data/workspace/zhangshiqi/forceWAM/assets/pi0_xhand_tactile_flow_full_finetune \
   > /data/workspace/zhangshiqi/forceWAM/logs/pi0_xhand_tactile_grid_flow.log 2>&1 &
 
