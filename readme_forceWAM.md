@@ -24,11 +24,14 @@ uv run --no-sync scripts/train.py --help
 
 
 # 计算光流图像
-这一步可能需要非常长的时间，因为需要计算每一帧的光流。
+
+export HF_LEROBOT_HOME=/workspace/mnt/sqzhang26/FactileLDM/data
+export HF_HUB_OFFLINE=1
+
 ```bash
-    CUDA_VISIBLE_DEVICES=4 \
+    CUDA_VISIBLE_DEVICES=0 \
 env/.venv/bin/python scripts/compute_lerobot_future_flow_video.py \
-  --repo-id /data/shared_workspace/zhangshiqi/dataset/tactile_xhand_ur7e/grasp_pipette_and_press_button_26ep \
+  --repo-id grasp_pipette_and_press_button_0616_59ep_flow \
   --output-dir ./flow_videos \
   --future-step 32 \
   --overwrite
@@ -44,8 +47,8 @@ env/.venv/bin/python scripts/compute_lerobot_future_flow_video.py \
 将光流视频添加到 LeRobot 数据集
 ```bash
   env/.venv/bin/python scripts/add_flow_videos_to_lerobot.py \
-  --repo-id /data/workspace/zhangshiqi/forceWAM/grasp_pipette_and_press_button_26ep \
-  --flow-videos-dir /data/workspace/zhangshiqi/forceWAM/flow_videos/videos \
+  --repo-id grasp_pipette_and_press_0614_7ep \
+  --flow-videos-dir flow_videos/videos \
   --map \
     cam_front=observation.future_flow.cam_front \
     cam_right=observation.future_flow.cam_right \
@@ -53,9 +56,7 @@ env/.venv/bin/python scripts/compute_lerobot_future_flow_video.py \
 
 
 
-
-# 计算光流图像
-
+# 计算3D偏移点
 DATA=grasp_pipette_and_press_button
 OUT=outputs/front_scene_flow_grasp_pipette_sam3_tracked_npz
 
@@ -94,9 +95,11 @@ env/.venv/bin/python scripts/compute_norm_stats.py \
   
   <!--max-frames 10000 -->
 
+
+export HF_LEROBOT_HOME=/workspace/mnt/sqzhang26/FactileLDM/data
+export HF_HUB_OFFLINE=1
 # pi0训练
 mkdir -p /data/workspace/zhangshiqi/forceWAM/logs
-
 setsid nohup env \
   HF_LEROBOT_HOME=/data/workspace/zhangshiqi/forceWAM \
   CUDA_VISIBLE_DEVICES=4,5 \
@@ -133,6 +136,29 @@ setsid nohup env \
     --weight-loader.params-path /workspace/mnt/sqzhang26/hf_weight/pi0_base/params \
     --data.assets.assets-dir assets/pi0_xhand_tactile_flow_full_finetune \
   > logs/pi0_xhand_tactile_obs_ae_full_finetune_26ep_0615.log 2>&1 &
+
+# 1AE + tactile
+cd /workspace/mnt/sqzhang26/FactileLDM
+mkdir -p logs .hf_datasets_cache
+setsid nohup env \
+  HF_LEROBOT_HOME=. \
+  HF_DATASETS_CACHE=.hf_datasets_cache \
+  CUDA_VISIBLE_DEVICES=0,1,2,3 \
+  XLA_PYTHON_CLIENT_PREALLOCATE=false \
+  env/.venv/bin/python \
+  scripts/train.py pi0_xhand_tactile_structured_single_ae \
+    --exp-name structured_single_ae_60ep_5k_0616 \
+    --data.repo-id grasp_pipette_and_press_button_0616_59ep \
+    --num-train-steps 5000 \
+    --batch-size 4 \
+    --num-workers 0 \
+    --save-interval 1000 \
+    --keep-period 1000 \
+    --no-wandb-enabled \
+    --overwrite \
+    --weight-loader.params-path checkpoints/pi0_base/params \
+  > logs/structured_single_ae_60ep_5k_0616.log 2>&1 &
+echo "PID=$!"
 
 # 2AE full finetune + tactile
 setsid nohup env \
