@@ -85,15 +85,13 @@ done 2>&1 | tee "$OUT/batch.log"
 
 # 归一化
 # 根据config修改config-name 需要在config里面修改repo-id
-source env/.venv/bin/activate
-mkdir -p .hf_datasets_cache
-HF_LEROBOT_HOME=. \
-HF_DATASETS_CACHE=.hf_datasets_cache \
-CUDA_VISIBLE_DEVICES=7 \
 env/.venv/bin/python scripts/compute_norm_stats.py \
-  --config-name pi0_xhand_tactile_flow_full_finetune 
-  
-  <!--max-frames 10000 -->
+  --config-name pi0_xhand_tactile_structured_single_ae \
+  --repo-id data/grasp_pipette_and_press_button_0616_59ep \ 
+  --asset-id grasp_pipette_and_press_button_0616_59ep 
+ 
+  #--repo-id  实际数据集路径，相对于 FactileLDM
+  #--asset-id  归一化 stats 保存/读取的名字
 
 
 export HF_LEROBOT_HOME=/workspace/mnt/sqzhang26/FactileLDM/data
@@ -138,8 +136,10 @@ setsid nohup env \
   > logs/pi0_xhand_tactile_obs_ae_full_finetune_26ep_0615.log 2>&1 &
 
 # 1AE + tactile
-cd /workspace/mnt/sqzhang26/FactileLDM
-mkdir -p logs .hf_datasets_cache
+
+DATA_REPO="data/grasp_pipette_and_press_button_0616_59ep"
+ASSET_ID="$(basename "$DATA_REPO")"
+
 setsid nohup env \
   HF_LEROBOT_HOME=. \
   HF_DATASETS_CACHE=.hf_datasets_cache \
@@ -148,9 +148,11 @@ setsid nohup env \
   env/.venv/bin/python \
   scripts/train.py pi0_xhand_tactile_structured_single_ae \
     --exp-name structured_single_ae_60ep_5k_0616 \
-    --data.repo-id grasp_pipette_and_press_button_0616_59ep \
+    --data.repo-id "$DATA_REPO" \
+    --data.assets.asset-id "$ASSET_ID" \
     --num-train-steps 5000 \
     --batch-size 4 \
+    --fsdp-devices 4 \
     --num-workers 0 \
     --save-interval 1000 \
     --keep-period 1000 \
@@ -158,7 +160,6 @@ setsid nohup env \
     --overwrite \
     --weight-loader.params-path checkpoints/pi0_base/params \
   > logs/structured_single_ae_60ep_5k_0616.log 2>&1 &
-echo "PID=$!"
 
 # 2AE full finetune + tactile
 setsid nohup env \

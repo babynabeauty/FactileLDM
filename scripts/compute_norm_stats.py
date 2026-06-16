@@ -65,12 +65,19 @@ def create_torch_dataloader(
     )
     return data_loader, num_batches
 
-
-
-def main(config_name: str, max_frames: int | None = None, repo_id: str | None = None):
+def main(
+    config_name: str,
+    max_frames: int | None = None,
+    repo_id: str | None = None,
+    asset_id: str | None = None,
+):
     config = _config.get_config(config_name)
+    data = config.data
     if repo_id is not None:
-        config = dataclasses.replace(config, data=dataclasses.replace(config.data, repo_id=repo_id))
+        data = dataclasses.replace(data, repo_id=repo_id)
+    if asset_id is not None:
+        data = dataclasses.replace(data, assets=dataclasses.replace(data.assets, asset_id=asset_id))
+    config = dataclasses.replace(config, data=data)
     data_config = config.data.create(config.assets_dirs, config.model)
 
     if data_config.rlds_data_dir is not None:
@@ -103,7 +110,7 @@ def main(config_name: str, max_frames: int | None = None, repo_id: str | None = 
 
     norm_stats = {key: stats.get_statistics() for key, stats in stats.items()}
 
-    output_path = config.assets_dirs / data_config.repo_id
+    output_path = config.assets_dirs / data_config.asset_id
     print(f"Writing stats to: {output_path}")
     normalize.save(output_path, norm_stats)
 

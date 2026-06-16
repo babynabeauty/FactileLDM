@@ -2,6 +2,7 @@ from collections.abc import Iterator, Sequence
 import logging
 import multiprocessing
 import os
+import pathlib
 import typing
 from typing import Literal, Protocol, SupportsIndex, TypeVar
 
@@ -207,6 +208,10 @@ def create_torch_dataset(
     if repo_id == "fake":
         return FakeDataset(model_config, num_samples=1024)
 
+    local_repo = pathlib.Path(repo_id).expanduser()
+    if (local_repo / "meta" / "info.json").exists():
+        repo_id = str(local_repo)
+
     dataset_meta = lerobot_dataset.LeRobotDatasetMetadata(repo_id)
 
     delta_timestamps = {
@@ -242,7 +247,7 @@ def create_torch_dataset(
         ]
 
     dataset = lerobot_dataset.LeRobotDataset(
-        data_config.repo_id,
+        repo_id,
         delta_timestamps=delta_timestamps
     )
 
