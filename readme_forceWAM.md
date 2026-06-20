@@ -1,37 +1,26 @@
-训练 ForceWAM 模型
-本机环境
-代码路径：`/data/workspace/zhangshiqi/forceWAM`
-已配置的 Python：`3.11.13`
-已配置的 uv 环境：`/data/workspace/zhangshiqi/forceWAM/env/.venv`
-
 每次运行前先进入项目目录并设置环境变量：
 ```bash
-cd /data/workspace/zhangshiqi/forceWAM
-export UV_PROJECT_ENVIRONMENT=/data/workspace/zhangshiqi/forceWAM/env/.venv
-export UV_CACHE_DIR=/data/workspace/zhangshiqi/forceWAM/.uv-cache
-export UV_PYTHON_INSTALL_DIR=/data/workspace/zhangshiqi/forceWAM/.uv-python
+cd FactileLDM
+source env/.venv/bin/activate
+export HF_LEROBOT_HOME=/workspace/mnt/sqzhang26/FactileLDM
+export HF_HUB_OFFLINE=1
 ```
 
-环境已经按 Python 3.11 安装完成，包含 base openpi 依赖、`rlds` 依赖组、`lerobot`、`dlimp`、`tensorflow==2.15.0`、`torch==2.7.1` 和 `jax==0.5.3`。
-
-验证命令：
-```bash
-env/.venv/bin/python -c "import openpi, lerobot, dlimp, tensorflow, torch, jax; print('ok')"
-uv run --no-sync scripts/train.py --help
-```
-
-注意：本机当前 `nvidia-smi` 无法连接 NVIDIA driver，因此环境能导入，但训练需要在 NVIDIA driver/GPU 可见的节点上运行。
+# 合并数据集
+python scripts/merge_lerobot_v21_datasets.py \
+  --sources \
+    /workspace/mnt/sqzhang26/FactileLDM/data/47ep \
+    /workspace/mnt/sqzhang26/FactileLDM/data/grasp_pipette_and_press_button_0616_59ep \
+  --output /workspace/mnt/sqzhang26/FactileLDM/data/grasp_pipette_and_press_button_106ep \
+  --overwrite
 
 
 # 计算光流图像
 
-export HF_LEROBOT_HOME=/workspace/mnt/sqzhang26/FactileLDM/data
-export HF_HUB_OFFLINE=1
-
 ```bash
     CUDA_VISIBLE_DEVICES=0 \
 env/.venv/bin/python scripts/compute_lerobot_future_flow_video.py \
-  --repo-id grasp_pipette_and_press_button_0616_59ep_flow \
+  --repo-id data/grasp_pipette_and_press_button_0616_59ep_flow \
   --output-dir ./flow_videos \
   --future-step 32 \
   --overwrite
@@ -42,9 +31,9 @@ env/.venv/bin/python scripts/compute_lerobot_future_flow_video.py \
   --repo-id /data/workspace/zhangshiqi/forceWAM/grasp_pipette_and_press_button_26ep \
   --output-dir /data/workspace/zhangshiqi/forceWAM/flow_videos \
   --future-step 32 \
-  > /data/workspace/zhangshiqi/forceWAM/flow_videos/compute_future_flow.log 2>&1 &
+  > flow_videos/compute_future_flow.log 2>&1 &
 
-将光流视频添加到 LeRobot 数据集
+# 将光流视频添加到 LeRobot 数据集
 ```bash
   env/.venv/bin/python scripts/add_flow_videos_to_lerobot.py \
   --repo-id grasp_pipette_and_press_0614_7ep \
@@ -53,7 +42,6 @@ env/.venv/bin/python scripts/compute_lerobot_future_flow_video.py \
     cam_front=observation.future_flow.cam_front \
     cam_right=observation.future_flow.cam_right \
   --overwrite
-
 
 
 # 计算3D偏移点
@@ -80,7 +68,6 @@ for EP in $(seq 0 48); do
     --skip-ply \
     --output-dir "$OUT"
 done 2>&1 | tee "$OUT/batch.log"
-
 
 
 # 归一化

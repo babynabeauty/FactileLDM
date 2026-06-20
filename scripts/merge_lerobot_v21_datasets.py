@@ -1,5 +1,16 @@
 #!/usr/bin/env python3
-"""Merge local LeRobot v2.1 datasets without re-encoding videos."""
+"""
+
+
+python scripts/merge_lerobot_v21_datasets.py \
+  --sources \
+    /workspace/mnt/sqzhang26/FactileLDM/data/47ep \
+    /workspace/mnt/sqzhang26/FactileLDM/data/grasp_pipette_and_press_button_0616_59ep \
+  --output /workspace/mnt/sqzhang26/FactileLDM/data/grasp_pipette_and_press_button_106ep \
+  --overwrite
+
+
+"""
 
 from __future__ import annotations
 
