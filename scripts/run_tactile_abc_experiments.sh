@@ -1,27 +1,6 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-# Run the tactile A/B/C/D comparison on an 8-GPU machine.
-#
-# Usage from the FactileLDM repo root:
-#
-#   setsid nohup env \
-#     TRAIN_STEPS=20000 \
-#     GLOBAL_BATCH_SIZE=4 \
-#     NUM_WORKERS=0 \
-#     RUN_TAG=106ep_20k_0620 \
-#     bash scripts/run_tactile_abc_experiments.sh \
-#       data/grasp_pipette_and_press_button_106ep \
-#     > logs/abcd_scheduler_106ep_20k_0620.log 2>&1 &
-#
-# Stage 1 computes normalization stats for all four configs.
-# Stage 2 runs A+B in parallel:
-#   A: GPUs 0,1,2,3
-#   B: GPUs 4,5,6,7
-# Stage 3 runs C+D in parallel after both A and B finish:
-#   C: GPUs 0,1,2,3
-#   D: GPUs 4,5,6,7
-
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 DATA_REPO="${1:-data/grasp_pipette_and_press_button_106ep}"
