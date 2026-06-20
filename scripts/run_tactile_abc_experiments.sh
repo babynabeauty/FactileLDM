@@ -1,28 +1,38 @@
 #!/usr/bin/env bash
-"""
-
-setsid nohup env \
-  TRAIN_STEPS=5000 \
-  GLOBAL_BATCH_SIZE=4 \
-  NUM_WORKERS=0 \
-  RUN_TAG=59ep_5k_0616 \
-  bash scripts/run_tactile_abc_experiments.sh \
-    grasp_pipette_and_press_button_0616_59ep \
-  > logs/abc_scheduler_59ep_5k_0616.log 2>&1 &
-
-echo "Scheduler PID=$!"
-
-"""
 set -Eeuo pipefail
+
+# Run the tactile A/B/C/D comparison on an 8-GPU machine.
+#
+# Usage from the FactileLDM repo root:
+#
+#   setsid nohup env \
+#     TRAIN_STEPS=20000 \
+#     GLOBAL_BATCH_SIZE=4 \
+#     NUM_WORKERS=0 \
+#     RUN_TAG=106ep_20k_0620 \
+#     bash scripts/run_tactile_abc_experiments.sh \
+#       data/grasp_pipette_and_press_button_106ep \
+#     > logs/abcd_scheduler_106ep_20k_0620.log 2>&1 &
+#
+# Stage 1 computes normalization stats for all four configs.
+# Stage 2 runs A+B in parallel:
+#   A: GPUs 0,1,2,3
+#   B: GPUs 4,5,6,7
+# Stage 3 runs C+D in parallel after both A and B finish:
+#   C: GPUs 0,1,2,3
+#   D: GPUs 4,5,6,7
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
-DATA_REPO="${1:-data/grasp_pipette_and_press_button_0616_59ep}"
-TRAIN_STEPS="${TRAIN_STEPS:-5000}"
+DATA_REPO="${1:-data/grasp_pipette_and_press_button_106ep}"
+DATA_ASSET_ID="${DATA_ASSET_ID:-$(basename "$DATA_REPO")}"
+TRAIN_STEPS="${TRAIN_STEPS:-20000}"
 GLOBAL_BATCH_SIZE="${GLOBAL_BATCH_SIZE:-4}"
+FSDP_DEVICES="${FSDP_DEVICES:-4}"
 NUM_WORKERS="${NUM_WORKERS:-0}"
-SAVE_INTERVAL="${SAVE_INTERVAL:-1000}"
-RUN_TAG="${RUN_TAG:-60ep_5k_$(date +%m%d_%H%M)}"
+SAVE_INTERVAL="${SAVE_INTERVAL:-5000}"
+KEEP_PERIOD="${KEEP_PERIOD:-5000}"
+RUN_TAG="${RUN_TAG:-106ep_20k_$(date +%m%d_%H%M)}"
 
 PYTHON="${PYTHON:-env/.venv/bin/python}"
 WEIGHT_PATH="${WEIGHT_PATH:-checkpoints/pi0_base/params}"
@@ -34,117 +44,34 @@ export XLA_PYTHON_CLIENT_PREALLOCATE=false
 
 mkdir -p logs "$HF_DATASETS_CACHE" "$HF_HOME"
 
+if [[ ! -f "$DATA_REPO/meta/info.json" ]]; then
+  cat >&2 <<EOF
+ERROR: Local LeRobot dataset not found: $DATA_REPO
+Expected file: $DATA_REPO/meta/info.json
+
+Pass an existing dataset path relative to FactileLDM, for example:
+  bash scripts/run_tactile_abc_experiments.sh data/grasp_pipette_and_press_button_106ep
+
+This script intentionally refuses missing paths to avoid falling back to Hugging Face.
+EOF
+  exit 2
+fi
+
 CONFIG_A="pi0_xhand_full_finetune"
 CONFIG_B="pi0_xhand_tactile_obs_ae_full_finetune"
 CONFIG_C="pi0_xhand_tactile_structured_single_ae"
+CONFIG_D="pi0_xhand_tactile_structured_dual_ae"
 
 EXP_A="A_no_tactile_${RUN_TAG}"
 EXP_B="B_current_tactile_${RUN_TAG}"
 EXP_C="C_structured_single_ae_${RUN_TAG}"
+EXP_D="D_structured_dual_ae_${RUN_TAG}"
 
 declare -A JOB_NAME
 declare -A JOB_GPU
 
 log() {
   printf '[%s] %s\n' "$(date '+%F %T')" "$*"
-}
-
-compute_norm_stats() {
-  local config="$1"
-  local gpu_id="$2"
-  local log_file="logs/norm_${config}_${RUN_TAG}.log"
-
-  log "Computing normalization stats: ${config} on GPU ${gpu_id}"
-  CUDA_VISIBLE_DEVICES="$gpu_id" \
-    "$PYTHON" scripts/compute_norm_stats.py \
-      --config-name "$config" \
-      --repo-id "$DATA_REPO" \
-    > "$log_file" 2>&1
-}
-
-launch_norm_stats() {
-  local config="$1"
-  local gpu_id="$2"
-
-  compute_norm_stats "$config" "$gpu_id" &
-  local pid=$!
-  JOB_NAME["$pid"]="norm_${config}"
-  log "Normalization stats started: config=${config}, GPU=${gpu_id}, PID=${pid}, log=logs/norm_${config}_${RUN_TAG}.log"
-  LAUNCHED_PID="$pid"
-}
-
-wait_for_norm_stats() {
-  local status=0
-  local pid
-
-  for pid in "$@"; do
-    if wait_and_report "$pid"; then
-      :
-    else
-      status=$?
-    fi
-  done
-
-  if (( status != 0 )); then
-    log "One or more normalization jobs failed. Training will not start."
-    exit "$status"
-  fi
-
-  log "All normalization stats completed successfully."
-}
-
-launch_train() {
-  local label="$1"
-  local config="$2"
-  local exp_name="$3"
-  local gpu_ids="$4"
-  local log_file="logs/${exp_name}.log"
-
-  log "Starting ${label}: config=${config}, GPUs=${gpu_ids}, global_batch=${GLOBAL_BATCH_SIZE}"
-  setsid nohup env \
-    HF_LEROBOT_HOME="$HF_LEROBOT_HOME" \
-    HF_DATASETS_CACHE="$HF_DATASETS_CACHE" \
-    HF_HOME="$HF_HOME" \
-    CUDA_VISIBLE_DEVICES="$gpu_ids" \
-    XLA_PYTHON_CLIENT_PREALLOCATE=false \
-    "$PYTHON" scripts/train.py "$config" \
-      --exp-name "$exp_name" \
-      --data.repo-id "$DATA_REPO" \
-      --num-train-steps "$TRAIN_STEPS" \
-      --batch-size "$GLOBAL_BATCH_SIZE" \
-      --fsdp-devices 4 \
-      --num-workers "$NUM_WORKERS" \
-      --save-interval "$SAVE_INTERVAL" \
-      --keep-period "$SAVE_INTERVAL" \
-      --no-wandb-enabled \
-      --overwrite \
-      --weight-loader.params-path "$WEIGHT_PATH" \
-    > "$log_file" 2>&1 &
-
-  local pid=$!
-  JOB_NAME["$pid"]="$label"
-  JOB_GPU["$pid"]="$gpu_ids"
-  log "${label} started: PID=${pid}, log=${log_file}"
-  LAUNCHED_PID="$pid"
-}
-
-wait_for_first() {
-  local pid_a="$1"
-  local pid_b="$2"
-
-  while true; do
-    if ! kill -0 "$pid_a" 2>/dev/null; then
-      FIRST_PID="$pid_a"
-      OTHER_PID="$pid_b"
-      return
-    fi
-    if ! kill -0 "$pid_b" 2>/dev/null; then
-      FIRST_PID="$pid_b"
-      OTHER_PID="$pid_a"
-      return
-    fi
-    sleep 30
-  done
 }
 
 wait_and_report() {
@@ -166,45 +93,114 @@ wait_and_report() {
   return "$status"
 }
 
-log "Dataset: ${DATA_REPO}"
-log "Stage 1/2: normalization A/B/C in parallel on GPUs 1/2/3"
-launch_norm_stats "$CONFIG_A" "1"
+wait_all_or_exit() {
+  local status=0
+  local pid
+
+  for pid in "$@"; do
+    wait_and_report "$pid" || status=$?
+  done
+
+  if (( status != 0 )); then
+    log "One or more jobs failed. Check logs/."
+    exit "$status"
+  fi
+}
+
+compute_norm_stats() {
+  local config="$1"
+  local gpu_id="$2"
+  local log_file="logs/norm_${config}_${RUN_TAG}.log"
+
+  log "Computing normalization stats: config=${config}, GPU=${gpu_id}, asset=${DATA_ASSET_ID}"
+  CUDA_VISIBLE_DEVICES="$gpu_id" \
+    "$PYTHON" scripts/compute_norm_stats.py \
+      --config-name "$config" \
+      --repo-id "$DATA_REPO" \
+      --asset-id "$DATA_ASSET_ID" \
+    > "$log_file" 2>&1
+}
+
+launch_norm_stats() {
+  local config="$1"
+  local gpu_id="$2"
+
+  compute_norm_stats "$config" "$gpu_id" &
+  local pid=$!
+  JOB_NAME["$pid"]="norm_${config}"
+  JOB_GPU["$pid"]="$gpu_id"
+  log "Normalization started: config=${config}, GPU=${gpu_id}, PID=${pid}, log=logs/norm_${config}_${RUN_TAG}.log"
+  LAUNCHED_PID="$pid"
+}
+
+launch_train() {
+  local label="$1"
+  local config="$2"
+  local exp_name="$3"
+  local gpu_ids="$4"
+  local log_file="logs/${exp_name}.log"
+
+  log "Starting ${label}: config=${config}, GPUs=${gpu_ids}, batch=${GLOBAL_BATCH_SIZE}, steps=${TRAIN_STEPS}"
+  setsid nohup env \
+    HF_LEROBOT_HOME="$HF_LEROBOT_HOME" \
+    HF_DATASETS_CACHE="$HF_DATASETS_CACHE" \
+    HF_HOME="$HF_HOME" \
+    CUDA_VISIBLE_DEVICES="$gpu_ids" \
+    XLA_PYTHON_CLIENT_PREALLOCATE=false \
+    "$PYTHON" scripts/train.py "$config" \
+      --exp-name "$exp_name" \
+      --data.repo-id "$DATA_REPO" \
+      --data.assets.asset-id "$DATA_ASSET_ID" \
+      --num-train-steps "$TRAIN_STEPS" \
+      --batch-size "$GLOBAL_BATCH_SIZE" \
+      --fsdp-devices "$FSDP_DEVICES" \
+      --num-workers "$NUM_WORKERS" \
+      --save-interval "$SAVE_INTERVAL" \
+      --keep-period "$KEEP_PERIOD" \
+      --no-wandb-enabled \
+      --overwrite \
+      --weight-loader.params-path "$WEIGHT_PATH" \
+    > "$log_file" 2>&1 &
+
+  local pid=$!
+  JOB_NAME["$pid"]="$label"
+  JOB_GPU["$pid"]="$gpu_ids"
+  log "${label} started: PID=${pid}, GPUs=${gpu_ids}, log=${log_file}"
+  LAUNCHED_PID="$pid"
+}
+
+log "Dataset repo: ${DATA_REPO}"
+log "Asset id: ${DATA_ASSET_ID}"
+log "Python: ${PYTHON}"
+log "Weight path: ${WEIGHT_PATH}"
+log "Train steps: ${TRAIN_STEPS}, batch: ${GLOBAL_BATCH_SIZE}, fsdp devices: ${FSDP_DEVICES}"
+log "Save interval: ${SAVE_INTERVAL}, keep period: ${KEEP_PERIOD}, run tag: ${RUN_TAG}"
+
+log "Stage 1/3: normalization A/B/C/D in parallel on GPUs 0/1/2/3"
+launch_norm_stats "$CONFIG_A" "0"
 PID_NORM_A="$LAUNCHED_PID"
-
-launch_norm_stats "$CONFIG_B" "2"
+launch_norm_stats "$CONFIG_B" "1"
 PID_NORM_B="$LAUNCHED_PID"
-
-launch_norm_stats "$CONFIG_C" "3"
+launch_norm_stats "$CONFIG_C" "2"
 PID_NORM_C="$LAUNCHED_PID"
+launch_norm_stats "$CONFIG_D" "3"
+PID_NORM_D="$LAUNCHED_PID"
+wait_all_or_exit "$PID_NORM_A" "$PID_NORM_B" "$PID_NORM_C" "$PID_NORM_D"
+log "All normalization stats completed successfully."
 
-wait_for_norm_stats "$PID_NORM_A" "$PID_NORM_B" "$PID_NORM_C"
-
-log "Stage 2/2: launch A on GPUs 0-3 and B on GPUs 4-7"
+log "Stage 2/3: launch A on GPUs 0-3 and B on GPUs 4-7"
 launch_train "A" "$CONFIG_A" "$EXP_A" "0,1,2,3"
 PID_A="$LAUNCHED_PID"
 launch_train "B" "$CONFIG_B" "$EXP_B" "4,5,6,7"
 PID_B="$LAUNCHED_PID"
+wait_all_or_exit "$PID_A" "$PID_B"
+log "A and B completed successfully."
 
-wait_for_first "$PID_A" "$PID_B"
-FIRST_GPU="${JOB_GPU[$FIRST_PID]}"
-
-if ! wait_and_report "$FIRST_PID"; then
-  log "A/B first completed job failed; C will not start."
-  wait_and_report "$OTHER_PID" || true
-  exit 1
-fi
-
-log "${JOB_NAME[$FIRST_PID]} released GPUs ${FIRST_GPU}; starting C on those GPUs."
-launch_train "C" "$CONFIG_C" "$EXP_C" "$FIRST_GPU"
+log "Stage 3/3: launch C on GPUs 0-3 and D on GPUs 4-7"
+launch_train "C" "$CONFIG_C" "$EXP_C" "0,1,2,3"
 PID_C="$LAUNCHED_PID"
+launch_train "D" "$CONFIG_D" "$EXP_D" "4,5,6,7"
+PID_D="$LAUNCHED_PID"
+wait_all_or_exit "$PID_C" "$PID_D"
 
-remaining_status=0
-wait_and_report "$OTHER_PID" || remaining_status=$?
-wait_and_report "$PID_C" || remaining_status=$?
-
-if (( remaining_status != 0 )); then
-  log "One or more experiments failed. Check logs/."
-  exit "$remaining_status"
-fi
-
-log "All A/B/C experiments completed successfully."
+log "All A/B/C/D experiments completed successfully."
