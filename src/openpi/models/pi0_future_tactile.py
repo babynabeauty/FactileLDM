@@ -9,6 +9,7 @@ from openpi.models.pi0 import Pi0
 from openpi.models.pi0 import make_attn_mask
 from openpi.models.pi0 import posemb_sincos
 from openpi.models.tactile_tokenizer import DexterousForceTokenizer
+from openpi.models.tactile_tokenizer import FingerRoleFutureTactileQFormer
 
 
 class Pi0FutureTactile(Pi0):
@@ -29,6 +30,10 @@ class Pi0FutureTactile(Pi0):
         self.latent_loss_weight = float(config.future_tactile_latent_loss_weight)
         self.force_loss_weight = float(config.future_force_loss_weight)
         self.delta_loss_weight = float(config.future_force_delta_loss_weight)
+        self.future_encoder_type = config.future_tactile_encoder_type
+        self.future_hand_action_loss_weight = float(config.future_hand_action_loss_weight)
+        self.hand_action_start = int(config.hand_action_start)
+        self.hand_action_dim = int(config.hand_action_dim)
         self.history_times = tuple(
             float(offset) / float(config.tactile_sample_hz) for offset in config.tactile_history_offsets
         )
@@ -45,16 +50,33 @@ class Pi0FutureTactile(Pi0):
             future_steps_per_segment=self.steps_per_segment,
             rngs=rngs,
         )
-        self.target_force_tokenizer = DexterousForceTokenizer(
-            output_dim=action_width,
-            hidden_dim=config.tactile_tokenizer_dim,
-            num_fingers=self.num_fingers,
-            dim_per_finger=self.dim_per_finger,
-            future_segments=self.future_segments,
-            future_steps_per_segment=self.steps_per_segment,
-            rngs=rngs,
-        )
-        nnx.update(self.target_force_tokenizer, nnx.state(self.force_tokenizer, nnx.Param))
+        if self.future_encoder_type == "dexterous":
+            self.target_force_tokenizer = DexterousForceTokenizer(
+                output_dim=action_width,
+                hidden_dim=config.tactile_tokenizer_dim,
+                num_fingers=self.num_fingers,
+                dim_per_finger=self.dim_per_finger,
+                future_segments=self.future_segments,
+                future_steps_per_segment=self.steps_per_segment,
+                rngs=rngs,
+            )
+            nnx.update(self.target_force_tokenizer, nnx.state(self.force_tokenizer, nnx.Param))
+            self.use_target_ema = True
+        elif self.future_encoder_type == "finger_role":
+            self.target_force_tokenizer = FingerRoleFutureTactileQFormer(
+                output_dim=action_width,
+                hidden_dim=config.tactile_tokenizer_dim,
+                num_fingers=self.num_fingers,
+                dim_per_finger=self.dim_per_finger,
+                future_segments=self.future_segments,
+                future_steps_per_segment=self.steps_per_segment,
+                num_layers=config.future_tactile_encoder_depth,
+                num_heads=config.future_tactile_encoder_num_heads,
+                rngs=rngs,
+            )
+            self.use_target_ema = False
+        else:
+            raise ValueError(f"Unsupported future_tactile_encoder_type={self.future_encoder_type!r}.")
         self.future_query_base = nnx.Param(
             0.02 * jax.random.normal(rngs.params(), (action_width,), dtype=jnp.float32)
         )
@@ -68,9 +90,15 @@ class Pi0FutureTactile(Pi0):
         self.future_force_decoder = nnx.Linear(
             action_width, self.steps_per_segment * self.dim_per_finger, rngs=rngs
         )
+        if self.future_hand_action_loss_weight > 0.0:
+            self.future_hand_condition_norm = nnx.LayerNorm(num_features=action_width, rngs=rngs)
+            self.future_hand_head_in = nnx.Linear(action_width, action_width, rngs=rngs)
+            self.future_hand_head_out = nnx.Linear(action_width, self.hand_action_dim, rngs=rngs)
         self.uses_train_progress = True
 
     def update_target_encoder(self, train_progress) -> None:
+        if not self.use_target_ema:
+            return
         decay = 0.996 + 0.003 * jnp.clip(jnp.asarray(train_progress, dtype=jnp.float32), 0.0, 1.0)
         online_state = nnx.state(self.force_tokenizer, nnx.Param)
         target_state = nnx.state(self.target_force_tokenizer, nnx.Param)
@@ -162,6 +190,29 @@ class Pi0FutureTactile(Pi0):
         )
         return einops.rearrange(force, "b s p f c -> b (s p) f c")
 
+    def _predict_future_hand_action(
+        self,
+        c_future: jax.Array,
+        observation: _model.Observation,
+        history_effort: jax.Array,
+    ) -> jax.Array:
+        history_tokens = self.force_tokenizer.encode_history(
+            history_effort, jnp.asarray(self.history_times, dtype=jnp.float32)
+        )
+        condition = self.future_hand_condition_norm(
+            self.state_proj(observation.state) + jnp.mean(history_tokens, axis=1)
+        )
+        segment_tokens = einops.rearrange(
+            c_future,
+            "b (s f) d -> b s f d",
+            s=self.future_segments,
+            f=self.num_fingers,
+        )
+        segment_tokens = jnp.mean(segment_tokens, axis=2) + condition[:, None, :]
+        step_tokens = jnp.repeat(segment_tokens, repeats=self.steps_per_segment, axis=1)
+        hidden = nnx.swish(self.future_hand_head_in(step_tokens))
+        return self.future_hand_head_out(hidden)
+
     @staticmethod
     def _smooth_l1(prediction: jax.Array, target: jax.Array) -> jax.Array:
         error = jnp.abs(prediction.astype(jnp.float32) - target.astype(jnp.float32))
@@ -210,11 +261,10 @@ class Pi0FutureTactile(Pi0):
         query_hidden = selected_suffix[:, query_slice]
         final_query_hidden = suffix_out[:, query_slice]
 
-        target_tokens = jax.lax.stop_gradient(
-            self.target_force_tokenizer.encode_future(
-                future_effort, jnp.asarray(self.future_times, dtype=jnp.float32)
-            )
+        c_future = self.target_force_tokenizer.encode_future(
+            future_effort, jnp.asarray(self.future_times, dtype=jnp.float32)
         )
+        target_tokens = jax.lax.stop_gradient(c_future)
         latent_loss = self._cosine_distance(query_hidden, target_tokens)
         predicted_force = self._decode_future_force(final_query_hidden)
         force_loss = self._smooth_l1(predicted_force, future_effort)
@@ -224,15 +274,29 @@ class Pi0FutureTactile(Pi0):
         )
         velocity = self.action_out_proj(suffix_out[:, -self.action_horizon :])
         action_loss = jnp.mean(jnp.square(velocity - u_t), axis=(-2, -1))
+        arm_action_loss = jnp.mean(jnp.square(velocity[:, :, : self.hand_action_start] - u_t[:, :, : self.hand_action_start]), axis=(-2, -1))
+        hand_action_slice = slice(self.hand_action_start, self.hand_action_start + self.hand_action_dim)
+        hand_action_loss = jnp.mean(jnp.square(velocity[:, :, hand_action_slice] - u_t[:, :, hand_action_slice]), axis=(-2, -1))
+
+        future_hand_loss = jnp.zeros_like(action_loss)
+        if self.future_hand_action_loss_weight > 0.0:
+            predicted_hand_action = self._predict_future_hand_action(c_future, observation, history_effort)
+            target_hand_action = actions[:, :, hand_action_slice]
+            future_hand_loss = self._smooth_l1(predicted_hand_action, target_hand_action)
+
         total = (
             action_loss
             + self.latent_loss_weight * latent_loss
             + self.force_loss_weight * force_loss
             + self.delta_loss_weight * delta_loss
+            + self.future_hand_action_loss_weight * future_hand_loss
         )
         return total, {
             "loss/action": action_loss,
+            "loss/action_arm": arm_action_loss,
+            "loss/action_hand": hand_action_loss,
             "loss/future_tactile_latent": latent_loss,
+            "loss/future_hand_action": future_hand_loss,
             "loss/future_force": force_loss,
             "loss/future_force_delta": delta_loss,
             "loss/total": total,

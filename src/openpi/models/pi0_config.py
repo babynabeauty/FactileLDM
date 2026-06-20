@@ -348,6 +348,12 @@ class Pi0FutureTactileConfig(Pi0Config):
     future_tactile_latent_loss_weight: float = 0.1
     future_force_loss_weight: float = 0.2
     future_force_delta_loss_weight: float = 0.05
+    future_tactile_encoder_type: Literal["dexterous", "finger_role"] = "dexterous"
+    future_tactile_encoder_depth: int = 2
+    future_tactile_encoder_num_heads: int = 8
+    future_hand_action_loss_weight: float = 0.0
+    hand_action_start: int = 6
+    hand_action_dim: int = 12
 
     @override
     def __post_init__(self):
@@ -360,6 +366,10 @@ class Pi0FutureTactileConfig(Pi0Config):
             raise ValueError("Future tactile segments must exactly cover action_horizon.")
         if self.effort_dim != self.tactile_num_fingers * self.tactile_dim_per_finger:
             raise ValueError("Structured tactile currently supports per-finger 3D resultant forces only.")
+        if self.future_tactile_encoder_type not in ("dexterous", "finger_role"):
+            raise ValueError(f"Unsupported future_tactile_encoder_type={self.future_tactile_encoder_type!r}.")
+        if self.hand_action_start + self.hand_action_dim > self.action_dim:
+            raise ValueError("Hand action slice exceeds action_dim.")
 
     @override
     def create(self, rng: at.KeyArrayLike):
@@ -376,6 +386,78 @@ class Pi0FutureTactileConfig(Pi0Config):
                 images={key: image_spec for key in _model.IMAGE_KEYS},
                 image_masks={key: image_mask_spec for key in _model.IMAGE_KEYS},
                 state=jax.ShapeDtypeStruct([batch_size, self.action_dim], jnp.float32),
+                effort=jax.ShapeDtypeStruct(
+                    [
+                        batch_size,
+                        self.force_input_frames + self.action_horizon,
+                        self.tactile_num_fingers,
+                        self.tactile_dim_per_finger,
+                    ],
+                    jnp.float32,
+                ),
+                tokenized_prompt=jax.ShapeDtypeStruct([batch_size, self.max_token_len], jnp.int32),
+                tokenized_prompt_mask=jax.ShapeDtypeStruct([batch_size, self.max_token_len], bool),
+            )
+        return observation_spec, jax.ShapeDtypeStruct(
+            [batch_size, self.action_horizon, self.action_dim], jnp.float32
+        )
+
+
+@dataclasses.dataclass(frozen=True)
+class FutureTactileEncoderPretrainConfig(_model.BaseModelConfig):
+    """Stage-1 action-aware future tactile encoder pretraining."""
+
+    action_horizon: int = 32
+    action_dim: int = 32
+    max_token_len: int = 48
+    effort_type: str | None = EffortType.MOT
+    state_dim: int = 18
+    tactile_num_fingers: int = 5
+    tactile_dim_per_finger: int = 3
+    effort_dim: int | None = 15
+    force_input_frames: int = 10
+    tactile_history_offsets: tuple[int, ...] = (-18, -16, -14, -12, -10, -8, -6, -4, -2, 0)
+    future_tactile_segments: int = 8
+    future_steps_per_segment: int = 4
+    tactile_sample_hz: float = 15.0
+    tactile_tokenizer_dim: int = 256
+    encoder_width: int = 512
+    encoder_depth: int = 2
+    encoder_num_heads: int = 8
+    hand_action_start: int = 6
+    hand_action_dim: int = 12
+    hand_delta_loss_weight: float = 0.05
+
+    @property
+    @override
+    def model_type(self) -> _model.ModelType:
+        return _model.ModelType.PI0
+
+    def __post_init__(self):
+        if len(self.tactile_history_offsets) != self.force_input_frames:
+            raise ValueError("tactile_history_offsets length must equal force_input_frames.")
+        if self.future_tactile_segments * self.future_steps_per_segment != self.action_horizon:
+            raise ValueError("Future tactile segments must exactly cover action_horizon.")
+        if self.effort_dim != self.tactile_num_fingers * self.tactile_dim_per_finger:
+            raise ValueError("Stage-1 currently supports per-finger 3D resultant forces only.")
+        if self.hand_action_start + self.hand_action_dim > self.action_dim:
+            raise ValueError("Hand action slice exceeds action_dim.")
+
+    @override
+    def create(self, rng: at.KeyArrayLike):
+        from openpi.models.future_tactile_pretrain import FutureTactileEncoderPretrain
+
+        return FutureTactileEncoderPretrain(self, rngs=nnx.Rngs(rng))
+
+    @override
+    def inputs_spec(self, *, batch_size: int = 1):
+        image_spec = jax.ShapeDtypeStruct([batch_size, *_model.IMAGE_RESOLUTION, 3], jnp.float32)
+        image_mask_spec = jax.ShapeDtypeStruct([batch_size], jnp.bool_)
+        with at.disable_typechecking():
+            observation_spec = _model_tavla.Observation(
+                images={key: image_spec for key in _model.IMAGE_KEYS},
+                image_masks={key: image_mask_spec for key in _model.IMAGE_KEYS},
+                state=jax.ShapeDtypeStruct([batch_size, self.state_dim], jnp.float32),
                 effort=jax.ShapeDtypeStruct(
                     [
                         batch_size,

@@ -61,6 +61,60 @@ class CheckpointWeightLoader(WeightLoader):
 
 
 @dataclasses.dataclass(frozen=True)
+class Pi0WithFutureTactileEncoderWeightLoader(WeightLoader):
+    """Loads pi0 base weights plus an optional stage-1 future tactile encoder.
+
+    The stage-1 pretrain checkpoint stores the Q-Former under `future_encoder`.
+    The action-aware policy stores the same module under `target_force_tokenizer`.
+    """
+
+    pi0_params_path: str = "checkpoints/pi0_base/params"
+    encoder_params_path: str | None = None
+
+    def load(self, params: at.Params) -> at.Params:
+        base_params = _model.restore_params(download.maybe_download(self.pi0_params_path), restore_type=np.ndarray)
+        base_params = _augment_with_moe_shared_ffn_weights(base_params, params)
+        base_params = _augment_with_mor_action_expert_weights(base_params, params)
+        merged = _merge_params(
+            base_params,
+            params,
+            missing_regex=r".*",
+        )
+
+        if self.encoder_params_path is None:
+            return merged
+
+        encoder_checkpoint = _model.restore_params(
+            download.maybe_download(self.encoder_params_path), restore_type=np.ndarray
+        )
+        flat_ref = flax.traverse_util.flatten_dict(params, sep="/")
+        flat_merged = flax.traverse_util.flatten_dict(merged, sep="/")
+        flat_encoder = flax.traverse_util.flatten_dict(encoder_checkpoint, sep="/")
+
+        copied = 0
+        for key, value in flat_encoder.items():
+            if not key.startswith("future_encoder/"):
+                continue
+            mapped_key = "target_force_tokenizer/" + key.removeprefix("future_encoder/")
+            if mapped_key not in flat_ref:
+                continue
+            if hasattr(value, "shape") and hasattr(flat_ref[mapped_key], "shape") and value.shape != flat_ref[mapped_key].shape:
+                logger.warning(
+                    "Skipping future tactile encoder param %s -> %s due to shape mismatch: %s vs %s",
+                    key,
+                    mapped_key,
+                    value.shape,
+                    flat_ref[mapped_key].shape,
+                )
+                continue
+            flat_merged[mapped_key] = value.astype(flat_ref[mapped_key].dtype)
+            copied += 1
+
+        logger.info("Loaded %d future tactile encoder tensors from %s.", copied, self.encoder_params_path)
+        return flax.traverse_util.unflatten_dict(flat_merged, sep="/")
+
+
+@dataclasses.dataclass(frozen=True)
 class PaliGemmaWeightLoader(WeightLoader):
     """Loads weights from the official PaliGemma checkpoint.
 
