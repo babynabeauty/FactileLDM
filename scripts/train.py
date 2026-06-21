@@ -425,7 +425,10 @@ def main(config: _config.TrainConfig):
                     return str(v)
 
             info_str = ", ".join(f"{k}={_fmt_val(v)}" for k, v in reduced_info.items())
-            pbar.write(f"Step {step}: {info_str}")
+            logging.info("Step %d: %s", step, info_str)
+            display_loss = reduced_info.get("loss/total", reduced_info.get("loss"))
+            if display_loss is not None:
+                pbar.set_postfix(loss=_fmt_val(display_loss))
             wandb.log(reduced_info, step=step)
             infos = []
         batch = next(data_iter)
