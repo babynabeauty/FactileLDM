@@ -91,7 +91,14 @@ def init_wandb(config: _config.TrainConfig, *, resuming: bool, log_code: bool = 
 def _load_weights_and_validate(loader, params_shape):
     """Loads weights, ignores mismatched keys, and filters out ShapeDtypeStruct.
     Also prints which parameters failed to load and why."""
-    
+
+    # Stage-1 pretraining intentionally starts from random initialization. A
+    # NoOp loader returns the shape tree unchanged, so there are no concrete
+    # checkpoint arrays to merge into the initialized model.
+    if isinstance(loader, _weight_loaders.NoOpWeightLoader):
+        print(f"\n[INFO] No checkpoint loader configured; randomly initializing {len(traverse_util.flatten_dict(params_shape))} parameters.")
+        return {}
+
     loaded_params = loader.load(params_shape)
 
     # Flatten both trees
@@ -131,7 +138,7 @@ def _load_weights_and_validate(loader, params_shape):
     if failed_keys:
         print("[WARN] The following parameters were not loaded:")
         for k, reason in failed_keys:
-            print("   -", "/".join(k), f"→ {reason}")
+            print("   -", "/".join(map(str, k)), f"→ {reason}")
 
     return traverse_util.unflatten_dict(filtered)
 

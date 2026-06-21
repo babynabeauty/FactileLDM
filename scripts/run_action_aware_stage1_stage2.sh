@@ -19,7 +19,6 @@ DATA_REPO="${1:-data/grasp_pipette_and_press_button_106ep}"
 DATA_ASSET_ID="${DATA_ASSET_ID:-$(basename "$DATA_REPO")}"
 RUN_TAG="${RUN_TAG:-$(basename "$DATA_REPO")_$(date +%m%d_%H%M)}"
 
-PYTHON="${PYTHON:-env/.venv/bin/python}"
 WEIGHT_PATH="${WEIGHT_PATH:-checkpoints/pi0_base/params}"
 
 GPU_IDS="${GPU_IDS:-0,1,2,3}"
@@ -43,6 +42,51 @@ export HF_HOME="${HF_HOME:-$PWD/.cache/huggingface}"
 export XLA_PYTHON_CLIENT_PREALLOCATE=false
 
 mkdir -p logs "$HF_DATASETS_CACHE" "$HF_HOME"
+
+resolve_python() {
+  if [[ -n "${PYTHON:-}" ]]; then
+    if [[ -x "$PYTHON" ]] && "$PYTHON" -V >/dev/null 2>&1; then
+      printf '%s\n' "$PYTHON"
+      return
+    fi
+    cat >&2 <<EOF
+ERROR: PYTHON is set but is not runnable: $PYTHON
+
+If the virtualenv was copied from another machine, its python symlink may point to
+a missing interpreter. Check with:
+  ls -lah env/.venv/bin/python* .venv/bin/python* 2>/dev/null || true
+  readlink -f env/.venv/bin/python .venv/bin/python 2>/dev/null || true
+EOF
+    exit 4
+  fi
+
+  local candidate
+  for candidate in env/.venv/bin/python .venv/bin/python python3.11 python3; do
+    if command -v "$candidate" >/dev/null 2>&1 && "$candidate" -V >/dev/null 2>&1; then
+      printf '%s\n' "$candidate"
+      return
+    fi
+  done
+
+  cat >&2 <<'EOF'
+ERROR: Could not find a runnable Python interpreter.
+
+Tried:
+  env/.venv/bin/python
+  .venv/bin/python
+  python3.11
+  python3
+
+If env/.venv was copied from another server, recreate it on this machine with:
+  uv sync --frozen
+
+Or pass a known-good interpreter explicitly:
+  PYTHON=/path/to/python bash scripts/run_action_aware_stage1_stage2.sh data/...
+EOF
+  exit 4
+}
+
+PYTHON="$(resolve_python)"
 
 if [[ ! -f "$DATA_REPO/meta/info.json" ]]; then
   cat >&2 <<EOF
@@ -96,6 +140,7 @@ ensure_norm_stats() {
 log "Dataset repo: ${DATA_REPO}"
 log "Asset id: ${DATA_ASSET_ID}"
 log "Run tag: ${RUN_TAG}"
+log "Python: ${PYTHON} ($("$PYTHON" -V 2>&1))"
 log "GPUs: ${GPU_IDS}, batch: ${GLOBAL_BATCH_SIZE}, fsdp devices: ${FSDP_DEVICES}"
 
 # These three configs use the same structured calc-force data transform.
