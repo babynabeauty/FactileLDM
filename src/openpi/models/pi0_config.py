@@ -427,6 +427,7 @@ class FutureTactileEncoderPretrainConfig(_model.BaseModelConfig):
     hand_action_start: int = 6
     hand_action_dim: int = 12
     hand_delta_loss_weight: float = 0.05
+    hand_head_type: Literal["mean_repeat", "finger_flatten_4step"] = "mean_repeat"
 
     @property
     @override
@@ -442,6 +443,8 @@ class FutureTactileEncoderPretrainConfig(_model.BaseModelConfig):
             raise ValueError("Stage-1 currently supports per-finger 3D resultant forces only.")
         if self.hand_action_start + self.hand_action_dim > self.action_dim:
             raise ValueError("Hand action slice exceeds action_dim.")
+        if self.hand_head_type not in ("mean_repeat", "finger_flatten_4step"):
+            raise ValueError(f"Unsupported hand_head_type={self.hand_head_type!r}.")
 
     @override
     def create(self, rng: at.KeyArrayLike):

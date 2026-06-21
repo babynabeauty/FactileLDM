@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 # Sequentially run:
-#   Stage 1: future_tactile_encoder_pretrain
+#   Stage 1: future_tactile_encoder_pretrain_finger_head
 #   Stage 2: pi0_xhand_tactile_action_aware_single_ae
 #
 # Usage from the FactileLDM repo root:
@@ -26,8 +26,10 @@ FSDP_DEVICES="${FSDP_DEVICES:-4}"
 GLOBAL_BATCH_SIZE="${GLOBAL_BATCH_SIZE:-4}"
 NUM_WORKERS="${NUM_WORKERS:-0}"
 
-STAGE1_STEPS="${STAGE1_STEPS:-10000}"
-STAGE1_SAVE_INTERVAL="${STAGE1_SAVE_INTERVAL:-1000}"
+STAGE1_CONFIG="${STAGE1_CONFIG:-future_tactile_encoder_pretrain_finger_head}"
+SKIP_STAGE1="${SKIP_STAGE1:-0}"
+STAGE1_STEPS="${STAGE1_STEPS:-30000}"
+STAGE1_SAVE_INTERVAL="${STAGE1_SAVE_INTERVAL:-5000}"
 STAGE1_KEEP_PERIOD="${STAGE1_KEEP_PERIOD:-5000}"
 STAGE1_EXP_NAME="${STAGE1_EXP_NAME:-future_tactile_encoder_${RUN_TAG}_${STAGE1_STEPS}steps}"
 
@@ -140,31 +142,36 @@ ensure_norm_stats() {
 log "Dataset repo: ${DATA_REPO}"
 log "Asset id: ${DATA_ASSET_ID}"
 log "Run tag: ${RUN_TAG}"
+log "Stage 1 config: ${STAGE1_CONFIG}"
 log "Python: ${PYTHON} ($("$PYTHON" -V 2>&1))"
 log "GPUs: ${GPU_IDS}, batch: ${GLOBAL_BATCH_SIZE}, fsdp devices: ${FSDP_DEVICES}"
 
 # These three configs use the same structured calc-force data transform.
-ensure_norm_stats "pi0_xhand_tactile_structured_single_ae" "future_tactile_encoder_pretrain"
-ensure_norm_stats "future_tactile_encoder_pretrain" "pi0_xhand_tactile_action_aware_single_ae"
+ensure_norm_stats "pi0_xhand_tactile_structured_single_ae" "$STAGE1_CONFIG"
+ensure_norm_stats "$STAGE1_CONFIG" "pi0_xhand_tactile_action_aware_single_ae"
 
 STAGE1_LOG="logs/${STAGE1_EXP_NAME}.log"
-log "Stage 1 starting: exp=${STAGE1_EXP_NAME}, steps=${STAGE1_STEPS}, log=${STAGE1_LOG}"
-CUDA_VISIBLE_DEVICES="$GPU_IDS" \
-  "$PYTHON" scripts/train.py future_tactile_encoder_pretrain \
-    --exp-name "$STAGE1_EXP_NAME" \
-    --data.repo-id "$DATA_REPO" \
-    --data.assets.asset-id "$DATA_ASSET_ID" \
-    --num-train-steps "$STAGE1_STEPS" \
-    --batch-size "$GLOBAL_BATCH_SIZE" \
-    --fsdp-devices "$FSDP_DEVICES" \
-    --num-workers "$NUM_WORKERS" \
-    --save-interval "$STAGE1_SAVE_INTERVAL" \
-    --keep-period "$STAGE1_KEEP_PERIOD" \
-    --no-wandb-enabled \
-    --overwrite \
-  > "$STAGE1_LOG" 2>&1
+STAGE1_CKPT_ROOT="checkpoints/${STAGE1_CONFIG}/${STAGE1_EXP_NAME}"
+if [[ "$SKIP_STAGE1" == "1" ]]; then
+  log "Stage 1 skipped; reusing checkpoint under ${STAGE1_CKPT_ROOT}"
+else
+  log "Stage 1 starting: exp=${STAGE1_EXP_NAME}, steps=${STAGE1_STEPS}, log=${STAGE1_LOG}"
+  CUDA_VISIBLE_DEVICES="$GPU_IDS" \
+    "$PYTHON" scripts/train.py "$STAGE1_CONFIG" \
+      --exp-name "$STAGE1_EXP_NAME" \
+      --data.repo-id "$DATA_REPO" \
+      --data.assets.asset-id "$DATA_ASSET_ID" \
+      --num-train-steps "$STAGE1_STEPS" \
+      --batch-size "$GLOBAL_BATCH_SIZE" \
+      --fsdp-devices "$FSDP_DEVICES" \
+      --num-workers "$NUM_WORKERS" \
+      --save-interval "$STAGE1_SAVE_INTERVAL" \
+      --keep-period "$STAGE1_KEEP_PERIOD" \
+      --no-wandb-enabled \
+      --overwrite \
+    > "$STAGE1_LOG" 2>&1
+fi
 
-STAGE1_CKPT_ROOT="checkpoints/future_tactile_encoder_pretrain/${STAGE1_EXP_NAME}"
 STAGE1_STEP="$(latest_step_dir "$STAGE1_CKPT_ROOT")"
 if [[ -z "${STAGE1_STEP:-}" ]]; then
   log "ERROR: Stage 1 completed but no numeric checkpoint was found under ${STAGE1_CKPT_ROOT}"

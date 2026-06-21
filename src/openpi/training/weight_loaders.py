@@ -13,6 +13,19 @@ import openpi.shared.download as download
 logger = logging.getLogger(__name__)
 
 
+def _flatten_params(params: at.Params) -> dict[tuple[object, ...], object]:
+    """Flatten parameters while preserving integer module-list indices."""
+    return flax.traverse_util.flatten_dict(params)
+
+
+def _unflatten_params(params: dict[tuple[object, ...], object]) -> at.Params:
+    return flax.traverse_util.unflatten_dict(params)
+
+
+def _path_string(path: tuple[object, ...]) -> str:
+    return "/".join(map(str, path))
+
+
 @runtime_checkable
 class WeightLoader(Protocol):
     def load(self, params: at.Params) -> at.Params:
@@ -87,22 +100,22 @@ class Pi0WithFutureTactileEncoderWeightLoader(WeightLoader):
         encoder_checkpoint = _model.restore_params(
             download.maybe_download(self.encoder_params_path), restore_type=np.ndarray
         )
-        flat_ref = flax.traverse_util.flatten_dict(params, sep="/")
-        flat_merged = flax.traverse_util.flatten_dict(merged, sep="/")
-        flat_encoder = flax.traverse_util.flatten_dict(encoder_checkpoint, sep="/")
+        flat_ref = _flatten_params(params)
+        flat_merged = _flatten_params(merged)
+        flat_encoder = _flatten_params(encoder_checkpoint)
 
         copied = 0
         for key, value in flat_encoder.items():
-            if not key.startswith("future_encoder/"):
+            if not key or key[0] != "future_encoder":
                 continue
-            mapped_key = "target_force_tokenizer/" + key.removeprefix("future_encoder/")
+            mapped_key = ("target_force_tokenizer", *key[1:])
             if mapped_key not in flat_ref:
                 continue
             if hasattr(value, "shape") and hasattr(flat_ref[mapped_key], "shape") and value.shape != flat_ref[mapped_key].shape:
                 logger.warning(
                     "Skipping future tactile encoder param %s -> %s due to shape mismatch: %s vs %s",
-                    key,
-                    mapped_key,
+                    _path_string(key),
+                    _path_string(mapped_key),
                     value.shape,
                     flat_ref[mapped_key].shape,
                 )
@@ -111,7 +124,7 @@ class Pi0WithFutureTactileEncoderWeightLoader(WeightLoader):
             copied += 1
 
         logger.info("Loaded %d future tactile encoder tensors from %s.", copied, self.encoder_params_path)
-        return flax.traverse_util.unflatten_dict(flat_merged, sep="/")
+        return _unflatten_params(flat_merged)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -144,8 +157,8 @@ def _merge_params(loaded_params: at.Params, params: at.Params, *, missing_regex:
     Returns:
         A new dictionary with the merged parameters.
     """
-    flat_ref = flax.traverse_util.flatten_dict(params, sep="/")
-    flat_loaded = flax.traverse_util.flatten_dict(loaded_params, sep="/")
+    flat_ref = _flatten_params(params)
+    flat_loaded = _flatten_params(loaded_params)
 
     # First, take all weights that are a subset of the reference weights.
     result = {}
@@ -157,11 +170,11 @@ def _merge_params(loaded_params: at.Params, params: at.Params, *, missing_regex:
 
     # Then, merge any missing weights as defined by the missing regex.
     pattern = re.compile(missing_regex)
-    for k in {k for k in flat_ref if pattern.fullmatch(k)}:
+    for k in {k for k in flat_ref if pattern.fullmatch(_path_string(k))}:
         if k not in result:
             result[k] = flat_ref[k]
 
-    return flax.traverse_util.unflatten_dict(result, sep="/")
+    return _unflatten_params(result)
 
 
 def _augment_with_moe_shared_ffn_weights(loaded_params: at.Params, params: at.Params) -> at.Params:
@@ -171,21 +184,23 @@ def _augment_with_moe_shared_ffn_weights(loaded_params: at.Params, params: at.Pa
       .../mlp/...   -> .../moe/expert_0/...
       .../mlp_1/... -> .../moe_1/expert_0/...
     """
-    flat_loaded = flax.traverse_util.flatten_dict(loaded_params, sep="/")
-    flat_ref = flax.traverse_util.flatten_dict(params, sep="/")
+    flat_loaded = _flatten_params(loaded_params)
+    flat_ref = _flatten_params(params)
     augmented = dict(flat_loaded)
 
-    # Capture ".../mlp<suffix>/<rest>", suffix can be "" or "_1", "_2", etc.
-    mlp_pattern = re.compile(r"^(.*?/)(mlp(?:_\d+)?)/(.*)$")
+    mlp_pattern = re.compile(r"mlp(?:_\d+)?")
 
     copied = 0
     for k, v in flat_loaded.items():
-        m = mlp_pattern.match(k)
-        if m is None:
+        mlp_index = next(
+            (index for index, part in enumerate(k) if isinstance(part, str) and mlp_pattern.fullmatch(part)),
+            None,
+        )
+        if mlp_index is None:
             continue
-        prefix, mlp_name, rest = m.groups()
+        mlp_name = k[mlp_index]
         moe_name = mlp_name.replace("mlp", "moe", 1)
-        mapped_key = f"{prefix}{moe_name}/expert_0/{rest}"
+        mapped_key = (*k[:mlp_index], moe_name, "expert_0", *k[mlp_index + 1 :])
         if mapped_key in augmented:
             continue
         if mapped_key not in flat_ref:
@@ -198,7 +213,7 @@ def _augment_with_moe_shared_ffn_weights(loaded_params: at.Params, params: at.Pa
     if copied > 0:
         logger.info("Mapped %d FFN tensors from base MLP to MOE shared expert.", copied)
 
-    return flax.traverse_util.unflatten_dict(augmented, sep="/")
+    return _unflatten_params(augmented)
 
 
 def _augment_with_mor_action_expert_weights(loaded_params: at.Params, params: at.Params) -> at.Params:
@@ -209,15 +224,15 @@ def _augment_with_mor_action_expert_weights(loaded_params: at.Params, params: at
       .../mlp_1/...        -> .../mlp_2/...
       .../final_norm_1/... -> .../final_norm_2/...
     """
-    flat_loaded = flax.traverse_util.flatten_dict(loaded_params, sep="/")
-    flat_ref = flax.traverse_util.flatten_dict(params, sep="/")
+    flat_loaded = _flatten_params(loaded_params)
+    flat_ref = _flatten_params(params)
     augmented = dict(flat_loaded)
 
     copied = 0
     for k, v in flat_loaded.items():
-        parts = k.split("/")
-        mapped_parts = [part[:-2] + "_2" if part.endswith("_1") else part for part in parts]
-        mapped_key = "/".join(mapped_parts)
+        mapped_key = tuple(
+            part[:-2] + "_2" if isinstance(part, str) and part.endswith("_1") else part for part in k
+        )
         if mapped_key == k:
             continue
         if mapped_key in augmented:
@@ -232,4 +247,4 @@ def _augment_with_mor_action_expert_weights(loaded_params: at.Params, params: at
     if copied > 0:
         logger.info("Mapped %d tensors from action expert (_1) to MOR refine expert (_2).", copied)
 
-    return flax.traverse_util.unflatten_dict(augmented, sep="/")
+    return _unflatten_params(augmented)

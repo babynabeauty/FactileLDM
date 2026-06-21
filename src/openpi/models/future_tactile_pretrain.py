@@ -30,6 +30,7 @@ class FutureTactileEncoderPretrain(nnx.Module):
         self.hand_action_dim = int(config.hand_action_dim)
         self.delta_loss_weight = float(config.hand_delta_loss_weight)
         self.encoder_width = int(config.encoder_width)
+        self.hand_head_type = config.hand_head_type
         self.history_times = tuple(
             float(offset) / float(config.tactile_sample_hz) for offset in config.tactile_history_offsets
         )
@@ -54,8 +55,23 @@ class FutureTactileEncoderPretrain(nnx.Module):
         self.history_force_proj_in = nnx.Linear(self.dim_per_finger, config.tactile_tokenizer_dim, rngs=rngs)
         self.history_force_proj_out = nnx.Linear(config.tactile_tokenizer_dim, self.encoder_width, rngs=rngs)
         self.condition_norm = nnx.LayerNorm(num_features=self.encoder_width, rngs=rngs)
-        self.hand_head_in = nnx.Linear(self.encoder_width, self.encoder_width, rngs=rngs)
-        self.hand_head_out = nnx.Linear(self.encoder_width, self.hand_action_dim, rngs=rngs)
+        if self.hand_head_type == "mean_repeat":
+            self.hand_head_in = nnx.Linear(self.encoder_width, self.encoder_width, rngs=rngs)
+            self.hand_head_out = nnx.Linear(self.encoder_width, self.hand_action_dim, rngs=rngs)
+        elif self.hand_head_type == "finger_flatten_4step":
+            self.hand_head_finger_fusion = nnx.Linear(
+                self.num_fingers * self.encoder_width,
+                self.encoder_width,
+                rngs=rngs,
+            )
+            self.hand_head_norm = nnx.LayerNorm(num_features=self.encoder_width, rngs=rngs)
+            self.hand_head_out = nnx.Linear(
+                self.encoder_width,
+                self.steps_per_segment * self.hand_action_dim,
+                rngs=rngs,
+            )
+        else:
+            raise ValueError(f"Unsupported hand_head_type={self.hand_head_type!r}.")
 
     def _split_effort(self, observation: _model.Observation, dtype):
         if observation.effort is None:
@@ -85,11 +101,23 @@ class FutureTactileEncoderPretrain(nnx.Module):
             s=self.future_segments,
             f=self.num_fingers,
         )
-        segment_tokens = jnp.mean(segment_tokens, axis=2)
-        segment_tokens = segment_tokens + condition[:, None, :]
-        step_tokens = jnp.repeat(segment_tokens, repeats=self.steps_per_segment, axis=1)
-        hidden = nnx.swish(self.hand_head_in(step_tokens))
-        return self.hand_head_out(hidden)
+        if self.hand_head_type == "mean_repeat":
+            segment_tokens = jnp.mean(segment_tokens, axis=2)
+            segment_tokens = segment_tokens + condition[:, None, :]
+            step_tokens = jnp.repeat(segment_tokens, repeats=self.steps_per_segment, axis=1)
+            hidden = nnx.swish(self.hand_head_in(step_tokens))
+            return self.hand_head_out(hidden)
+
+        finger_features = einops.rearrange(segment_tokens, "b s f d -> b s (f d)")
+        hidden = nnx.swish(self.hand_head_finger_fusion(finger_features))
+        hidden = self.hand_head_norm(hidden + condition[:, None, :])
+        segment_actions = self.hand_head_out(hidden)
+        return einops.rearrange(
+            segment_actions,
+            "b s (p a) -> b (s p) a",
+            p=self.steps_per_segment,
+            a=self.hand_action_dim,
+        )
 
     @staticmethod
     def _smooth_l1(prediction: jax.Array, target: jax.Array) -> jax.Array:
