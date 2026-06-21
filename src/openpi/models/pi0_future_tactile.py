@@ -31,6 +31,11 @@ class Pi0FutureTactile(Pi0):
         self.force_loss_weight = float(config.future_force_loss_weight)
         self.delta_loss_weight = float(config.future_force_delta_loss_weight)
         self.future_encoder_type = config.future_tactile_encoder_type
+        self.target_encoder_width = (
+            int(config.future_tactile_target_width)
+            if self.future_encoder_type == "finger_role"
+            else action_width
+        )
         self.future_hand_action_loss_weight = float(config.future_hand_action_loss_weight)
         self.hand_action_start = int(config.hand_action_start)
         self.hand_action_dim = int(config.hand_action_dim)
@@ -64,7 +69,7 @@ class Pi0FutureTactile(Pi0):
             self.use_target_ema = True
         elif self.future_encoder_type == "finger_role":
             self.target_force_tokenizer = FingerRoleFutureTactileQFormer(
-                output_dim=action_width,
+                output_dim=self.target_encoder_width,
                 hidden_dim=config.tactile_tokenizer_dim,
                 num_fingers=self.num_fingers,
                 dim_per_finger=self.dim_per_finger,
@@ -77,6 +82,11 @@ class Pi0FutureTactile(Pi0):
             self.use_target_ema = False
         else:
             raise ValueError(f"Unsupported future_tactile_encoder_type={self.future_encoder_type!r}.")
+        self.future_query_align_proj = (
+            nnx.Linear(action_width, self.target_encoder_width, rngs=rngs)
+            if action_width != self.target_encoder_width
+            else None
+        )
         self.future_query_base = nnx.Param(
             0.02 * jax.random.normal(rngs.params(), (action_width,), dtype=jnp.float32)
         )
@@ -91,9 +101,17 @@ class Pi0FutureTactile(Pi0):
             action_width, self.steps_per_segment * self.dim_per_finger, rngs=rngs
         )
         if self.future_hand_action_loss_weight > 0.0:
-            self.future_hand_condition_norm = nnx.LayerNorm(num_features=action_width, rngs=rngs)
-            self.future_hand_head_in = nnx.Linear(action_width, action_width, rngs=rngs)
-            self.future_hand_head_out = nnx.Linear(action_width, self.hand_action_dim, rngs=rngs)
+            self.future_hand_state_proj = nnx.Linear(config.action_dim, self.target_encoder_width, rngs=rngs)
+            self.future_hand_history_proj = nnx.Linear(action_width, self.target_encoder_width, rngs=rngs)
+            self.future_hand_condition_norm = nnx.LayerNorm(
+                num_features=self.target_encoder_width, rngs=rngs
+            )
+            self.future_hand_head_in = nnx.Linear(
+                self.target_encoder_width, self.target_encoder_width, rngs=rngs
+            )
+            self.future_hand_head_out = nnx.Linear(
+                self.target_encoder_width, self.hand_action_dim, rngs=rngs
+            )
         self.uses_train_progress = True
 
     def update_target_encoder(self, train_progress) -> None:
@@ -200,7 +218,8 @@ class Pi0FutureTactile(Pi0):
             history_effort, jnp.asarray(self.history_times, dtype=jnp.float32)
         )
         condition = self.future_hand_condition_norm(
-            self.state_proj(observation.state) + jnp.mean(history_tokens, axis=1)
+            self.future_hand_state_proj(observation.state)
+            + self.future_hand_history_proj(jnp.mean(history_tokens, axis=1))
         )
         segment_tokens = einops.rearrange(
             c_future,
@@ -265,7 +284,12 @@ class Pi0FutureTactile(Pi0):
             future_effort, jnp.asarray(self.future_times, dtype=jnp.float32)
         )
         target_tokens = jax.lax.stop_gradient(c_future)
-        latent_loss = self._cosine_distance(query_hidden, target_tokens)
+        aligned_query_hidden = (
+            self.future_query_align_proj(query_hidden)
+            if self.future_query_align_proj is not None
+            else query_hidden
+        )
+        latent_loss = self._cosine_distance(aligned_query_hidden, target_tokens)
         predicted_force = self._decode_future_force(final_query_hidden)
         force_loss = self._smooth_l1(predicted_force, future_effort)
         delta_loss = self._smooth_l1(

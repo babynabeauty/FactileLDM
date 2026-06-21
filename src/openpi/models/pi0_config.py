@@ -351,6 +351,7 @@ class Pi0FutureTactileConfig(Pi0Config):
     future_tactile_encoder_type: Literal["dexterous", "finger_role"] = "dexterous"
     future_tactile_encoder_depth: int = 2
     future_tactile_encoder_num_heads: int = 8
+    future_tactile_target_width: int = 512
     future_hand_action_loss_weight: float = 0.0
     hand_action_start: int = 6
     hand_action_dim: int = 12
@@ -368,6 +369,8 @@ class Pi0FutureTactileConfig(Pi0Config):
             raise ValueError("Structured tactile currently supports per-finger 3D resultant forces only.")
         if self.future_tactile_encoder_type not in ("dexterous", "finger_role"):
             raise ValueError(f"Unsupported future_tactile_encoder_type={self.future_tactile_encoder_type!r}.")
+        if self.future_tactile_target_width <= 0:
+            raise ValueError("future_tactile_target_width must be positive.")
         if self.hand_action_start + self.hand_action_dim > self.action_dim:
             raise ValueError("Hand action slice exceeds action_dim.")
 
