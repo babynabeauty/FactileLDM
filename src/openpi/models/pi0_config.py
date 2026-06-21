@@ -254,6 +254,9 @@ class Pi0LatentFlowConfig(Pi0Config):
     tactile_tokenizer_dim: int = 256
     future_tactile_align_layer: int = 12
     tactile_sample_hz: float = 15.0
+    arm_hand_mask_attention: bool = False
+    arm_action_dim: int = 6
+    hand_action_dim: int = 12
 
     @override
     def __post_init__(self):
@@ -268,6 +271,13 @@ class Pi0LatentFlowConfig(Pi0Config):
             if self.tactile_sample_hz <= 0:
                 raise ValueError("tactile_sample_hz must be positive.")
             object.__setattr__(self, "distill_layer_indices", (self.future_tactile_align_layer,))
+        if self.arm_hand_mask_attention:
+            if not self.structured_tactile:
+                raise ValueError("arm_hand_mask_attention currently requires structured_tactile=True.")
+            if self.arm_action_dim <= 0 or self.hand_action_dim <= 0:
+                raise ValueError("arm_action_dim and hand_action_dim must be positive.")
+            if self.arm_action_dim + self.hand_action_dim > self.action_dim:
+                raise ValueError("Arm and hand action slices exceed action_dim.")
         if not 0 <= self.future_rgb_step <= self.action_horizon:
             raise ValueError(
                 f"future_rgb_step must satisfy 0 <= future_rgb_step <= action_horizon={self.action_horizon}, "

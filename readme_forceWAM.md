@@ -185,7 +185,28 @@ setsid nohup env \
     --model.flow-vae-name /data/shared_workspace/zhangshiqi/hf/models--stabilityai--sdxl-vae \
   > /data/workspace/zhangshiqi/forceWAM/logs/pi0_xhand_tactile_flow_full_finetune_30k_1gpu.log 2>&1 &
 
-
+# 2AE full finetune + tactile 
+setsid nohup env \
+  HF_LEROBOT_HOME=. \
+  HF_DATASETS_CACHE=.hf_datasets_cache \
+  CUDA_VISIBLE_DEVICES=0,1,2,3 \
+  XLA_PYTHON_CLIENT_PREALLOCATE=false \
+  env/.venv/bin/python scripts/train.py \
+    pi0_xhand_tactile_structured_dual_ae_arm_future_hand_mask \
+    --exp-name structured_dual_ae_arm_future_hand_mask_106ep_20k \
+    --data.repo-id "$DATA_REPO" \
+    --data.assets.asset-id "$ASSET_ID" \
+    --data.assets.assets-dir assets/pi0_xhand_tactile_structured_dual_ae \
+    --num-train-steps 20000 \
+    --batch-size 4 \
+    --fsdp-devices 4 \
+    --num-workers 0 \
+    --save-interval 5000 \
+    --keep-period 5000 \
+    --no-wandb-enabled \
+    --overwrite \
+    --weight-loader.params-path checkpoints/pi0_base/params \
+  > logs/structured_dual_ae_arm_future_hand_mask_106ep_20k.log 2>&1 &
 
 # 2AE full finetune + tactile + 3D displacement
 setsid nohup env \

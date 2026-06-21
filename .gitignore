@@ -164,7 +164,7 @@ dmypy.json
 
 # pytype static type analyzer
 .pytype/
-
+Xhand1交付资料-带触觉/
 # Cython debug symbols
 cython_debug/
 

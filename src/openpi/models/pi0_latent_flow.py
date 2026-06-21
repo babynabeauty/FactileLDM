@@ -91,6 +91,10 @@ class Pi0LatentFlow(_model.BaseModel):
         self.student_future_query_noise_scale_max = float(config.student_future_query_noise_scale_max)
         self.student_future_query_noise_start_ratio = float(config.student_future_query_noise_start_ratio)
         self.student_future_query_noise_end_ratio = float(config.student_future_query_noise_end_ratio)
+        self.arm_hand_mask_attention = bool(config.arm_hand_mask_attention)
+        self.arm_action_dim = int(config.arm_action_dim)
+        self.hand_action_dim = int(config.hand_action_dim)
+        self.hand_action_start = self.arm_action_dim
         self.uses_train_progress = True
         self._debug_lengths_logged = False
 
@@ -528,6 +532,85 @@ class Pi0LatentFlow(_model.BaseModel):
         action_time_tokens = time_mlp_out(action_time_tokens)
         return action_time_tokens, None
 
+    def _split_action_inputs(self, actions: _model.Actions) -> tuple[_model.Actions, _model.Actions]:
+        """Keep arm and hand values in separate full-width tensors for shared projections."""
+        arm_actions = jnp.zeros_like(actions).at[..., : self.arm_action_dim].set(
+            actions[..., : self.arm_action_dim]
+        )
+        hand_slice = slice(self.hand_action_start, self.hand_action_start + self.hand_action_dim)
+        hand_actions = jnp.zeros_like(actions).at[..., hand_slice].set(actions[..., hand_slice])
+        padding_start = self.hand_action_start + self.hand_action_dim
+        arm_actions = arm_actions.at[..., padding_start:].set(actions[..., padding_start:])
+        return arm_actions, hand_actions
+
+    def _suffix_slices(self, action_len: int) -> dict[str, slice]:
+        """Return semantic token slices for the configured suffix ordering."""
+        if not self.structured_tactile:
+            raise ValueError("Semantic suffix slices require structured tactile tokens.")
+        observation_end = 1 + self.history_force_token_count
+        active_flow_count = self.flow_token_count if self.use_future_flow else 0
+
+        if self.arm_hand_mask_attention:
+            arm_slice = slice(observation_end, observation_end + action_len)
+            future_force_start = arm_slice.stop
+            flow_start = future_force_start + self.future_force_token_count
+            hand_start = flow_start + active_flow_count
+            return {
+                "arm": arm_slice,
+                "future_force": slice(future_force_start, flow_start),
+                "future_flow": slice(flow_start, hand_start),
+                "hand": slice(hand_start, hand_start + action_len),
+            }
+
+        future_force_start = observation_end
+        flow_start = future_force_start + self.future_force_token_count
+        action_start = flow_start + active_flow_count
+        return {
+            "future_force": slice(future_force_start, flow_start),
+            "future_flow": slice(flow_start, action_start),
+            "action": slice(action_start, action_start + action_len),
+        }
+
+    def _decode_action_velocity(self, hidden: at.Array, *, expert: str) -> _model.Actions:
+        projection = (
+            self.action_out_proj_student
+            if expert == "student"
+            else self.action_out_proj_teacher
+            if expert == "teacher"
+            else None
+        )
+        if projection is None:
+            raise ValueError(f"Unknown expert: {expert}")
+        if not self.arm_hand_mask_attention:
+            return projection(hidden[:, -self.action_horizon :])
+
+        slices = self._suffix_slices(self.action_horizon)
+        arm_full = projection(hidden[:, slices["arm"]])
+        hand_full = projection(hidden[:, slices["hand"]])
+        velocity = jnp.zeros_like(arm_full)
+        velocity = velocity.at[..., : self.arm_action_dim].set(arm_full[..., : self.arm_action_dim])
+        hand_slice = slice(self.hand_action_start, self.hand_action_start + self.hand_action_dim)
+        velocity = velocity.at[..., hand_slice].set(hand_full[..., hand_slice])
+        padding_start = self.hand_action_start + self.hand_action_dim
+        return velocity.at[..., padding_start:].set(arm_full[..., padding_start:])
+
+    def _action_losses(self, prediction: _model.Actions, target: _model.Actions) -> tuple[at.Array, at.Array, at.Array]:
+        arm_loss = jnp.mean(
+            jnp.square(prediction[..., : self.arm_action_dim] - target[..., : self.arm_action_dim]),
+            axis=(-2, -1),
+        )
+        hand_slice = slice(self.hand_action_start, self.hand_action_start + self.hand_action_dim)
+        hand_loss = jnp.mean(
+            jnp.square(prediction[..., hand_slice] - target[..., hand_slice]),
+            axis=(-2, -1),
+        )
+        physical_prediction = jnp.concatenate(
+            [prediction[..., : self.arm_action_dim], prediction[..., hand_slice]], axis=-1
+        )
+        physical_target = jnp.concatenate([target[..., : self.arm_action_dim], target[..., hand_slice]], axis=-1)
+        total_loss = jnp.mean(jnp.square(physical_prediction - physical_target), axis=(-2, -1))
+        return total_loss, arm_loss, hand_loss
+
     def _student_future_flow_tokens(self, batch_size: int, dtype: jnp.dtype) -> at.Float[at.Array, "b n d"]:
         if not self.use_future_flow:
             return jnp.zeros((batch_size, 0, self.student_width), dtype=dtype)
@@ -539,6 +622,13 @@ class Pi0LatentFlow(_model.BaseModel):
         if self.structured_tactile:
             observation_count = 1 + self.history_force_token_count
             future_count = self.future_force_token_count + active_flow_token_count
+            if self.arm_hand_mask_attention:
+                return jnp.array(
+                    ([True] + [False] * (observation_count - 1))
+                    + ([True] + [False] * (action_len - 1))
+                    + ([True] + [False] * (future_count - 1))
+                    + ([True] + [False] * (action_len - 1))
+                )
             return jnp.array(
                 ([True] + [False] * (observation_count - 1))
                 + ([True] + [False] * (future_count - 1))
@@ -732,16 +822,31 @@ class Pi0LatentFlow(_model.BaseModel):
             query_noise_scale=query_noise_scale,
         )
         state_token = self.state_proj_student(obs.state)[:, None, :]
-        action_tokens, adarms_cond = self._embed_action_tokens(noisy_actions, timestep, expert="student")
+        if self.arm_hand_mask_attention:
+            arm_actions, hand_actions = self._split_action_inputs(noisy_actions)
+            arm_tokens, adarms_cond = self._embed_action_tokens(arm_actions, timestep, expert="student")
+            hand_tokens, _ = self._embed_action_tokens(hand_actions, timestep, expert="student")
+        else:
+            action_tokens, adarms_cond = self._embed_action_tokens(noisy_actions, timestep, expert="student")
 
-        suffix_parts = (
-            [state_token, history_token, future_force_query, future_flow_queries, action_tokens]
-            if self.structured_tactile
-            else [history_token, state_token, future_force_query, future_flow_queries, action_tokens]
-        )
+        if self.arm_hand_mask_attention:
+            suffix_parts = [
+                state_token,
+                history_token,
+                arm_tokens,
+                future_force_query,
+                future_flow_queries,
+                hand_tokens,
+            ]
+        else:
+            suffix_parts = (
+                [state_token, history_token, future_force_query, future_flow_queries, action_tokens]
+                if self.structured_tactile
+                else [history_token, state_token, future_force_query, future_flow_queries, action_tokens]
+            )
         tokens = jnp.concatenate(suffix_parts, axis=1)
         input_mask = jnp.ones(tokens.shape[:2], dtype=jnp.bool_)
-        ar_mask = self._build_suffix_ar_mask(action_tokens.shape[1])
+        ar_mask = self._build_suffix_ar_mask(noisy_actions.shape[1])
         return tokens, input_mask, ar_mask, adarms_cond, force_clean_mask, flow_clean_mask, noised_token_rate
 
     @at.typecheck
@@ -762,16 +867,31 @@ class Pi0LatentFlow(_model.BaseModel):
         future_force_token = self._project_future_force_teacher(future_effort)
         future_flow_tokens = self._compress_future_flows(obs)
         state_token = self.state_proj_teacher(obs.state)[:, None, :]
-        action_tokens, adarms_cond = self._embed_action_tokens(noisy_actions, timestep, expert="teacher")
+        if self.arm_hand_mask_attention:
+            arm_actions, hand_actions = self._split_action_inputs(noisy_actions)
+            arm_tokens, adarms_cond = self._embed_action_tokens(arm_actions, timestep, expert="teacher")
+            hand_tokens, _ = self._embed_action_tokens(hand_actions, timestep, expert="teacher")
+        else:
+            action_tokens, adarms_cond = self._embed_action_tokens(noisy_actions, timestep, expert="teacher")
 
-        suffix_parts = (
-            [state_token, history_token, future_force_token, future_flow_tokens, action_tokens]
-            if self.structured_tactile
-            else [history_token, state_token, future_force_token, future_flow_tokens, action_tokens]
-        )
+        if self.arm_hand_mask_attention:
+            suffix_parts = [
+                state_token,
+                history_token,
+                arm_tokens,
+                future_force_token,
+                future_flow_tokens,
+                hand_tokens,
+            ]
+        else:
+            suffix_parts = (
+                [state_token, history_token, future_force_token, future_flow_tokens, action_tokens]
+                if self.structured_tactile
+                else [history_token, state_token, future_force_token, future_flow_tokens, action_tokens]
+            )
         tokens = jnp.concatenate(suffix_parts, axis=1)
         input_mask = jnp.ones(tokens.shape[:2], dtype=jnp.bool_)
-        ar_mask = self._build_suffix_ar_mask(action_tokens.shape[1])
+        ar_mask = self._build_suffix_ar_mask(noisy_actions.shape[1])
         return tokens, input_mask, ar_mask, adarms_cond
 
     def _forward_train_joint_multilayer(
@@ -924,17 +1044,24 @@ class Pi0LatentFlow(_model.BaseModel):
             teacher_adarms=teacher_adarms,
         )
 
-        student_v = self.action_out_proj_student(student_out[:, -self.action_horizon :])
-        teacher_v = self.action_out_proj_teacher(teacher_out[:, -self.action_horizon :])
+        student_v = self._decode_action_velocity(student_out, expert="student")
+        teacher_v = self._decode_action_velocity(teacher_out, expert="teacher")
         student_action_loss = jnp.mean(jnp.square(student_v - u_t_action), axis=(-2, -1))
         teacher_action_loss = jnp.mean(jnp.square(teacher_v - u_t_action), axis=(-2, -1))
+        _, student_arm_loss, student_hand_loss = self._action_losses(student_v, u_t_action)
+        _, teacher_arm_loss, teacher_hand_loss = self._action_losses(teacher_v, u_t_action)
 
         force_losses = []
         flow_losses = []
-        future_force_start = 1 + self.history_force_token_count if self.structured_tactile else 2
-        future_force_slice = slice(future_force_start, future_force_start + self.future_force_token_count)
-        flow_start = future_force_start + self.future_force_token_count
-        flow_slice = slice(flow_start, flow_start + self.flow_token_count)
+        if self.structured_tactile:
+            suffix_slices = self._suffix_slices(self.action_horizon)
+            future_force_slice = suffix_slices["future_force"]
+            flow_slice = suffix_slices["future_flow"]
+        else:
+            future_force_start = 2
+            future_force_slice = slice(future_force_start, future_force_start + self.future_force_token_count)
+            flow_start = future_force_start + self.future_force_token_count
+            flow_slice = slice(flow_start, flow_start + self.flow_token_count)
         for student_hidden, teacher_hidden in zip(student_layer_hiddens, teacher_layer_hiddens, strict=True):
             student_force_hidden = self._project_prompt_distill(student_hidden[:, future_force_slice, :])
             teacher_force_hidden = jax.lax.stop_gradient(teacher_hidden[:, future_force_slice, :])
@@ -974,6 +1101,10 @@ class Pi0LatentFlow(_model.BaseModel):
         stats = {
             "loss/student_action": student_action_loss,
             "loss/teacher_action": teacher_action_loss,
+            "loss/student_action_arm": student_arm_loss,
+            "loss/student_action_hand": student_hand_loss,
+            "loss/teacher_action_arm": teacher_arm_loss,
+            "loss/teacher_action_hand": teacher_hand_loss,
             "loss/distill_future_force": future_force_align_loss,
             "loss/distill_future_flow": future_flow_align_loss,
             "loss/distill_future_force_mean": jnp.mean(raw_future_force_align_loss),
@@ -1062,7 +1193,7 @@ class Pi0LatentFlow(_model.BaseModel):
                 adarms_cond=[None, student_adarms, None],
             )
             _, student_out, _ = outputs
-            v_t = self.action_out_proj_student(student_out[:, -self.action_horizon :])
+            v_t = self._decode_action_velocity(student_out, expert="student")
             return x_t + dt * v_t, time + dt, step_rng
 
         def cond(carry):
