@@ -457,7 +457,8 @@ class FutureTactileEncoderPretrainConfig(_model.BaseModelConfig):
             observation_spec = _model_tavla.Observation(
                 images={key: image_spec for key in _model.IMAGE_KEYS},
                 image_masks={key: image_mask_spec for key in _model.IMAGE_KEYS},
-                state=jax.ShapeDtypeStruct([batch_size, self.state_dim], jnp.float32),
+                # PadStatesAndActions presents state at the model action width.
+                state=jax.ShapeDtypeStruct([batch_size, self.action_dim], jnp.float32),
                 effort=jax.ShapeDtypeStruct(
                     [
                         batch_size,

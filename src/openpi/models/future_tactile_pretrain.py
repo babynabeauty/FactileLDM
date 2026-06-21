@@ -48,7 +48,9 @@ class FutureTactileEncoderPretrain(nnx.Module):
             num_heads=config.encoder_num_heads,
             rngs=rngs,
         )
-        self.state_proj = nnx.Linear(config.state_dim, self.encoder_width, rngs=rngs)
+        # Model transforms pad the physical 18-D robot state to action_dim,
+        # matching the state interface used by Pi0 and the stage-2 policy.
+        self.state_proj = nnx.Linear(config.action_dim, self.encoder_width, rngs=rngs)
         self.history_force_proj_in = nnx.Linear(self.dim_per_finger, config.tactile_tokenizer_dim, rngs=rngs)
         self.history_force_proj_out = nnx.Linear(config.tactile_tokenizer_dim, self.encoder_width, rngs=rngs)
         self.condition_norm = nnx.LayerNorm(num_features=self.encoder_width, rngs=rngs)

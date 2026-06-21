@@ -371,7 +371,7 @@ def main(config: _config.TrainConfig):
 
     logging.info("Trainable parameters:")
     for k in flat:
-        logging.info(f"  {'/'.join(k)}  shape={flat[k].shape}")
+        logging.info(f"  {'/'.join(map(str, k))}  shape={flat[k].shape}")
         
     jax.block_until_ready(train_state)
     logging.info(f"Initialized train state:\n{training_utils.array_tree_to_info(train_state.params)}")
