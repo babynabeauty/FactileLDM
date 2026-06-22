@@ -432,7 +432,16 @@ class XHandTactileFlowInputs(transforms.DataTransformFn):
                 ]
                 for sensor_id in range(TACTILE_SENSOR_COUNT)
             ]
-            tactile = np.concatenate(sensor_chunks, axis=-1)
+            if self.structured_tactile:
+                tactile = np.stack(
+                    [
+                        chunk.reshape(state_seq.shape[0], TACTILE_RAW_FORCE_POINTS, 3)
+                        for chunk in sensor_chunks
+                    ],
+                    axis=1,
+                )
+            else:
+                tactile = np.concatenate(sensor_chunks, axis=-1)
         else:
             raise ValueError(f"Unsupported tactile_mode={self.tactile_mode!r}.")
 

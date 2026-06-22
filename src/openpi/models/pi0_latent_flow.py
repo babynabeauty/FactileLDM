@@ -11,6 +11,7 @@ from openpi.models import pi0_config
 from openpi.models import siglip as _siglip
 from openpi.models.pi0_tavla import make_attn_mask, posemb_sincos
 from openpi.models.tactile_tokenizer import DexterousForceTokenizer
+from openpi.models.tactile_tokenizer import RawTactileSpatialTokenizer
 from openpi.shared import array_typing as at
 
 
@@ -61,6 +62,7 @@ class Pi0LatentFlow(_model.BaseModel):
         self.structured_tactile = bool(config.structured_tactile)
         self.tactile_num_fingers = int(config.tactile_num_fingers)
         self.tactile_dim_per_finger = int(config.tactile_dim_per_finger)
+        self.tactile_points_per_finger = int(config.tactile_points_per_finger)
         self.future_tactile_segments = int(config.future_tactile_segments)
         self.future_steps_per_segment = int(config.future_steps_per_segment)
         self.future_force_token_count = (
@@ -155,19 +157,38 @@ class Pi0LatentFlow(_model.BaseModel):
         self.action_out_proj_teacher = nnx.Linear(teacher_config.width, config.action_dim, rngs=rngs)
 
         if self.structured_tactile:
-            tokenizer_kwargs = dict(
-                hidden_dim=config.tactile_tokenizer_dim,
-                num_fingers=self.tactile_num_fingers,
-                dim_per_finger=self.tactile_dim_per_finger,
-                future_segments=self.future_tactile_segments,
-                future_steps_per_segment=self.future_steps_per_segment,
-            )
-            self.student_force_tokenizer = DexterousForceTokenizer(
-                output_dim=student_config.width, rngs=rngs, **tokenizer_kwargs
-            )
-            self.teacher_force_tokenizer = DexterousForceTokenizer(
-                output_dim=teacher_config.width, rngs=rngs, **tokenizer_kwargs
-            )
+            if self.tactile_points_per_finger > 1:
+                tokenizer_kwargs = dict(
+                    hidden_dim=config.tactile_tokenizer_dim,
+                    num_fingers=self.tactile_num_fingers,
+                    num_points=self.tactile_points_per_finger,
+                    dim_per_point=self.tactile_dim_per_finger,
+                    future_segments=self.future_tactile_segments,
+                    future_steps_per_segment=self.future_steps_per_segment,
+                    contact_top_k=config.tactile_raw_contact_top_k,
+                    contact_threshold=config.tactile_raw_contact_threshold,
+                    contact_temperature=config.tactile_raw_contact_temperature,
+                )
+                self.student_force_tokenizer = RawTactileSpatialTokenizer(
+                    output_dim=student_config.width, rngs=rngs, **tokenizer_kwargs
+                )
+                self.teacher_force_tokenizer = RawTactileSpatialTokenizer(
+                    output_dim=teacher_config.width, rngs=rngs, **tokenizer_kwargs
+                )
+            else:
+                tokenizer_kwargs = dict(
+                    hidden_dim=config.tactile_tokenizer_dim,
+                    num_fingers=self.tactile_num_fingers,
+                    dim_per_finger=self.tactile_dim_per_finger,
+                    future_segments=self.future_tactile_segments,
+                    future_steps_per_segment=self.future_steps_per_segment,
+                )
+                self.student_force_tokenizer = DexterousForceTokenizer(
+                    output_dim=student_config.width, rngs=rngs, **tokenizer_kwargs
+                )
+                self.teacher_force_tokenizer = DexterousForceTokenizer(
+                    output_dim=teacher_config.width, rngs=rngs, **tokenizer_kwargs
+                )
             self.student_query_base = nnx.Param(
                 0.02 * jax.random.normal(rngs.params(), (student_config.width,), dtype=jnp.float32)
             )
@@ -276,7 +297,7 @@ class Pi0LatentFlow(_model.BaseModel):
         if observation.effort is None:
             raise ValueError("Pi0MORDualAlignForceFlow requires `observation.effort`.")
         effort = jnp.asarray(observation.effort, dtype=dtype)
-        expected_ndim = 4 if self.structured_tactile else 3
+        expected_ndim = 5 if self.structured_tactile and self.tactile_points_per_finger > 1 else 4 if self.structured_tactile else 3
         if effort.ndim != expected_ndim:
             raise ValueError(f"Expected effort with {expected_ndim} dimensions, got {effort.shape}.")
 

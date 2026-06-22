@@ -124,6 +124,139 @@ class DexterousForceTokenizer(nnx.Module):
         return einops.rearrange(pooled, "b s f d -> b (s f) d")
 
 
+class RawTactileSpatialTokenizer(nnx.Module):
+    """Tokenizes sparse per-taxel tactile forces into per-finger tokens.
+
+    Input shape is [B, T, F, P, 3], where P is the number of tactile points per
+    finger. The tokenizer keeps point identity through a learned point embedding
+    and uses contact-aware attention so near-zero taxels contribute less.
+    """
+
+    def __init__(
+        self,
+        *,
+        output_dim: int,
+        hidden_dim: int,
+        num_fingers: int,
+        num_points: int,
+        dim_per_point: int,
+        future_segments: int,
+        future_steps_per_segment: int,
+        contact_top_k: int,
+        contact_threshold: float,
+        contact_temperature: float,
+        rngs: nnx.Rngs,
+    ):
+        self.output_dim = int(output_dim)
+        self.hidden_dim = int(hidden_dim)
+        self.num_fingers = int(num_fingers)
+        self.num_points = int(num_points)
+        self.dim_per_point = int(dim_per_point)
+        self.future_segments = int(future_segments)
+        self.future_steps_per_segment = int(future_steps_per_segment)
+        self.contact_top_k = int(contact_top_k)
+        self.contact_threshold = float(contact_threshold)
+        self.contact_temperature = float(contact_temperature)
+        self.time_embedding_dim = 64
+
+        self.force_proj_in = nnx.Linear(self.dim_per_point, self.hidden_dim, rngs=rngs)
+        self.force_proj_out = nnx.Linear(self.hidden_dim, self.output_dim, rngs=rngs)
+        self.time_proj = nnx.Linear(self.time_embedding_dim, self.output_dim, rngs=rngs)
+        self.point_score = nnx.Linear(self.output_dim, 1, rngs=rngs)
+        self.contact_proj = nnx.Linear(2, self.output_dim, rngs=rngs)
+        self.norm = nnx.LayerNorm(num_features=self.output_dim, rngs=rngs)
+
+        self.finger_embedding = nnx.Param(
+            0.02 * jax.random.normal(rngs.params(), (self.num_fingers, self.output_dim), dtype=jnp.float32)
+        )
+        self.point_embedding = nnx.Param(
+            0.02 * jax.random.normal(rngs.params(), (self.num_points, self.output_dim), dtype=jnp.float32)
+        )
+        self.type_embedding = nnx.Param(
+            0.02 * jax.random.normal(rngs.params(), (2, self.output_dim), dtype=jnp.float32)
+        )
+        self.segment_pool_logits = nnx.Param(
+            jnp.zeros((self.future_steps_per_segment,), dtype=jnp.float32)
+        )
+
+    def _encode_steps(self, forces: jax.Array, times_seconds: jax.Array, *, future: bool) -> jax.Array:
+        if forces.ndim != 5:
+            raise ValueError(f"Expected raw tactile force [B,T,F,P,C], got {forces.shape}.")
+        if forces.shape[2:] != (self.num_fingers, self.num_points, self.dim_per_point):
+            raise ValueError(
+                "Expected raw tactile finger/point shape "
+                f"{(self.num_fingers, self.num_points, self.dim_per_point)}, got {forces.shape[2:]}."
+            )
+        if times_seconds.shape != (forces.shape[1],):
+            raise ValueError(f"Expected {forces.shape[1]} time offsets, got {times_seconds.shape}.")
+
+        batch_size, time_steps = forces.shape[:2]
+        force_feature = nnx.swish(self.force_proj_in(forces))
+        force_feature = self.force_proj_out(force_feature)
+
+        finger_feature = jnp.broadcast_to(
+            self.finger_embedding.value[None, None, :, None, :],
+            (batch_size, time_steps, self.num_fingers, self.num_points, self.output_dim),
+        )
+        point_feature = jnp.broadcast_to(
+            self.point_embedding.value[None, None, None, :, :],
+            (batch_size, time_steps, self.num_fingers, self.num_points, self.output_dim),
+        )
+        time_feature = self.time_proj(_continuous_time_embedding(times_seconds, self.time_embedding_dim))
+        time_feature = jnp.broadcast_to(
+            time_feature[None, :, None, None, :],
+            (batch_size, time_steps, self.num_fingers, self.num_points, self.output_dim),
+        )
+        type_feature = jnp.broadcast_to(
+            self.type_embedding.value[int(future)][None, None, None, None, :],
+            (batch_size, time_steps, self.num_fingers, self.num_points, self.output_dim),
+        )
+
+        point_tokens = force_feature + finger_feature + point_feature + time_feature + type_feature
+        magnitude = jnp.linalg.norm(forces.astype(jnp.float32), axis=-1)
+        temperature = jnp.asarray(max(self.contact_temperature, 1e-6), dtype=jnp.float32)
+        gate = jax.nn.sigmoid((magnitude - self.contact_threshold) / temperature)
+
+        score = jnp.squeeze(self.point_score(nnx.swish(point_tokens)), axis=-1).astype(jnp.float32)
+        score = score + jnp.log(gate + 1e-6)
+        if 0 < self.contact_top_k < self.num_points:
+            top_values, _ = jax.lax.top_k(magnitude, self.contact_top_k)
+            kth_value = top_values[..., -1:]
+            score = jnp.where(magnitude >= kth_value, score, -1e4)
+
+        weights = jax.nn.softmax(score, axis=-1).astype(point_tokens.dtype)
+        pooled = jnp.einsum("btfp,btfpd->btfd", weights, point_tokens)
+
+        contact_stats = jnp.stack(
+            [
+                jnp.mean(gate, axis=-1),
+                jnp.max(magnitude, axis=-1),
+            ],
+            axis=-1,
+        ).astype(point_tokens.dtype)
+        pooled = pooled + self.contact_proj(contact_stats)
+        return self.norm(pooled)
+
+    def encode_history(self, forces: jax.Array, times_seconds: jax.Array) -> jax.Array:
+        tokens = self._encode_steps(forces, times_seconds, future=False)
+        return einops.rearrange(tokens, "b t f d -> b (t f) d")
+
+    def encode_future(self, forces: jax.Array, times_seconds: jax.Array) -> jax.Array:
+        expected_steps = self.future_segments * self.future_steps_per_segment
+        if forces.shape[1] != expected_steps:
+            raise ValueError(f"Expected {expected_steps} future tactile steps, got {forces.shape[1]}.")
+        tokens = self._encode_steps(forces, times_seconds, future=True)
+        tokens = einops.rearrange(
+            tokens,
+            "b (s p) f d -> b s p f d",
+            s=self.future_segments,
+            p=self.future_steps_per_segment,
+        )
+        weights = jax.nn.softmax(self.segment_pool_logits.value.astype(jnp.float32)).astype(tokens.dtype)
+        pooled = jnp.einsum("p,bspfd->bsfd", weights, tokens)
+        return einops.rearrange(pooled, "b s f d -> b (s f) d")
+
+
 class _QFormerBlock(nnx.Module):
     """Small pre-norm query block with self-attention, cross-attention, and FFN."""
 

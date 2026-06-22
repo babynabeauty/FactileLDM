@@ -252,6 +252,10 @@ class Pi0LatentFlowConfig(Pi0Config):
     future_tactile_segments: int = 8
     future_steps_per_segment: int = 4
     tactile_tokenizer_dim: int = 256
+    tactile_points_per_finger: int = 1
+    tactile_raw_contact_top_k: int = 24
+    tactile_raw_contact_threshold: float = 1.0
+    tactile_raw_contact_temperature: float = 5.0
     future_tactile_align_layer: int = 12
     tactile_sample_hz: float = 15.0
     arm_hand_mask_attention: bool = False
@@ -262,14 +266,29 @@ class Pi0LatentFlowConfig(Pi0Config):
     def __post_init__(self):
         super().__post_init__()
         if self.structured_tactile:
-            if self.effort_dim != self.tactile_num_fingers * self.tactile_dim_per_finger:
-                raise ValueError("Structured tactile currently supports five per-finger 3D resultant forces only.")
+            if self.tactile_points_per_finger <= 0:
+                raise ValueError("tactile_points_per_finger must be positive.")
+            expected_effort_dim = (
+                self.tactile_num_fingers
+                * self.tactile_points_per_finger
+                * self.tactile_dim_per_finger
+            )
+            if self.effort_dim != expected_effort_dim:
+                raise ValueError(
+                    "Structured tactile effort_dim must equal "
+                    "tactile_num_fingers * tactile_points_per_finger * tactile_dim_per_finger; "
+                    f"got effort_dim={self.effort_dim}, expected={expected_effort_dim}."
+                )
             if len(self.tactile_history_offsets) != self.force_input_frames:
                 raise ValueError("tactile_history_offsets length must equal force_input_frames.")
             if self.future_tactile_segments * self.future_steps_per_segment != self.action_horizon:
                 raise ValueError("Future tactile segments must exactly cover action_horizon.")
             if self.tactile_sample_hz <= 0:
                 raise ValueError("tactile_sample_hz must be positive.")
+            if self.tactile_raw_contact_top_k < 0:
+                raise ValueError("tactile_raw_contact_top_k must be non-negative.")
+            if self.tactile_raw_contact_temperature <= 0:
+                raise ValueError("tactile_raw_contact_temperature must be positive.")
             object.__setattr__(self, "distill_layer_indices", (self.future_tactile_align_layer,))
         if self.arm_hand_mask_attention:
             if not self.structured_tactile:
@@ -321,12 +340,22 @@ class Pi0LatentFlowConfig(Pi0Config):
         image_spec = jax.ShapeDtypeStruct([batch_size, *_model.IMAGE_RESOLUTION, 3], jnp.float32)
         image_mask_spec = jax.ShapeDtypeStruct([batch_size], jnp.bool_)
         effort_shape = (
-            [
-                batch_size,
-                self.force_input_frames + self.action_horizon,
-                self.tactile_num_fingers,
-                self.tactile_dim_per_finger,
-            ]
+            (
+                [
+                    batch_size,
+                    self.force_input_frames + self.action_horizon,
+                    self.tactile_num_fingers,
+                    self.tactile_points_per_finger,
+                    self.tactile_dim_per_finger,
+                ]
+                if self.tactile_points_per_finger > 1
+                else [
+                    batch_size,
+                    self.force_input_frames + self.action_horizon,
+                    self.tactile_num_fingers,
+                    self.tactile_dim_per_finger,
+                ]
+            )
             if self.structured_tactile
             else [batch_size, self.force_input_frames + self.action_horizon, int(self.effort_dim)]
         )
