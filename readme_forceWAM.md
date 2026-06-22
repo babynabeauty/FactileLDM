@@ -1,9 +1,234 @@
-每次运行前先进入项目目录并设置环境变量：
+# ForceWAM / FactileLDM 实验命令
+
+## 每次运行前先设置
+
 ```bash
-cd FactileLDM
+cd /workspace/mnt/sqzhang26/FactileLDM
 source env/.venv/bin/activate
-export HF_LEROBOT_HOME=/workspace/mnt/sqzhang26/FactileLDM
+
+export PROJECT_ROOT=/workspace/mnt/sqzhang26/FactileLDM
+export HF_LEROBOT_HOME="$PROJECT_ROOT"
 export HF_HUB_OFFLINE=1
+export HF_DATASETS_CACHE=.hf_datasets_cache
+
+DATA_REPO="data/grasp_pipette_and_press_button_106ep"
+ASSET_ID="$(basename "$DATA_REPO")"
+mkdir -p logs
+```
+
+说明：
+- 统一使用 `HF_LEROBOT_HOME=/workspace/mnt/sqzhang26/FactileLDM`
+- 统一使用 `DATA_REPO=data/xxx`
+- 不要再使用 `HF_LEROBOT_HOME=/workspace/mnt/sqzhang26/FactileLDM/data`，否则容易变成 `data/data/xxx`
+
+## 归一化
+
+### 5x3 structured dual AE
+
+```bash
+env/.venv/bin/python scripts/compute_norm_stats.py \
+  --config-name pi0_xhand_tactile_structured_dual_ae \
+  --repo-id "$DATA_REPO" \
+  --asset-id "$ASSET_ID"
+```
+
+### 5x120x3 raw structured dual AE
+
+```bash
+env/.venv/bin/python scripts/compute_norm_stats.py \
+  --config-name pi0_xhand_tactile_structured_raw_dual_ae \
+  --repo-id "$DATA_REPO" \
+  --asset-id "$ASSET_ID"
+```
+
+### structured single AE
+
+```bash
+env/.venv/bin/python scripts/compute_norm_stats.py \
+  --config-name pi0_xhand_tactile_structured_single_ae \
+  --repo-id "$DATA_REPO" \
+  --asset-id "$ASSET_ID"
+```
+
+## 推荐训练命令
+
+### A. pi0 no tactile
+
+```bash
+setsid nohup env \
+  HF_LEROBOT_HOME="$PROJECT_ROOT" \
+  HF_DATASETS_CACHE=.hf_datasets_cache \
+  HF_HUB_OFFLINE=1 \
+  CUDA_VISIBLE_DEVICES=0,1,2,3 \
+  XLA_PYTHON_CLIENT_PREALLOCATE=false \
+  env/.venv/bin/python scripts/train.py \
+    pi0_xhand_full_finetune \
+    --exp-name pi0_xhand_full_finetune_106ep_20k \
+    --data.repo-id "$DATA_REPO" \
+    --data.assets.asset-id "$ASSET_ID" \
+    --num-train-steps 20000 \
+    --batch-size 4 \
+    --fsdp-devices 4 \
+    --num-workers 0 \
+    --save-interval 5000 \
+    --keep-period 10000 \
+    --no-wandb-enabled \
+    --overwrite \
+    --weight-loader.params-path checkpoints/pi0_base/params \
+  > logs/pi0_xhand_full_finetune_106ep_20k.log 2>&1 &
+```
+
+### B. current 5x3 tactile observation tokens
+
+如果复用旧 obs-AE 归一化文件，保留 `--data.assets.assets-dir`。
+
+```bash
+setsid nohup env \
+  HF_LEROBOT_HOME="$PROJECT_ROOT" \
+  HF_DATASETS_CACHE=.hf_datasets_cache \
+  HF_HUB_OFFLINE=1 \
+  CUDA_VISIBLE_DEVICES=0,1,2,3 \
+  XLA_PYTHON_CLIENT_PREALLOCATE=false \
+  env/.venv/bin/python scripts/train.py \
+    pi0_xhand_tactile_obs_ae_full_finetune \
+    --exp-name pi0_xhand_tactile_obs_ae_full_finetune_106ep_20k \
+    --data.repo-id "$DATA_REPO" \
+    --data.assets.asset-id "$ASSET_ID" \
+    --data.assets.assets-dir assets/pi0_xhand_tactile_flow_full_finetune \
+    --num-train-steps 20000 \
+    --batch-size 4 \
+    --fsdp-devices 4 \
+    --num-workers 0 \
+    --save-interval 5000 \
+    --keep-period 10000 \
+    --no-wandb-enabled \
+    --overwrite \
+    --weight-loader.params-path checkpoints/pi0_base/params \
+  > logs/pi0_xhand_tactile_obs_ae_full_finetune_106ep_20k.log 2>&1 &
+```
+
+### C. structured single AE
+
+```bash
+setsid nohup env \
+  HF_LEROBOT_HOME="$PROJECT_ROOT" \
+  HF_DATASETS_CACHE=.hf_datasets_cache \
+  HF_HUB_OFFLINE=1 \
+  CUDA_VISIBLE_DEVICES=0,1,2,3 \
+  XLA_PYTHON_CLIENT_PREALLOCATE=false \
+  env/.venv/bin/python scripts/train.py \
+    pi0_xhand_tactile_structured_single_ae \
+    --exp-name structured_single_ae_106ep_20k \
+    --data.repo-id "$DATA_REPO" \
+    --data.assets.asset-id "$ASSET_ID" \
+    --num-train-steps 20000 \
+    --batch-size 4 \
+    --fsdp-devices 4 \
+    --num-workers 0 \
+    --save-interval 5000 \
+    --keep-period 10000 \
+    --no-wandb-enabled \
+    --overwrite \
+    --weight-loader.params-path checkpoints/pi0_base/params \
+  > logs/structured_single_ae_106ep_20k.log 2>&1 &
+```
+
+### D. structured dual AE 5x3
+
+```bash
+setsid nohup env \
+  HF_LEROBOT_HOME="$PROJECT_ROOT" \
+  HF_DATASETS_CACHE=.hf_datasets_cache \
+  HF_HUB_OFFLINE=1 \
+  CUDA_VISIBLE_DEVICES=0,1,2,3 \
+  XLA_PYTHON_CLIENT_PREALLOCATE=false \
+  env/.venv/bin/python scripts/train.py \
+    pi0_xhand_tactile_structured_dual_ae \
+    --exp-name structured_dual_ae_106ep_20k \
+    --data.repo-id "$DATA_REPO" \
+    --data.assets.asset-id "$ASSET_ID" \
+    --num-train-steps 20000 \
+    --batch-size 4 \
+    --fsdp-devices 4 \
+    --num-workers 0 \
+    --save-interval 5000 \
+    --keep-period 10000 \
+    --no-wandb-enabled \
+    --overwrite \
+    --weight-loader.params-path checkpoints/pi0_base/params \
+  > logs/structured_dual_ae_106ep_20k.log 2>&1 &
+```
+
+### E. structured dual AE 5x3 + arm/future/hand mask
+
+这里复用 `pi0_xhand_tactile_structured_dual_ae` 的归一化文件，所以保留 `--data.assets.assets-dir`。
+
+```bash
+setsid nohup env \
+  HF_LEROBOT_HOME="$PROJECT_ROOT" \
+  HF_DATASETS_CACHE=.hf_datasets_cache \
+  HF_HUB_OFFLINE=1 \
+  CUDA_VISIBLE_DEVICES=0,1,2,3 \
+  XLA_PYTHON_CLIENT_PREALLOCATE=false \
+  env/.venv/bin/python scripts/train.py \
+    pi0_xhand_tactile_structured_dual_ae_arm_future_hand_mask \
+    --exp-name structured_dual_ae_arm_future_hand_mask_106ep_20k \
+    --data.repo-id "$DATA_REPO" \
+    --data.assets.asset-id "$ASSET_ID" \
+    --data.assets.assets-dir assets/pi0_xhand_tactile_structured_dual_ae \
+    --num-train-steps 20000 \
+    --batch-size 4 \
+    --fsdp-devices 4 \
+    --num-workers 0 \
+    --save-interval 5000 \
+    --keep-period 10000 \
+    --no-wandb-enabled \
+    --overwrite \
+    --weight-loader.params-path checkpoints/pi0_base/params \
+  > logs/structured_dual_ae_arm_future_hand_mask_106ep_20k.log 2>&1 &
+```
+
+### F. structured raw dual AE 5x120x3
+
+raw 点阵触觉需要单独归一化，不要复用 5x3 的 assets。
+
+```bash
+setsid nohup env \
+  HF_LEROBOT_HOME="$PROJECT_ROOT" \
+  HF_DATASETS_CACHE=.hf_datasets_cache \
+  HF_HUB_OFFLINE=1 \
+  CUDA_VISIBLE_DEVICES=0,1,2,3 \
+  XLA_PYTHON_CLIENT_PREALLOCATE=false \
+  env/.venv/bin/python scripts/train.py \
+    pi0_xhand_tactile_structured_raw_dual_ae \
+    --exp-name pi0_xhand_tactile_structured_raw_dual_ae_106ep_20k \
+    --data.repo-id "$DATA_REPO" \
+    --data.assets.asset-id "$ASSET_ID" \
+    --num-train-steps 20000 \
+    --batch-size 4 \
+    --fsdp-devices 4 \
+    --num-workers 0 \
+    --save-interval 5000 \
+    --keep-period 10000 \
+    --no-wandb-enabled \
+    --overwrite \
+    --weight-loader.params-path checkpoints/pi0_base/params \
+  > logs/pi0_xhand_tactile_structured_raw_dual_ae_106ep_20k.log 2>&1 &
+```
+
+## 历史内容归档
+
+下面是之前的命令和杂项记录，保留备用；日常跑实验优先复制上面的推荐命令。
+
+```bash
+cd /workspace/mnt/sqzhang26/FactileLDM
+source env/.venv/bin/activate
+export PROJECT_ROOT=/workspace/mnt/sqzhang26/FactileLDM
+export HF_LEROBOT_HOME="$PROJECT_ROOT"
+export HF_HUB_OFFLINE=1
+export HF_DATASETS_CACHE=.hf_datasets_cache
+DATA_REPO="data/grasp_pipette_and_press_button_106ep"
+ASSET_ID="$(basename "$DATA_REPO")"
 ```
 
 # 合并数据集
@@ -32,6 +257,7 @@ env/.venv/bin/python scripts/compute_lerobot_future_flow_video.py \
   --output-dir /data/workspace/zhangshiqi/forceWAM/flow_videos \
   --future-step 32 \
   > flow_videos/compute_future_flow.log 2>&1 &
+```
 
 # 将光流视频添加到 LeRobot 数据集
 ```bash
@@ -42,9 +268,11 @@ env/.venv/bin/python scripts/compute_lerobot_future_flow_video.py \
     cam_front=observation.future_flow.cam_front \
     cam_right=observation.future_flow.cam_right \
   --overwrite
+```
 
 
 # 计算3D偏移点
+```bash
 DATA=grasp_pipette_and_press_button
 OUT=outputs/front_scene_flow_grasp_pipette_sam3_tracked_npz
 
@@ -68,21 +296,19 @@ for EP in $(seq 0 48); do
     --skip-ply \
     --output-dir "$OUT"
 done 2>&1 | tee "$OUT/batch.log"
+```
 
 
 # 归一化
 # 根据config修改config-name 需要在config里面修改repo-id
+DATA_REPO=data/grasp_pipette_and_press_button_106ep
+ASSET_ID=$(basename "$DATA_REPO")
 env/.venv/bin/python scripts/compute_norm_stats.py \
-  --config-name pi0_xhand_tactile_structured_single_ae \
-  --repo-id data/grasp_pipette_and_press_button_0616_59ep \ 
-  --asset-id grasp_pipette_and_press_button_0616_59ep 
- 
-  #--repo-id  实际数据集路径，相对于 FactileLDM
-  #--asset-id  归一化 stats 保存/读取的名字
+  --config-name pi0_xhand_tactile_structured_raw_dual_ae \
+  --repo-id "$DATA_REPO" \
+  --asset-id "$ASSET_ID"
 
 
-export HF_LEROBOT_HOME=/workspace/mnt/sqzhang26/FactileLDM/data
-export HF_HUB_OFFLINE=1
 # pi0训练
 mkdir -p /data/workspace/zhangshiqi/forceWAM/logs
 setsid nohup env \
@@ -101,6 +327,9 @@ setsid nohup env \
     --overwrite \
     --weight-loader.params-path checkpoints/pi0_base/params \
   > /data/workspace/zhangshiqi/forceWAM/logs/pi0_xhand_full_finetune_30k_2gpu.log 2>&1 &
+
+
+
 
 # 1AE + current 5x3 tactile observation tokens 
 setsid nohup env \
@@ -123,10 +352,6 @@ setsid nohup env \
   > logs/pi0_xhand_tactile_obs_ae_full_finetune_26ep_0615.log 2>&1 &
 
 # 1AE + tactile
-
-DATA_REPO="data/grasp_pipette_and_press_button_0616_59ep"
-ASSET_ID="$(basename "$DATA_REPO")"
-
 setsid nohup env \
   HF_LEROBOT_HOME=. \
   HF_DATASETS_CACHE=.hf_datasets_cache \
@@ -185,7 +410,30 @@ setsid nohup env \
     --model.flow-vae-name /data/shared_workspace/zhangshiqi/hf/models--stabilityai--sdxl-vae \
   > /data/workspace/zhangshiqi/forceWAM/logs/pi0_xhand_tactile_flow_full_finetune_30k_1gpu.log 2>&1 &
 
-# 2AE full finetune + tactile 
+
+# 2AE full finetune + tactile + rawTactile
+setsid nohup env \
+  HF_LEROBOT_HOME=. \
+  HF_DATASETS_CACHE=.hf_datasets_cache \
+  CUDA_VISIBLE_DEVICES=0,1,2,3 \
+  XLA_PYTHON_CLIENT_PREALLOCATE=false \
+  env/.venv/bin/python scripts/train.py \
+    pi0_xhand_tactile_structured_raw_dual_ae \
+    --exp-name pi0_xhand_tactile_structured_raw_dual_ae_106ep_20k \
+    --data.repo-id "$DATA_REPO" \
+    --data.assets.asset-id "$ASSET_ID" \
+    --num-train-steps 20000 \
+    --batch-size 4 \
+    --fsdp-devices 4 \
+    --num-workers 0 \
+    --save-interval 10000 \
+    --keep-period 10000 \
+    --no-wandb-enabled \
+    --overwrite \
+    --weight-loader.params-path checkpoints/pi0_base/params \
+  > logs/pi0_xhand_tactile_structured_raw_dual_ae_106ep_20k.log 2>&1 &
+
+# 2AE full finetune + tactile  + mask
 setsid nohup env \
   HF_LEROBOT_HOME=. \
   HF_DATASETS_CACHE=.hf_datasets_cache \
@@ -263,6 +511,7 @@ CUDA_VISIBLE_DEVICES=0 env/.venv/bin/python scripts/serve_policy.py --port=8990 
 
 
  rsync -av --progress zhangshiqi@211.86.155.48:/data/workspace/zhangshiqi/forceWAM/checkpoints/pi0_xhand_tactile_forceonly_full_finetune/pi0_xhand_tactile_forceonly_full_finetune/29999 //home/sai/zsq/FactileLDM/checkpoints/pi0_xhand_tactile_forceonly_full_finetune/pi0_xhand_tactile_forceonly_full_finetune
+```
 
 # 压缩
 tar -czvf data.tar.gz grasp_pipette_and_press_button_26ep_26ep/
