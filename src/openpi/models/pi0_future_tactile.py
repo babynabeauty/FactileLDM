@@ -10,6 +10,7 @@ from openpi.models.pi0 import make_attn_mask
 from openpi.models.pi0 import posemb_sincos
 from openpi.models.tactile_tokenizer import DexterousForceTokenizer
 from openpi.models.tactile_tokenizer import FingerRoleFutureTactileQFormer
+from openpi.models.tactile_tokenizer import RawTactileSpatialTokenizer
 
 
 class Pi0FutureTactile(Pi0):
@@ -22,6 +23,7 @@ class Pi0FutureTactile(Pi0):
         self.force_input_frames = int(config.force_input_frames)
         self.num_fingers = int(config.tactile_num_fingers)
         self.dim_per_finger = int(config.tactile_dim_per_finger)
+        self.points_per_finger = int(config.tactile_points_per_finger)
         self.future_segments = int(config.future_tactile_segments)
         self.steps_per_segment = int(config.future_steps_per_segment)
         self.history_token_count = self.force_input_frames * self.num_fingers
@@ -46,15 +48,36 @@ class Pi0FutureTactile(Pi0):
             float(step) / float(config.tactile_sample_hz) for step in range(1, config.action_horizon + 1)
         )
 
-        self.force_tokenizer = DexterousForceTokenizer(
-            output_dim=action_width,
-            hidden_dim=config.tactile_tokenizer_dim,
-            num_fingers=self.num_fingers,
-            dim_per_finger=self.dim_per_finger,
-            future_segments=self.future_segments,
-            future_steps_per_segment=self.steps_per_segment,
-            rngs=rngs,
-        )
+        if self.future_encoder_type == "raw_spatial":
+            raw_tokenizer_kwargs = dict(
+                hidden_dim=config.tactile_tokenizer_dim,
+                num_fingers=self.num_fingers,
+                num_points=self.points_per_finger,
+                dim_per_point=self.dim_per_finger,
+                future_segments=self.future_segments,
+                future_steps_per_segment=self.steps_per_segment,
+                contact_top_k=config.tactile_raw_contact_top_k,
+                contact_threshold=config.tactile_raw_contact_threshold,
+                contact_temperature=config.tactile_raw_contact_temperature,
+            )
+            self.force_tokenizer = RawTactileSpatialTokenizer(
+                output_dim=action_width, rngs=rngs, **raw_tokenizer_kwargs
+            )
+            self.target_force_tokenizer = RawTactileSpatialTokenizer(
+                output_dim=action_width, rngs=rngs, **raw_tokenizer_kwargs
+            )
+            nnx.update(self.target_force_tokenizer, nnx.state(self.force_tokenizer, nnx.Param))
+            self.use_target_ema = True
+        else:
+            self.force_tokenizer = DexterousForceTokenizer(
+                output_dim=action_width,
+                hidden_dim=config.tactile_tokenizer_dim,
+                num_fingers=self.num_fingers,
+                dim_per_finger=self.dim_per_finger,
+                future_segments=self.future_segments,
+                future_steps_per_segment=self.steps_per_segment,
+                rngs=rngs,
+            )
         if self.future_encoder_type == "dexterous":
             self.target_force_tokenizer = DexterousForceTokenizer(
                 output_dim=action_width,
@@ -78,9 +101,10 @@ class Pi0FutureTactile(Pi0):
                 num_layers=config.future_tactile_encoder_depth,
                 num_heads=config.future_tactile_encoder_num_heads,
                 rngs=rngs,
+                fusion_layers=config.future_tactile_encoder_fusion_depth,
             )
             self.use_target_ema = False
-        else:
+        elif self.future_encoder_type != "raw_spatial":
             raise ValueError(f"Unsupported future_tactile_encoder_type={self.future_encoder_type!r}.")
         self.future_query_align_proj = (
             nnx.Linear(action_width, self.target_encoder_width, rngs=rngs)
@@ -131,12 +155,17 @@ class Pi0FutureTactile(Pi0):
         if observation.effort is None:
             raise ValueError("Structured future tactile model requires observation.effort.")
         effort = jnp.asarray(observation.effort, dtype=dtype)
-        expected = (self.force_input_frames + self.action_horizon, self.num_fingers, self.dim_per_finger)
-        if effort.ndim != 4 or effort.shape[1:] != expected:
-            if not require_future and effort.ndim == 4 and effort.shape[1:] == (
+        tactile_shape = (
+            (self.num_fingers, self.points_per_finger, self.dim_per_finger)
+            if self.points_per_finger > 1
+            else (self.num_fingers, self.dim_per_finger)
+        )
+        expected = (self.force_input_frames + self.action_horizon, *tactile_shape)
+        expected_ndim = 5 if self.points_per_finger > 1 else 4
+        if effort.ndim != expected_ndim or effort.shape[1:] != expected:
+            if not require_future and effort.ndim == expected_ndim and effort.shape[1:] == (
                 self.force_input_frames,
-                self.num_fingers,
-                self.dim_per_finger,
+                *tactile_shape,
             ):
                 return effort, None
             raise ValueError(f"Expected structured effort [B,{expected}], got {effort.shape}.")
@@ -290,12 +319,21 @@ class Pi0FutureTactile(Pi0):
             else query_hidden
         )
         latent_loss = self._cosine_distance(aligned_query_hidden, target_tokens)
-        predicted_force = self._decode_future_force(final_query_hidden)
-        force_loss = self._smooth_l1(predicted_force, future_effort)
-        delta_loss = self._smooth_l1(
-            predicted_force[:, 1:] - predicted_force[:, :-1],
-            future_effort[:, 1:] - future_effort[:, :-1],
-        )
+        auxiliary_zero = jnp.zeros(actions.shape[:-2], dtype=jnp.float32)
+        force_loss = auxiliary_zero
+        delta_loss = auxiliary_zero
+        if self.force_loss_weight > 0.0 or self.delta_loss_weight > 0.0:
+            if self.points_per_finger > 1:
+                raise ValueError(
+                    "Raw tactile reconstruction requires a contact-weighted taxel decoder; "
+                    "set future_force_loss_weight and future_force_delta_loss_weight to 0."
+                )
+            predicted_force = self._decode_future_force(final_query_hidden)
+            force_loss = self._smooth_l1(predicted_force, future_effort)
+            delta_loss = self._smooth_l1(
+                predicted_force[:, 1:] - predicted_force[:, :-1],
+                future_effort[:, 1:] - future_effort[:, :-1],
+            )
         velocity = self.action_out_proj(suffix_out[:, -self.action_horizon :])
         action_loss = jnp.mean(jnp.square(velocity - u_t), axis=(-2, -1))
         arm_action_loss = jnp.mean(jnp.square(velocity[:, :, : self.hand_action_start] - u_t[:, :, : self.hand_action_start]), axis=(-2, -1))

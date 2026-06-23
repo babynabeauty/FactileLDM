@@ -253,7 +253,7 @@ class Pi0LatentFlowConfig(Pi0Config):
     future_steps_per_segment: int = 4
     tactile_tokenizer_dim: int = 256
     tactile_points_per_finger: int = 1
-    tactile_raw_contact_top_k: int = 24
+    tactile_raw_contact_top_k: int = 16
     tactile_raw_contact_threshold: float = 1.0
     tactile_raw_contact_temperature: float = 5.0
     future_tactile_align_layer: int = 12
@@ -382,13 +382,18 @@ class Pi0FutureTactileConfig(Pi0Config):
     future_tactile_segments: int = 8
     future_steps_per_segment: int = 4
     tactile_tokenizer_dim: int = 256
+    tactile_points_per_finger: int = 1
+    tactile_raw_contact_top_k: int = 16
+    tactile_raw_contact_threshold: float = 1.0
+    tactile_raw_contact_temperature: float = 5.0
     future_tactile_align_layer: int = 12
     tactile_sample_hz: float = 15.0
     future_tactile_latent_loss_weight: float = 0.1
     future_force_loss_weight: float = 0.2
     future_force_delta_loss_weight: float = 0.05
-    future_tactile_encoder_type: Literal["dexterous", "finger_role"] = "dexterous"
+    future_tactile_encoder_type: Literal["dexterous", "finger_role", "raw_spatial"] = "dexterous"
     future_tactile_encoder_depth: int = 2
+    future_tactile_encoder_fusion_depth: int = 0
     future_tactile_encoder_num_heads: int = 8
     future_tactile_target_width: int = 512
     future_hand_action_loss_weight: float = 0.0
@@ -404,10 +409,27 @@ class Pi0FutureTactileConfig(Pi0Config):
             raise ValueError("tactile_history_offsets length must equal force_input_frames.")
         if self.future_tactile_segments * self.future_steps_per_segment != self.action_horizon:
             raise ValueError("Future tactile segments must exactly cover action_horizon.")
-        if self.effort_dim != self.tactile_num_fingers * self.tactile_dim_per_finger:
-            raise ValueError("Structured tactile currently supports per-finger 3D resultant forces only.")
-        if self.future_tactile_encoder_type not in ("dexterous", "finger_role"):
+        if self.tactile_points_per_finger <= 0:
+            raise ValueError("tactile_points_per_finger must be positive.")
+        expected_effort_dim = (
+            self.tactile_num_fingers * self.tactile_points_per_finger * self.tactile_dim_per_finger
+        )
+        if self.effort_dim != expected_effort_dim:
+            raise ValueError(
+                "Structured tactile effort_dim must equal "
+                "tactile_num_fingers * tactile_points_per_finger * tactile_dim_per_finger; "
+                f"got effort_dim={self.effort_dim}, expected={expected_effort_dim}."
+            )
+        if self.tactile_raw_contact_top_k < 0:
+            raise ValueError("tactile_raw_contact_top_k must be non-negative.")
+        if self.tactile_raw_contact_temperature <= 0:
+            raise ValueError("tactile_raw_contact_temperature must be positive.")
+        if self.future_tactile_encoder_type not in ("dexterous", "finger_role", "raw_spatial"):
             raise ValueError(f"Unsupported future_tactile_encoder_type={self.future_tactile_encoder_type!r}.")
+        if self.tactile_points_per_finger > 1 and self.future_tactile_encoder_type != "raw_spatial":
+            raise ValueError("Raw tactile input requires future_tactile_encoder_type='raw_spatial'.")
+        if self.tactile_points_per_finger == 1 and self.future_tactile_encoder_type == "raw_spatial":
+            raise ValueError("raw_spatial requires tactile_points_per_finger > 1.")
         if self.future_tactile_target_width <= 0:
             raise ValueError("future_tactile_target_width must be positive.")
         if self.hand_action_start + self.hand_action_dim > self.action_dim:
@@ -429,12 +451,22 @@ class Pi0FutureTactileConfig(Pi0Config):
                 image_masks={key: image_mask_spec for key in _model.IMAGE_KEYS},
                 state=jax.ShapeDtypeStruct([batch_size, self.action_dim], jnp.float32),
                 effort=jax.ShapeDtypeStruct(
-                    [
-                        batch_size,
-                        self.force_input_frames + self.action_horizon,
-                        self.tactile_num_fingers,
-                        self.tactile_dim_per_finger,
-                    ],
+                    (
+                        [
+                            batch_size,
+                            self.force_input_frames + self.action_horizon,
+                            self.tactile_num_fingers,
+                            self.tactile_points_per_finger,
+                            self.tactile_dim_per_finger,
+                        ]
+                        if self.tactile_points_per_finger > 1
+                        else [
+                            batch_size,
+                            self.force_input_frames + self.action_horizon,
+                            self.tactile_num_fingers,
+                            self.tactile_dim_per_finger,
+                        ]
+                    ),
                     jnp.float32,
                 ),
                 tokenized_prompt=jax.ShapeDtypeStruct([batch_size, self.max_token_len], jnp.int32),
@@ -465,11 +497,14 @@ class FutureTactileEncoderPretrainConfig(_model.BaseModelConfig):
     tactile_tokenizer_dim: int = 256
     encoder_width: int = 512
     encoder_depth: int = 2
+    encoder_fusion_depth: int = 0
     encoder_num_heads: int = 8
     hand_action_start: int = 6
     hand_action_dim: int = 12
     hand_delta_loss_weight: float = 0.05
-    hand_head_type: Literal["mean_repeat", "finger_flatten_4step"] = "mean_repeat"
+    hand_head_type: Literal["mean_repeat", "finger_flatten_4step", "flow_dit"] = "mean_repeat"
+    action_decoder_depth: int = 8
+    action_decoder_num_heads: int = 8
 
     @property
     @override
@@ -485,8 +520,10 @@ class FutureTactileEncoderPretrainConfig(_model.BaseModelConfig):
             raise ValueError("Stage-1 currently supports per-finger 3D resultant forces only.")
         if self.hand_action_start + self.hand_action_dim > self.action_dim:
             raise ValueError("Hand action slice exceeds action_dim.")
-        if self.hand_head_type not in ("mean_repeat", "finger_flatten_4step"):
+        if self.hand_head_type not in ("mean_repeat", "finger_flatten_4step", "flow_dit"):
             raise ValueError(f"Unsupported hand_head_type={self.hand_head_type!r}.")
+        if self.action_decoder_depth <= 0:
+            raise ValueError("action_decoder_depth must be positive.")
 
     @override
     def create(self, rng: at.KeyArrayLike):

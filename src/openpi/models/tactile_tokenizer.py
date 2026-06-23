@@ -179,6 +179,27 @@ class RawTactileSpatialTokenizer(nnx.Module):
             jnp.zeros((self.future_steps_per_segment,), dtype=jnp.float32)
         )
 
+    def _contact_top_k_mask(self, magnitude: jax.Array) -> jax.Array:
+        """Select hard top-k contacts without XLA's problematic TopK lowering."""
+        selected = jnp.zeros(magnitude.shape, dtype=jnp.bool_)
+        remaining = magnitude
+
+        def select_one(_, carry):
+            selected_mask, remaining_values = carry
+            index = jnp.argmax(remaining_values, axis=-1)
+            one_hot = jax.nn.one_hot(index, self.num_points, dtype=jnp.bool_)
+            selected_mask = jnp.logical_or(selected_mask, one_hot)
+            remaining_values = jnp.where(one_hot, -jnp.inf, remaining_values)
+            return selected_mask, remaining_values
+
+        selected, _ = jax.lax.fori_loop(
+            0,
+            self.contact_top_k,
+            select_one,
+            (selected, remaining),
+        )
+        return selected
+
     def _encode_steps(self, forces: jax.Array, times_seconds: jax.Array, *, future: bool) -> jax.Array:
         if forces.ndim != 5:
             raise ValueError(f"Expected raw tactile force [B,T,F,P,C], got {forces.shape}.")
@@ -220,9 +241,8 @@ class RawTactileSpatialTokenizer(nnx.Module):
         score = jnp.squeeze(self.point_score(nnx.swish(point_tokens)), axis=-1).astype(jnp.float32)
         score = score + jnp.log(gate + 1e-6)
         if 0 < self.contact_top_k < self.num_points:
-            top_values, _ = jax.lax.top_k(magnitude, self.contact_top_k)
-            kth_value = top_values[..., -1:]
-            score = jnp.where(magnitude >= kth_value, score, -1e4)
+            contact_mask = self._contact_top_k_mask(magnitude)
+            score = jnp.where(contact_mask, score, -1e4)
 
         weights = jax.nn.softmax(score, axis=-1).astype(point_tokens.dtype)
         pooled = jnp.einsum("btfp,btfpd->btfd", weights, point_tokens)
@@ -315,6 +335,39 @@ class _QFormerBlock(nnx.Module):
         return queries
 
 
+class _SelfAttentionFusionBlock(nnx.Module):
+    """Pre-norm self-attention block used to fuse tactile tokens before Q-Former."""
+
+    def __init__(self, *, width: int, num_heads: int, mlp_dim: int, rngs: nnx.Rngs):
+        if width % num_heads != 0:
+            raise ValueError(f"width={width} must be divisible by num_heads={num_heads}.")
+        self.width = int(width)
+        self.num_heads = int(num_heads)
+        self.head_dim = self.width // self.num_heads
+        self.q = nnx.Linear(width, width, rngs=rngs)
+        self.k = nnx.Linear(width, width, rngs=rngs)
+        self.v = nnx.Linear(width, width, rngs=rngs)
+        self.attn_out = nnx.Linear(width, width, rngs=rngs)
+        self.ffn_in = nnx.Linear(width, mlp_dim, rngs=rngs)
+        self.ffn_out = nnx.Linear(mlp_dim, width, rngs=rngs)
+        self.attn_norm = nnx.LayerNorm(num_features=width, rngs=rngs)
+        self.ffn_norm = nnx.LayerNorm(num_features=width, rngs=rngs)
+
+    def _attention(self, x: jax.Array) -> jax.Array:
+        query = einops.rearrange(self.q(x), "b n (h d) -> b h n d", h=self.num_heads)
+        key = einops.rearrange(self.k(x), "b n (h d) -> b h n d", h=self.num_heads)
+        value = einops.rearrange(self.v(x), "b n (h d) -> b h n d", h=self.num_heads)
+        logits = jnp.einsum("bhqd,bhkd->bhqk", query, key) / math.sqrt(float(self.head_dim))
+        weights = jax.nn.softmax(logits.astype(jnp.float32), axis=-1).astype(value.dtype)
+        attended = jnp.einsum("bhqk,bhkd->bhqd", weights, value)
+        return einops.rearrange(attended, "b h n d -> b n (h d)")
+
+    def __call__(self, tokens: jax.Array) -> jax.Array:
+        tokens = tokens + self.attn_out(self._attention(self.attn_norm(tokens)))
+        tokens = tokens + self.ffn_out(nnx.swish(self.ffn_in(self.ffn_norm(tokens))))
+        return tokens
+
+
 class FingerRoleFutureTactileQFormer(nnx.Module):
     """Extracts action-aware future contact tokens from per-finger future forces.
 
@@ -334,6 +387,7 @@ class FingerRoleFutureTactileQFormer(nnx.Module):
         num_layers: int,
         num_heads: int,
         rngs: nnx.Rngs,
+        fusion_layers: int = 0,
     ):
         self.output_dim = int(output_dim)
         self.hidden_dim = int(hidden_dim)
@@ -343,6 +397,7 @@ class FingerRoleFutureTactileQFormer(nnx.Module):
         self.future_steps_per_segment = int(future_steps_per_segment)
         self.num_layers = int(num_layers)
         self.num_heads = int(num_heads)
+        self.fusion_layers = int(fusion_layers)
         self.time_embedding_dim = 64
         self.force_proj_in = nnx.Linear(self.dim_per_finger, self.hidden_dim, rngs=rngs)
         self.force_proj_out = nnx.Linear(self.hidden_dim, self.output_dim, rngs=rngs)
@@ -362,6 +417,15 @@ class FingerRoleFutureTactileQFormer(nnx.Module):
         self.query_finger_embedding = nnx.Param(
             0.02 * jax.random.normal(rngs.params(), (self.num_fingers, self.output_dim), dtype=jnp.float32)
         )
+        self.fusion_blocks = [
+            _SelfAttentionFusionBlock(
+                width=self.output_dim,
+                num_heads=self.num_heads,
+                mlp_dim=max(self.output_dim * 4, self.hidden_dim),
+                rngs=rngs,
+            )
+            for _ in range(self.fusion_layers)
+        ]
         self.blocks = [
             _QFormerBlock(
                 width=self.output_dim,
@@ -411,6 +475,8 @@ class FingerRoleFutureTactileQFormer(nnx.Module):
         if forces.shape[1] != expected_steps:
             raise ValueError(f"Expected {expected_steps} future force steps, got {forces.shape[1]}.")
         memory = self._memory_tokens(forces, times_seconds)
+        for block in self.fusion_blocks:
+            memory = block(memory)
         queries = self._queries(forces.shape[0], memory.dtype)
         for block in self.blocks:
             queries = block(queries, memory)

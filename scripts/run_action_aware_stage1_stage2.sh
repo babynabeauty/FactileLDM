@@ -2,8 +2,8 @@
 set -Eeuo pipefail
 
 # Sequentially run:
-#   Stage 1: future_tactile_encoder_pretrain_finger_head
-#   Stage 2: pi0_xhand_tactile_action_aware_single_ae
+#   Stage 1: future_tactile_encoder_pretrain_flare_dit
+#   Stage 2: pi0_xhand_tactile_action_aware_flare_single_ae
 #
 # Usage from the FactileLDM repo root:
 #
@@ -26,13 +26,14 @@ FSDP_DEVICES="${FSDP_DEVICES:-4}"
 GLOBAL_BATCH_SIZE="${GLOBAL_BATCH_SIZE:-4}"
 NUM_WORKERS="${NUM_WORKERS:-0}"
 
-STAGE1_CONFIG="${STAGE1_CONFIG:-future_tactile_encoder_pretrain_finger_head}"
+STAGE1_CONFIG="${STAGE1_CONFIG:-future_tactile_encoder_pretrain_flare_dit}"
 SKIP_STAGE1="${SKIP_STAGE1:-0}"
 STAGE1_STEPS="${STAGE1_STEPS:-30000}"
 STAGE1_SAVE_INTERVAL="${STAGE1_SAVE_INTERVAL:-5000}"
 STAGE1_KEEP_PERIOD="${STAGE1_KEEP_PERIOD:-5000}"
 STAGE1_EXP_NAME="${STAGE1_EXP_NAME:-future_tactile_encoder_${RUN_TAG}_${STAGE1_STEPS}steps}"
 
+STAGE2_CONFIG="${STAGE2_CONFIG:-pi0_xhand_tactile_action_aware_flare_single_ae}"
 STAGE2_STEPS="${STAGE2_STEPS:-20000}"
 STAGE2_SAVE_INTERVAL="${STAGE2_SAVE_INTERVAL:-5000}"
 STAGE2_KEEP_PERIOD="${STAGE2_KEEP_PERIOD:-5000}"
@@ -148,7 +149,7 @@ log "GPUs: ${GPU_IDS}, batch: ${GLOBAL_BATCH_SIZE}, fsdp devices: ${FSDP_DEVICES
 
 # These three configs use the same structured calc-force data transform.
 ensure_norm_stats "pi0_xhand_tactile_structured_single_ae" "$STAGE1_CONFIG"
-ensure_norm_stats "$STAGE1_CONFIG" "pi0_xhand_tactile_action_aware_single_ae"
+ensure_norm_stats "$STAGE1_CONFIG" "$STAGE2_CONFIG"
 
 STAGE1_LOG="logs/${STAGE1_EXP_NAME}.log"
 STAGE1_CKPT_ROOT="checkpoints/${STAGE1_CONFIG}/${STAGE1_EXP_NAME}"
@@ -187,7 +188,7 @@ log "Stage 1 completed. Using encoder params: ${STAGE1_ENCODER_PARAMS}"
 STAGE2_LOG="logs/${STAGE2_EXP_NAME}.log"
 log "Stage 2 starting: exp=${STAGE2_EXP_NAME}, steps=${STAGE2_STEPS}, log=${STAGE2_LOG}"
 CUDA_VISIBLE_DEVICES="$GPU_IDS" \
-  "$PYTHON" scripts/train.py pi0_xhand_tactile_action_aware_single_ae \
+  "$PYTHON" scripts/train.py "$STAGE2_CONFIG" \
     --exp-name "$STAGE2_EXP_NAME" \
     --data.repo-id "$DATA_REPO" \
     --data.assets.asset-id "$DATA_ASSET_ID" \
@@ -204,4 +205,4 @@ CUDA_VISIBLE_DEVICES="$GPU_IDS" \
   > "$STAGE2_LOG" 2>&1
 
 log "Stage 2 completed successfully."
-log "Done. Stage1=${STAGE1_CKPT_ROOT}, Stage2=checkpoints/pi0_xhand_tactile_action_aware_single_ae/${STAGE2_EXP_NAME}"
+log "Done. Stage1=${STAGE1_CKPT_ROOT}, Stage2=checkpoints/${STAGE2_CONFIG}/${STAGE2_EXP_NAME}"

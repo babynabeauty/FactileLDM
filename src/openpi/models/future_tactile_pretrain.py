@@ -1,3 +1,5 @@
+import math
+
 import einops
 import flax.nnx as nnx
 import jax
@@ -5,7 +7,65 @@ import jax.numpy as jnp
 
 from openpi.models import model_tavla as _model
 from openpi.models import pi0_config
+from openpi.models.tactile_tokenizer import _QFormerBlock
 from openpi.models.tactile_tokenizer import FingerRoleFutureTactileQFormer
+
+
+def _flow_time_embedding(timestep: jax.Array, width: int) -> jax.Array:
+    """Continuous sinusoidal embedding for the flow-matching noise level."""
+    half = width // 2
+    fraction = jnp.arange(half, dtype=jnp.float32) / max(half - 1, 1)
+    period = 4e-3 * (4.0 / 4e-3) ** fraction
+    phase = timestep.astype(jnp.float32)[:, None] * (2.0 * math.pi) / period[None, :]
+    embedding = jnp.concatenate([jnp.sin(phase), jnp.cos(phase)], axis=-1)
+    if embedding.shape[-1] < width:
+        embedding = jnp.pad(embedding, ((0, 0), (0, width - embedding.shape[-1])))
+    return embedding
+
+
+class FlowMatchingHandActionDecoder(nnx.Module):
+    """FLARE-style DiT decoder used only to make c_future action-aware."""
+
+    def __init__(
+        self,
+        *,
+        action_horizon: int,
+        hand_action_dim: int,
+        width: int,
+        depth: int,
+        num_heads: int,
+        rngs: nnx.Rngs,
+    ):
+        self.action_horizon = int(action_horizon)
+        self.hand_action_dim = int(hand_action_dim)
+        self.action_in = nnx.Linear(self.hand_action_dim, width, rngs=rngs)
+        self.time_in = nnx.Linear(width, width, rngs=rngs)
+        self.time_out = nnx.Linear(width, width, rngs=rngs)
+        self.action_position = nnx.Param(
+            0.02 * jax.random.normal(rngs.params(), (self.action_horizon, width), dtype=jnp.float32)
+        )
+        self.blocks = [
+            _QFormerBlock(width=width, num_heads=num_heads, mlp_dim=width * 4, rngs=rngs)
+            for _ in range(depth)
+        ]
+        self.output_norm = nnx.LayerNorm(num_features=width, rngs=rngs)
+        self.action_out = nnx.Linear(width, self.hand_action_dim, rngs=rngs)
+
+    def __call__(
+        self,
+        noisy_hand_action: jax.Array,
+        timestep: jax.Array,
+        c_future: jax.Array,
+        condition: jax.Array,
+    ) -> jax.Array:
+        time_feature = self.time_out(nnx.swish(self.time_in(_flow_time_embedding(timestep, condition.shape[-1]))))
+        action_tokens = self.action_in(noisy_hand_action)
+        action_tokens = action_tokens + self.action_position.value[None] + time_feature[:, None, :]
+        state_history_token = condition[:, None, :] + time_feature[:, None, :]
+        tokens = jnp.concatenate([state_history_token, action_tokens], axis=1)
+        for block in self.blocks:
+            tokens = block(tokens, c_future)
+        return self.action_out(self.output_norm(tokens[:, 1:]))
 
 
 class FutureTactileEncoderPretrain(nnx.Module):
@@ -48,6 +108,7 @@ class FutureTactileEncoderPretrain(nnx.Module):
             num_layers=config.encoder_depth,
             num_heads=config.encoder_num_heads,
             rngs=rngs,
+            fusion_layers=config.encoder_fusion_depth,
         )
         # Model transforms pad the physical 18-D robot state to action_dim,
         # matching the state interface used by Pi0 and the stage-2 policy.
@@ -68,6 +129,15 @@ class FutureTactileEncoderPretrain(nnx.Module):
             self.hand_head_out = nnx.Linear(
                 self.encoder_width,
                 self.steps_per_segment * self.hand_action_dim,
+                rngs=rngs,
+            )
+        elif self.hand_head_type == "flow_dit":
+            self.hand_action_decoder = FlowMatchingHandActionDecoder(
+                action_horizon=self.action_horizon,
+                hand_action_dim=self.hand_action_dim,
+                width=self.encoder_width,
+                depth=config.action_decoder_depth,
+                num_heads=config.action_decoder_num_heads,
                 rngs=rngs,
             )
         else:
@@ -95,6 +165,8 @@ class FutureTactileEncoderPretrain(nnx.Module):
         )
 
     def predict_hand_action(self, c_future: jax.Array, condition: jax.Array) -> jax.Array:
+        if self.hand_head_type == "flow_dit":
+            raise ValueError("flow_dit predicts a velocity field and requires noisy actions and a timestep.")
         segment_tokens = einops.rearrange(
             c_future,
             "b (s f) d -> b s f d",
@@ -126,15 +198,32 @@ class FutureTactileEncoderPretrain(nnx.Module):
         return jnp.mean(loss, axis=tuple(range(1, loss.ndim)))
 
     def compute_loss_with_stats(self, rng, observation, actions, *, train=False):
-        del rng, train
+        del train
         history_effort, future_effort = self._split_effort(observation, dtype=actions.dtype)
         c_future = self.encode_future(future_effort)
         condition = self._history_context(history_effort, observation.state)
-        pred_hand_action = self.predict_hand_action(c_future, condition)
         target_hand_action = actions[
             :, :, self.hand_action_start : self.hand_action_start + self.hand_action_dim
         ]
 
+        if self.hand_head_type == "flow_dit":
+            noise_rng, time_rng = jax.random.split(rng)
+            noise = jax.random.normal(noise_rng, target_hand_action.shape, dtype=target_hand_action.dtype)
+            time = jax.random.beta(time_rng, 1.5, 1, (target_hand_action.shape[0],)) * 0.999 + 0.001
+            noisy_hand_action = time[:, None, None] * noise + (1.0 - time[:, None, None]) * target_hand_action
+            target_velocity = noise - target_hand_action
+            predicted_velocity = self.hand_action_decoder(
+                noisy_hand_action, time, c_future, condition
+            )
+            flow_loss = jnp.mean(jnp.square(predicted_velocity - target_velocity), axis=(1, 2))
+            return flow_loss, {
+                "loss/flow_matching": flow_loss,
+                "loss/hand_action": flow_loss,
+                "loss/hand_delta": jnp.zeros_like(flow_loss),
+                "loss/total": flow_loss,
+            }
+
+        pred_hand_action = self.predict_hand_action(c_future, condition)
         hand_loss = self._smooth_l1(pred_hand_action, target_hand_action)
         delta_loss = self._smooth_l1(
             pred_hand_action[:, 1:] - pred_hand_action[:, :-1],
