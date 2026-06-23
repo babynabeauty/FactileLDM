@@ -373,24 +373,6 @@ setsid nohup env \
     --weight-loader.params-path checkpoints/pi0_base/params \
   > logs/structured_single_ae_60ep_5k_0616.log 2>&1 &
 
-# 2AE full finetune + tactile
-setsid nohup env \
-  HF_LEROBOT_HOME=/data/workspace/zhangshiqi/forceWAM \
-  CUDA_VISIBLE_DEVICES=6,7 \
-  XLA_PYTHON_CLIENT_PREALLOCATE=false \
-  /data/workspace/zhangshiqi/forceWAM/env/.venv/bin/python \
-  /data/workspace/zhangshiqi/forceWAM/scripts/train.py pi0_xhand_tactile_noflow_full_finetune \
-    --exp-name pi0_xhand_tactile_noflow_full_finetune \
-    --num-train-steps 30000 \
-    --batch-size 4 \
-    --num-workers 0 \
-    --save-interval 5000 \
-    --keep-period 10000 \
-    --no-wandb-enabled \
-    --overwrite \
-    --weight-loader.params-path checkpoints/pi0_base/params \
-    > /data/workspace/zhangshiqi/forceWAM/logs/pi0_xhand_tactile_noflow_full_finetune_30k_2gpu.log 2>&1 &
-
 # 2AE full finetune + tactile + 2D flow
 setsid nohup env \
   HF_LEROBOT_HOME=. \
@@ -474,25 +456,15 @@ setsid nohup env \
     --data.assets.assets-dir /data/workspace/zhangshiqi/forceWAM/assets/pi0_xhand_tactile_flow_full_finetune
   > /data/workspace/zhangshiqi/forceWAM/logs/pi0_xhand_tactile_3dflow_full_finetune_30k_1gpu.log 2>&1 &
 
-# 2AE full finetune + raw tactile + 2D flow
-setsid nohup env \
-  HF_LEROBOT_HOME=/data/workspace/zhangshiqi/forceWAM \
-  CUDA_VISIBLE_DEVICES=7 \
-  XLA_PYTHON_CLIENT_PREALLOCATE=false \
-  env/.venv/bin/python scripts/train.py pi0_xhand_tactile_grid_flow \
-    --exp-name pi0_xhand_tactile_grid_flow \
-    --num-train-steps 30000 \
-    --batch-size 1 \
-    --num-workers 0 \
-    --save-interval 5000 \
-    --keep-period 10000 \
-    --no-wandb-enabled \
-    --overwrite \
-    --weight-loader.params-path checkpoints/pi0_base/params \
-    --data.assets.assets-dir /data/workspace/zhangshiqi/forceWAM/assets/pi0_xhand_tactile_flow_full_finetune \
-  > /data/workspace/zhangshiqi/forceWAM/logs/pi0_xhand_tactile_grid_flow.log 2>&1 &
+# config总结：
 
+仿FLARE setting
+scripts/run_action_aware_stage1_stage2.sh
+future_tactile_encoder_pretrain_flare_dit
+pi0_xhand_tactile_action_aware_flare_single_ae
 
+pi0_xhand_tactile_structured_raw_dual_ae
+pi0_xhand_tactile_structured_raw_single_ae
 
 # 模型推理
 ```bash
@@ -508,9 +480,6 @@ CUDA_VISIBLE_DEVICES=0 env/.venv/bin/python scripts/serve_policy.py --port=8990 
 --policy.config=pi0_xhand_full_finetune \
 --policy.dir=checkpoints/pi0_xhand_full_finetune/pi0_xhand_full_finetune_30k_2gpu/29999
 
-
-
- rsync -av --progress zhangshiqi@211.86.155.48:/data/workspace/zhangshiqi/forceWAM/checkpoints/pi0_xhand_tactile_forceonly_full_finetune/pi0_xhand_tactile_forceonly_full_finetune/29999 //home/sai/zsq/FactileLDM/checkpoints/pi0_xhand_tactile_forceonly_full_finetune/pi0_xhand_tactile_forceonly_full_finetune
 ```
 
 # 压缩
@@ -521,8 +490,8 @@ tar -xzvf 文件名.tar.gz
 pip install awscli
 
 aws configure
-AWS Access Key ID [None]: URulYpw0hpArLO6SL8Z4ydO61GKN
-AWS Secret Access Key [None]: DW3uAAS84SG7pTM3KWs85O3w2dL6GC
+AWS Access Key ID [None]:
+AWS Secret Access Key [None]:
 Default region name [None]: huhehaote-1
 Default output format [None]: json
 
@@ -537,6 +506,6 @@ aws s3 cp s3://sqzhang26-2/path/to/folder ./folder \
   --recursive \
   --endpoint-url https://eos-huhehaote-1.cmecloud.cn
 
-# 大文件上传  mac支持
+# 大文件上传  mac支持\
 s3cmd put /Users/babyna/Downloads/grasp_pipette_and_press_w_force_w_depth_0615_good_tactile_26ep.zip \
   s3://sqzhang26-2/grasp_pipette_and_press_w_force_w_depth_0615_good_tactile_26ep.zip
