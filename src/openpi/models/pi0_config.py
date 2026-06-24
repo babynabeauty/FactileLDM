@@ -86,7 +86,8 @@ class Pi0Config(_model.BaseModelConfig):
                     "right_wrist_0_rgb": image_mask_spec,
                 },
                 state=jax.ShapeDtypeStruct([batch_size, self.action_dim], jnp.float32),
-                tactile=(
+                tactile=None,
+                effort=(
                     jax.ShapeDtypeStruct(
                         [batch_size, self.tactile_num_fingers, self.tactile_dim_per_finger],
                         jnp.float32,

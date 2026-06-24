@@ -180,18 +180,19 @@ class Pi0(_model.BaseModel):
             ar_mask += [True]
 
             if self.use_tactile_observation:
-                if obs.tactile is None:
-                    raise ValueError("Pi0 tactile-observation mode requires `observation.tactile`.")
+                tactile_observation = obs.effort if obs.effort is not None else obs.tactile
+                if tactile_observation is None:
+                    raise ValueError("Pi0 tactile-observation mode requires `observation.effort`.")
                 expected_shape = (
                     obs.state.shape[0],
                     self.tactile_num_fingers,
                     self.tactile_dim_per_finger,
                 )
-                if obs.tactile.shape != expected_shape:
+                if tactile_observation.shape != expected_shape:
                     raise ValueError(
-                        f"Expected tactile shape {expected_shape}, got {obs.tactile.shape}."
+                        f"Expected effort shape {expected_shape}, got {tactile_observation.shape}."
                     )
-                tactile_tokens = self.tactile_proj_in(obs.tactile)
+                tactile_tokens = self.tactile_proj_in(tactile_observation)
                 tactile_tokens = nnx.swish(tactile_tokens)
                 tactile_tokens = self.tactile_proj_out(tactile_tokens)
                 tactile_tokens = self.tactile_norm(

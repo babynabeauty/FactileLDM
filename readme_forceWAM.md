@@ -80,7 +80,7 @@ setsid nohup env \
 
 ### B. current 5x3 tactile observation tokens
 
-如果复用旧 obs-AE 归一化文件，保留 `--data.assets.assets-dir`。
+obs-AE 已统一使用 `effort [5,3]`，直接复用 structured dual-AE 的归一化文件。
 
 ```bash
 setsid nohup env \
@@ -94,7 +94,7 @@ setsid nohup env \
     --exp-name pi0_xhand_tactile_obs_ae_full_finetune_106ep_20k \
     --data.repo-id "$DATA_REPO" \
     --data.assets.asset-id "$ASSET_ID" \
-    --data.assets.assets-dir assets/pi0_xhand_tactile_flow_full_finetune \
+    --data.assets.assets-dir assets/pi0_xhand_tactile_structured_dual_ae \
     --num-train-steps 20000 \
     --batch-size 8 \
     --fsdp-devices 4 \
@@ -350,7 +350,7 @@ setsid nohup env \
     --no-wandb-enabled \
     --overwrite \
     --weight-loader.params-path /workspace/mnt/sqzhang26/hf_weight/pi0_base/params \
-    --data.assets.assets-dir assets/pi0_xhand_tactile_flow_full_finetune \
+    --data.assets.assets-dir assets/pi0_xhand_tactile_structured_dual_ae \
   > logs/pi0_xhand_tactile_obs_ae_full_finetune_26ep_0615.log 2>&1 &
 
 # 1AE + tactile

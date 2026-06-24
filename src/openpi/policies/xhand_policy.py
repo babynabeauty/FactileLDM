@@ -283,7 +283,7 @@ class XHandPi0Inputs(transforms.DataTransformFn):
 
 @dataclasses.dataclass(frozen=True)
 class XHandTactileObsInputs(XHandPi0Inputs):
-    """Adds the current five-finger resultant force as a Pi0 observation."""
+    """Adds the current five-finger resultant force under the shared effort key."""
 
     def __call__(self, data: dict) -> dict:
         inputs = super().__call__(data)
@@ -300,7 +300,7 @@ class XHandTactileObsInputs(XHandPi0Inputs):
         else:
             state_seq = _as_state_sequence(_get_required(data, STATE_KEY_ALIASES, "observation.state"))
             tactile = _extract_current_calc_force(state_seq[-1])
-        inputs["tactile"] = tactile
+        inputs["effort"] = tactile
         return inputs
 
 
