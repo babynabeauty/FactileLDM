@@ -186,6 +186,9 @@ setsid nohup env \
 
 这里复用 `pi0_xhand_tactile_structured_dual_ae` 的归一化文件，所以保留 `--data.assets.assets-dir`。
 
+DATA_REPO="data/grasp_pipette_and_press_button_106ep"
+ASSET_ID="$(basename "$DATA_REPO")"
+
 ```bash
 setsid nohup env \
   HF_LEROBOT_HOME="$PROJECT_ROOT" \
@@ -238,6 +241,55 @@ setsid nohup env \
     --weight-loader.params-path checkpoints/pi0_base/params \
   > logs/pi0_xhand_tactile_structured_raw_dual_ae_106ep_20k.log 2>&1 &
 ```
+
+### G. 统一命令
+```bash
+setsid nohup env \
+  HF_LEROBOT_HOME="$PROJECT_ROOT" \
+  HF_DATASETS_CACHE=.hf_datasets_cache \
+  HF_HUB_OFFLINE=1 \
+  CUDA_VISIBLE_DEVICES=0,1,2,3 \
+  XLA_PYTHON_CLIENT_PREALLOCATE=false \
+  env/.venv/bin/python scripts/train.py \
+    pi0_xhand_tactile_structured_raw_dual_ae_arm_future_hand_mask \
+    --exp-name pi0_xhand_tactile_structured_raw_dual_ae_arm_future_hand_mask_106ep_20k \
+    --data.repo-id "$DATA_REPO" \
+    --data.assets.asset-id "$ASSET_ID" \
+    --data.assets.assets-dir assets/pi0_xhand_tactile_structured_dual_ae \
+    --num-train-steps 20000 \
+    --batch-size 4 \
+    --fsdp-devices 4 \
+    --num-workers 0 \
+    --save-interval 5000 \
+    --keep-period 10000 \
+    --no-wandb-enabled \
+    --overwrite \
+    --weight-loader.params-path checkpoints/pi0_base/params \
+  > logs/pi0_xhand_tactile_structured_raw_dual_ae_arm_future_hand_mask_106ep_20k.log 2>&1 &
+```
+
+# config总结：
++ pi0_xhand_tactile_structured_dual_ae：5*3 per-finger token；双AE结构
++ pi0_xhand_tactile_structured_single_ae：5*3 per-finger token；单AE结构
++ pi0_xhand_tactile_structured_dual_ae_arm_future_hand_mask：5*3 per-finger token；双AE结构，加模型mask
+
++ pi0_xhand_tactile_structured_raw_dual_ae
++ pi0_xhand_tactile_structured_raw_single_ae
++ pi0_xhand_tactile_structured_raw_dual_ae_arm_future_hand_mask
+
++ pi0_xhand_tactile_flow: 5*3压成一个token，加未来flow
++ pi0_xhand_tactile_forceonly_full_finetune： 5*3压成一个token
++ pi0_xhand_tactile_3dflow_full_finetune： 5*3压成一个token，加3D场景流
+
++ pi0_xhand_full_finetune：原始pi0
+
++ pi0_xhand_tactile_obs_ae_full_finetune：tactile输入为当前观测
+
++ 仿FLARE setting
+scripts/run_action_aware_stage1_stage2.sh
+future_tactile_encoder_pretrain_flare_dit
+pi0_xhand_tactile_action_aware_flare_single_ae
+
 
 ## 历史内容归档
 
@@ -321,196 +373,6 @@ for EP in $(seq 0 48); do
 done 2>&1 | tee "$OUT/batch.log"
 ```
 
-
-# 归一化
-# 根据config修改config-name 需要在config里面修改repo-id
-DATA_REPO=data/grasp_pipette_and_press_button_106ep
-ASSET_ID=$(basename "$DATA_REPO")
-env/.venv/bin/python scripts/compute_norm_stats.py \
-  --config-name pi0_xhand_tactile_structured_raw_dual_ae \
-  --repo-id "$DATA_REPO" \
-  --asset-id "$ASSET_ID"
-
-
-# pi0训练
-mkdir -p /data/workspace/zhangshiqi/forceWAM/logs
-setsid nohup env \
-  HF_LEROBOT_HOME=/data/workspace/zhangshiqi/forceWAM \
-  CUDA_VISIBLE_DEVICES=4,5,6,7 \
-  XLA_PYTHON_CLIENT_PREALLOCATE=false \
-  /data/workspace/zhangshiqi/forceWAM/env/.venv/bin/python \
-  /data/workspace/zhangshiqi/forceWAM/scripts/train.py pi0_xhand_full_finetune \
-    --exp-name pi0_xhand_full_finetune_20k_4gpu \
-    --data.assets.assets-dir assets/pi0_xhand_tactile_structured_dual_ae \
-    --num-train-steps 20000 \
-    --batch-size 8 \
-    --fsdp-devices 4 \
-    --num-workers 2 \
-    --save-interval 5000 \
-    --keep-period 5000 \
-    --no-wandb-enabled \
-    --overwrite \
-    --weight-loader.params-path checkpoints/pi0_base/params \
-  > /data/workspace/zhangshiqi/forceWAM/logs/pi0_xhand_full_finetune_20k_4gpu.log 2>&1 &
-
-
-
-
-# 1AE + current 5x3 tactile observation tokens 
-setsid nohup env \
-  HF_LEROBOT_HOME=. \
-  HF_DATASETS_CACHE=.hf_datasets_cache \
-  CUDA_VISIBLE_DEVICES=0,1,2,3 \
-  XLA_PYTHON_CLIENT_PREALLOCATE=false \
-  env/.venv/bin/python \
-  scripts/train.py pi0_xhand_tactile_obs_ae_full_finetune \
-    --exp-name pi0_xhand_tactile_obs_ae_full_finetune_26ep_0614 \
-    --num-train-steps 20000 \
-    --batch-size 8 \
-    --fsdp-devices 4 \
-    --num-workers 2 \
-    --save-interval 5000 \
-    --keep-period 5000 \
-    --no-wandb-enabled \
-    --overwrite \
-    --weight-loader.params-path /workspace/mnt/sqzhang26/hf_weight/pi0_base/params \
-    --data.assets.assets-dir assets/pi0_xhand_tactile_structured_dual_ae \
-  > logs/pi0_xhand_tactile_obs_ae_full_finetune_26ep_0615.log 2>&1 &
-
-# 1AE + tactile
-setsid nohup env \
-  HF_LEROBOT_HOME=. \
-  HF_DATASETS_CACHE=.hf_datasets_cache \
-  CUDA_VISIBLE_DEVICES=0,1,2,3 \
-  XLA_PYTHON_CLIENT_PREALLOCATE=false \
-  env/.venv/bin/python \
-  scripts/train.py pi0_xhand_tactile_structured_single_ae \
-    --exp-name structured_single_ae_60ep_20k_0616 \
-    --data.repo-id "$DATA_REPO" \
-    --data.assets.asset-id "$ASSET_ID" \
-    --data.assets.assets-dir assets/pi0_xhand_tactile_structured_dual_ae \
-    --num-train-steps 20000 \
-    --batch-size 8 \
-    --fsdp-devices 4 \
-    --num-workers 2 \
-    --save-interval 5000 \
-    --keep-period 5000 \
-    --no-wandb-enabled \
-    --overwrite \
-    --weight-loader.params-path checkpoints/pi0_base/params \
-  > logs/structured_single_ae_60ep_20k_0616.log 2>&1 &
-
-# 2AE full finetune + tactile + 2D flow
-setsid nohup env \
-  HF_LEROBOT_HOME=. \
-  CUDA_VISIBLE_DEVICES=4,5,6,7 \
-  XLA_PYTHON_CLIENT_PREALLOCATE=false \
-  /data/workspace/zhangshiqi/forceWAM/env/.venv/bin/python \
-  /data/workspace/zhangshiqi/forceWAM/scripts/train.py pi0_xhand_tactile_flow_full_finetune \
-    --exp-name pi0_xhand_tactile_flow_full_finetune \
-    --num-train-steps 20000 \
-    --batch-size 8 \
-    --fsdp-devices 4 \
-    --num-workers 2 \
-    --save-interval 5000 \
-    --keep-period 5000 \
-    --no-wandb-enabled \
-    --overwrite \
-    --weight-loader.params-path checkpoints/pi0_base/params \
-    --data.assets.assets-dir assets/pi0_xhand_tactile_forceonly_full_finetune \
-    --model.flow-vae-name /data/shared_workspace/zhangshiqi/hf/models--stabilityai--sdxl-vae \
-  > /data/workspace/zhangshiqi/forceWAM/logs/pi0_xhand_tactile_flow_full_finetune_20k_4gpu.log 2>&1 &
-
-
-# 2AE full finetune + tactile + rawTactile
-setsid nohup env \
-  HF_LEROBOT_HOME=. \
-  HF_DATASETS_CACHE=.hf_datasets_cache \
-  CUDA_VISIBLE_DEVICES=0,1,2,3 \
-  XLA_PYTHON_CLIENT_PREALLOCATE=false \
-  env/.venv/bin/python scripts/train.py \
-    pi0_xhand_tactile_structured_raw_dual_ae \
-    --exp-name pi0_xhand_tactile_structured_raw_dual_ae_106ep_20k \
-    --data.repo-id "$DATA_REPO" \
-    --data.assets.asset-id "$ASSET_ID" \
-    --num-train-steps 20000 \
-    --batch-size 8 \
-    --fsdp-devices 4 \
-    --num-workers 2 \
-    --save-interval 5000 \
-    --keep-period 5000 \
-    --no-wandb-enabled \
-    --overwrite \
-    --weight-loader.params-path checkpoints/pi0_base/params \
-  > logs/pi0_xhand_tactile_structured_raw_dual_ae_106ep_20k.log 2>&1 &
-
-# 2AE full finetune + tactile  + mask
-setsid nohup env \
-  HF_LEROBOT_HOME=. \
-  HF_DATASETS_CACHE=.hf_datasets_cache \
-  CUDA_VISIBLE_DEVICES=0,1,2,3 \
-  XLA_PYTHON_CLIENT_PREALLOCATE=false \
-  env/.venv/bin/python scripts/train.py \
-    pi0_xhand_tactile_structured_dual_ae_arm_future_hand_mask \
-    --exp-name structured_dual_ae_arm_future_hand_mask_106ep_20k \
-    --data.repo-id "$DATA_REPO" \
-    --data.assets.asset-id "$ASSET_ID" \
-    --data.assets.assets-dir assets/pi0_xhand_tactile_structured_dual_ae \
-    --num-train-steps 20000 \
-    --batch-size 8 \
-    --fsdp-devices 4 \
-    --num-workers 2 \
-    --save-interval 5000 \
-    --keep-period 5000 \
-    --no-wandb-enabled \
-    --overwrite \
-    --weight-loader.params-path checkpoints/pi0_base/params \
-  > logs/structured_dual_ae_arm_future_hand_mask_106ep_20k.log 2>&1 &
-
-# 2AE full finetune + tactile + 3D displacement
-setsid nohup env \
-  HF_LEROBOT_HOME=/data/workspace/zhangshiqi/forceWAM \
-  CUDA_VISIBLE_DEVICES=4,5,6,7 \
-  XLA_PYTHON_CLIENT_PREALLOCATE=false \
-  env/.venv/bin/python scripts/train.py pi0_xhand_tactile_3dflow_full_finetune \
-    --exp-name pi0_xhand_tactile_3dflow_full_finetune \
-    --num-train-steps 20000 \
-    --batch-size 8 \
-    --fsdp-devices 4 \
-    --num-workers 2 \
-    --save-interval 5000 \
-    --keep-period 5000 \
-    --no-wandb-enabled \
-    --overwrite \
-    --weight-loader.params-path checkpoints/pi0_base/params \
-    --data.assets.assets-dir assets/pi0_xhand_tactile_forceonly_full_finetune
-  > /data/workspace/zhangshiqi/forceWAM/logs/pi0_xhand_tactile_3dflow_full_finetune_20k_4gpu.log 2>&1 &
-
-# config总结：
-
-
-
-+ pi0_xhand_tactile_structured_dual_ae：5*3 per-finger token；双AE结构
-+ pi0_xhand_tactile_structured_single_ae：5*3 per-finger token；单AE结构
-+ pi0_xhand_tactile_structured_dual_ae_arm_future_hand_mask：5*3 per-finger token；双AE结构，加模型mask
-
-+ pi0_xhand_tactile_structured_raw_dual_ae
-+ pi0_xhand_tactile_structured_raw_single_ae
-+ pi0_xhand_tactile_structured_raw_dual_ae_arm_future_hand_mask
-
-+ pi0_xhand_tactile_flow: 5*3压成一个token，加未来flow
-+ pi0_xhand_tactile_forceonly_full_finetune： 5*3压成一个token
-+ pi0_xhand_tactile_3dflow_full_finetune： 5*3压成一个token，加3D场景流
-
-+ pi0_xhand_full_finetune：原始pi0
-
-+ pi0_xhand_tactile_obs_ae_full_finetune：tactile输入为当前观测
-
-
-+ 仿FLARE setting
-scripts/run_action_aware_stage1_stage2.sh
-future_tactile_encoder_pretrain_flare_dit
-pi0_xhand_tactile_action_aware_flare_single_ae
 
 
 # 模型推理
