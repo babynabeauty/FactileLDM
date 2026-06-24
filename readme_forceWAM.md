@@ -67,11 +67,11 @@ setsid nohup env \
     --data.repo-id "$DATA_REPO" \
     --data.assets.asset-id "$ASSET_ID" \
     --num-train-steps 20000 \
-    --batch-size 4 \
+    --batch-size 8 \
     --fsdp-devices 4 \
-    --num-workers 0 \
+    --num-workers 2 \
     --save-interval 5000 \
-    --keep-period 10000 \
+    --keep-period 5000 \
     --no-wandb-enabled \
     --overwrite \
     --weight-loader.params-path checkpoints/pi0_base/params \
@@ -96,11 +96,11 @@ setsid nohup env \
     --data.assets.asset-id "$ASSET_ID" \
     --data.assets.assets-dir assets/pi0_xhand_tactile_flow_full_finetune \
     --num-train-steps 20000 \
-    --batch-size 4 \
+    --batch-size 8 \
     --fsdp-devices 4 \
-    --num-workers 0 \
+    --num-workers 2 \
     --save-interval 5000 \
-    --keep-period 10000 \
+    --keep-period 5000 \
     --no-wandb-enabled \
     --overwrite \
     --weight-loader.params-path checkpoints/pi0_base/params \
@@ -122,11 +122,11 @@ setsid nohup env \
     --data.repo-id "$DATA_REPO" \
     --data.assets.asset-id "$ASSET_ID" \
     --num-train-steps 20000 \
-    --batch-size 4 \
+    --batch-size 8 \
     --fsdp-devices 4 \
-    --num-workers 0 \
+    --num-workers 2 \
     --save-interval 5000 \
-    --keep-period 10000 \
+    --keep-period 5000 \
     --no-wandb-enabled \
     --overwrite \
     --weight-loader.params-path checkpoints/pi0_base/params \
@@ -148,11 +148,11 @@ setsid nohup env \
     --data.repo-id "$DATA_REPO" \
     --data.assets.asset-id "$ASSET_ID" \
     --num-train-steps 20000 \
-    --batch-size 4 \
+    --batch-size 8 \
     --fsdp-devices 4 \
-    --num-workers 0 \
+    --num-workers 2 \
     --save-interval 5000 \
-    --keep-period 10000 \
+    --keep-period 5000 \
     --no-wandb-enabled \
     --overwrite \
     --weight-loader.params-path checkpoints/pi0_base/params \
@@ -177,11 +177,11 @@ setsid nohup env \
     --data.assets.asset-id "$ASSET_ID" \
     --data.assets.assets-dir assets/pi0_xhand_tactile_structured_dual_ae \
     --num-train-steps 20000 \
-    --batch-size 4 \
+    --batch-size 8 \
     --fsdp-devices 4 \
-    --num-workers 0 \
+    --num-workers 2 \
     --save-interval 5000 \
-    --keep-period 10000 \
+    --keep-period 5000 \
     --no-wandb-enabled \
     --overwrite \
     --weight-loader.params-path checkpoints/pi0_base/params \
@@ -205,11 +205,11 @@ setsid nohup env \
     --data.repo-id "$DATA_REPO" \
     --data.assets.asset-id "$ASSET_ID" \
     --num-train-steps 20000 \
-    --batch-size 4 \
+    --batch-size 8 \
     --fsdp-devices 4 \
-    --num-workers 0 \
+    --num-workers 2 \
     --save-interval 5000 \
-    --keep-period 10000 \
+    --keep-period 5000 \
     --no-wandb-enabled \
     --overwrite \
     --weight-loader.params-path checkpoints/pi0_base/params \
@@ -313,20 +313,21 @@ env/.venv/bin/python scripts/compute_norm_stats.py \
 mkdir -p /data/workspace/zhangshiqi/forceWAM/logs
 setsid nohup env \
   HF_LEROBOT_HOME=/data/workspace/zhangshiqi/forceWAM \
-  CUDA_VISIBLE_DEVICES=4,5 \
+  CUDA_VISIBLE_DEVICES=4,5,6,7 \
   XLA_PYTHON_CLIENT_PREALLOCATE=false \
   /data/workspace/zhangshiqi/forceWAM/env/.venv/bin/python \
   /data/workspace/zhangshiqi/forceWAM/scripts/train.py pi0_xhand_full_finetune \
-    --exp-name pi0_xhand_full_finetune_30k_2gpu \
-    --num-train-steps 30000 \
-    --batch-size 2 \
-    --num-workers 0 \
+    --exp-name pi0_xhand_full_finetune_20k_4gpu \
+    --num-train-steps 20000 \
+    --batch-size 8 \
+    --fsdp-devices 4 \
+    --num-workers 2 \
     --save-interval 5000 \
-    --keep-period 10000 \
+    --keep-period 5000 \
     --no-wandb-enabled \
     --overwrite \
     --weight-loader.params-path checkpoints/pi0_base/params \
-  > /data/workspace/zhangshiqi/forceWAM/logs/pi0_xhand_full_finetune_30k_2gpu.log 2>&1 &
+  > /data/workspace/zhangshiqi/forceWAM/logs/pi0_xhand_full_finetune_20k_4gpu.log 2>&1 &
 
 
 
@@ -341,8 +342,9 @@ setsid nohup env \
   scripts/train.py pi0_xhand_tactile_obs_ae_full_finetune \
     --exp-name pi0_xhand_tactile_obs_ae_full_finetune_26ep_0614 \
     --num-train-steps 20000 \
-    --batch-size 4 \
-    --num-workers 0 \
+    --batch-size 8 \
+    --fsdp-devices 4 \
+    --num-workers 2 \
     --save-interval 5000 \
     --keep-period 5000 \
     --no-wandb-enabled \
@@ -359,38 +361,39 @@ setsid nohup env \
   XLA_PYTHON_CLIENT_PREALLOCATE=false \
   env/.venv/bin/python \
   scripts/train.py pi0_xhand_tactile_structured_single_ae \
-    --exp-name structured_single_ae_60ep_5k_0616 \
+    --exp-name structured_single_ae_60ep_20k_0616 \
     --data.repo-id "$DATA_REPO" \
     --data.assets.asset-id "$ASSET_ID" \
-    --num-train-steps 5000 \
-    --batch-size 4 \
+    --num-train-steps 20000 \
+    --batch-size 8 \
     --fsdp-devices 4 \
-    --num-workers 0 \
-    --save-interval 1000 \
-    --keep-period 1000 \
+    --num-workers 2 \
+    --save-interval 5000 \
+    --keep-period 5000 \
     --no-wandb-enabled \
     --overwrite \
     --weight-loader.params-path checkpoints/pi0_base/params \
-  > logs/structured_single_ae_60ep_5k_0616.log 2>&1 &
+  > logs/structured_single_ae_60ep_20k_0616.log 2>&1 &
 
 # 2AE full finetune + tactile + 2D flow
 setsid nohup env \
   HF_LEROBOT_HOME=. \
-  CUDA_VISIBLE_DEVICES=7 \
+  CUDA_VISIBLE_DEVICES=4,5,6,7 \
   XLA_PYTHON_CLIENT_PREALLOCATE=false \
   /data/workspace/zhangshiqi/forceWAM/env/.venv/bin/python \
   /data/workspace/zhangshiqi/forceWAM/scripts/train.py pi0_xhand_tactile_flow_full_finetune \
     --exp-name pi0_xhand_tactile_flow_full_finetune \
-    --num-train-steps 30000 \
-    --batch-size 1 \
-    --num-workers 0 \
+    --num-train-steps 20000 \
+    --batch-size 8 \
+    --fsdp-devices 4 \
+    --num-workers 2 \
     --save-interval 5000 \
-    --keep-period 10000 \
+    --keep-period 5000 \
     --no-wandb-enabled \
     --overwrite \
     --weight-loader.params-path checkpoints/pi0_base/params \
     --model.flow-vae-name /data/shared_workspace/zhangshiqi/hf/models--stabilityai--sdxl-vae \
-  > /data/workspace/zhangshiqi/forceWAM/logs/pi0_xhand_tactile_flow_full_finetune_30k_1gpu.log 2>&1 &
+  > /data/workspace/zhangshiqi/forceWAM/logs/pi0_xhand_tactile_flow_full_finetune_20k_4gpu.log 2>&1 &
 
 
 # 2AE full finetune + tactile + rawTactile
@@ -405,11 +408,11 @@ setsid nohup env \
     --data.repo-id "$DATA_REPO" \
     --data.assets.asset-id "$ASSET_ID" \
     --num-train-steps 20000 \
-    --batch-size 4 \
+    --batch-size 8 \
     --fsdp-devices 4 \
-    --num-workers 0 \
-    --save-interval 10000 \
-    --keep-period 10000 \
+    --num-workers 2 \
+    --save-interval 5000 \
+    --keep-period 5000 \
     --no-wandb-enabled \
     --overwrite \
     --weight-loader.params-path checkpoints/pi0_base/params \
@@ -428,9 +431,9 @@ setsid nohup env \
     --data.assets.asset-id "$ASSET_ID" \
     --data.assets.assets-dir assets/pi0_xhand_tactile_structured_dual_ae \
     --num-train-steps 20000 \
-    --batch-size 4 \
+    --batch-size 8 \
     --fsdp-devices 4 \
-    --num-workers 0 \
+    --num-workers 2 \
     --save-interval 5000 \
     --keep-period 5000 \
     --no-wandb-enabled \
@@ -441,20 +444,21 @@ setsid nohup env \
 # 2AE full finetune + tactile + 3D displacement
 setsid nohup env \
   HF_LEROBOT_HOME=/data/workspace/zhangshiqi/forceWAM \
-  CUDA_VISIBLE_DEVICES=7 \
+  CUDA_VISIBLE_DEVICES=4,5,6,7 \
   XLA_PYTHON_CLIENT_PREALLOCATE=false \
   env/.venv/bin/python scripts/train.py pi0_xhand_tactile_3dflow_full_finetune \
     --exp-name pi0_xhand_tactile_3dflow_full_finetune \
-    --num-train-steps 30000 \
-    --batch-size 1 \
-    --num-workers 0 \
+    --num-train-steps 20000 \
+    --batch-size 8 \
+    --fsdp-devices 4 \
+    --num-workers 2 \
     --save-interval 5000 \
-    --keep-period 10000 \
+    --keep-period 5000 \
     --no-wandb-enabled \
     --overwrite \
     --weight-loader.params-path checkpoints/pi0_base/params \
     --data.assets.assets-dir /data/workspace/zhangshiqi/forceWAM/assets/pi0_xhand_tactile_flow_full_finetune
-  > /data/workspace/zhangshiqi/forceWAM/logs/pi0_xhand_tactile_3dflow_full_finetune_30k_1gpu.log 2>&1 &
+  > /data/workspace/zhangshiqi/forceWAM/logs/pi0_xhand_tactile_3dflow_full_finetune_20k_4gpu.log 2>&1 &
 
 # config总结：
 
