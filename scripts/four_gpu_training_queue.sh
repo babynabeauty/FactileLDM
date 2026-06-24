@@ -24,7 +24,24 @@ run_four_gpu_training_queue() {
   local run_tag="${RUN_TAG:-task1_2_206ep_20k_$(date +%m%d_%H%M%S)}"
   local python_bin="${PYTHON:-env/.venv/bin/python}"
   local weight_path="${WEIGHT_PATH:-checkpoints/pi0_base/params}"
+  local gpu_wait_enabled="${GPU_WAIT_ENABLED:-1}"
+  local gpu_min_free_mib="${GPU_MIN_FREE_MIB:-70000}"
+  local gpu_poll_seconds="${GPU_POLL_SECONDS:-60}"
+  local gpu_status_log_seconds="${GPU_STATUS_LOG_SECONDS:-300}"
   local -a gpu_slots=("0,1,2,3" "4,5,6,7")
+
+  if [[ ! "$gpu_wait_enabled" =~ ^[01]$ ]]; then
+    echo "ERROR: GPU_WAIT_ENABLED must be 0 or 1, got: $gpu_wait_enabled" >&2
+    return 2
+  fi
+  if [[ ! "$gpu_min_free_mib" =~ ^[0-9]+$ || ! "$gpu_poll_seconds" =~ ^[1-9][0-9]*$ ]]; then
+    echo "ERROR: GPU_MIN_FREE_MIB and GPU_POLL_SECONDS must be positive integers." >&2
+    return 2
+  fi
+  if [[ ! "$gpu_status_log_seconds" =~ ^[1-9][0-9]*$ ]]; then
+    echo "ERROR: GPU_STATUS_LOG_SECONDS must be a positive integer." >&2
+    return 2
+  fi
 
   export HF_LEROBOT_HOME="${HF_LEROBOT_HOME:-$PWD}"
   export HF_DATASETS_CACHE="${HF_DATASETS_CACHE:-$PWD/.hf_datasets_cache}"
@@ -62,6 +79,9 @@ run_four_gpu_training_queue() {
       echo "ERROR: This scheduler requires 8 visible GPUs, found $gpu_count." >&2
       return 2
     fi
+  elif (( gpu_wait_enabled == 1 )); then
+    echo "ERROR: nvidia-smi is required when GPU_WAIT_ENABLED=1." >&2
+    return 2
   fi
 
   log_queue() {
@@ -70,9 +90,12 @@ run_four_gpu_training_queue() {
 
   declare -A pid_to_slot=()
   declare -A pid_to_label=()
+  declare -A gpu_free_mib=()
   local -a active_pids=()
+  local -a slot_pid=("" "")
   local next_job=0
   local failed=0
+  local last_gpu_status_log=0
 
   remove_active_pid() {
     local target_pid="$1"
@@ -86,50 +109,57 @@ run_four_gpu_training_queue() {
     active_pids=("${remaining[@]}")
   }
 
-  local waited_pid=""
-  local waited_status=0
-  wait_for_one_job() {
-    local pid
-    local status
+  refresh_gpu_free_memory() {
+    local output
+    local gpu_id
+    local free_mib
 
-    # Bash wait -n ignores jobs that finished before wait -n was called. Reap
-    # one such child explicitly before waiting for a newly completed child.
-    for pid in "${active_pids[@]}"; do
-      if ! kill -0 "$pid" 2>/dev/null; then
-        set +e
-        wait "$pid"
-        status=$?
-        set -e
-        waited_pid="$pid"
-        waited_status="$status"
-        return 0
+    gpu_free_mib=()
+    if ! output="$(nvidia-smi --query-gpu=index,memory.free --format=csv,noheader,nounits 2>/dev/null)"; then
+      return 1
+    fi
+    while IFS=',' read -r gpu_id free_mib; do
+      gpu_id="${gpu_id//[[:space:]]/}"
+      free_mib="${free_mib//[[:space:]]/}"
+      if [[ "$gpu_id" =~ ^[0-9]+$ && "$free_mib" =~ ^[0-9]+$ ]]; then
+        gpu_free_mib["$gpu_id"]="$free_mib"
       fi
-    done
+    done <<< "$output"
+    (( ${#gpu_free_mib[@]} >= 8 ))
+  }
 
-    waited_pid=""
-    set +e
-    wait -n -p waited_pid "${active_pids[@]}" 2>/dev/null
-    status=$?
-    set -e
-    if [[ -n "$waited_pid" ]]; then
-      waited_status="$status"
+  slot_has_enough_memory() {
+    local slot_index="$1"
+    local gpu_id
+    local -a slot_gpu_ids=()
+
+    if (( gpu_wait_enabled == 0 )); then
       return 0
     fi
-
-    # All children may have exited between kill -0 and wait -n. Their exit
-    # statuses are still available through an explicit wait.
-    for pid in "${active_pids[@]}"; do
-      set +e
-      wait "$pid"
-      status=$?
-      set -e
-      if (( status != 127 )); then
-        waited_pid="$pid"
-        waited_status="$status"
-        return 0
+    IFS=',' read -r -a slot_gpu_ids <<< "${gpu_slots[$slot_index]}"
+    for gpu_id in "${slot_gpu_ids[@]}"; do
+      if [[ -z "${gpu_free_mib[$gpu_id]+present}" ]]; then
+        return 1
+      fi
+      if (( gpu_free_mib[$gpu_id] < gpu_min_free_mib )); then
+        return 1
       fi
     done
-    return 1
+    return 0
+  }
+
+  gpu_slot_status() {
+    local slot_index="$1"
+    local gpu_id
+    local -a slot_gpu_ids=()
+    local -a values=()
+
+    IFS=',' read -r -a slot_gpu_ids <<< "${gpu_slots[$slot_index]}"
+    for gpu_id in "${slot_gpu_ids[@]}"; do
+      values+=("GPU${gpu_id}=${gpu_free_mib[$gpu_id]:-?}MiB")
+    done
+    local IFS=', '
+    printf '%s' "${values[*]}"
   }
 
   terminate_active_jobs() {
@@ -189,39 +219,87 @@ run_four_gpu_training_queue() {
   log_queue "Asset ID: $data_asset_id"
   log_queue "Jobs: ${#JOB_LABELS[@]}, steps=${train_steps}, batch=${global_batch_size}, FSDP=${fsdp_devices}"
   log_queue "Two GPU slots: ${gpu_slots[0]} and ${gpu_slots[1]}"
+  if (( gpu_wait_enabled == 1 )); then
+    log_queue "GPU gate: every GPU in a slot must have at least ${gpu_min_free_mib} MiB free."
+    log_queue "GPU polling interval: ${gpu_poll_seconds}s"
+  else
+    log_queue "GPU gate disabled by GPU_WAIT_ENABLED=0."
+  fi
 
-  local slot_index
-  for slot_index in 0 1; do
-    if (( next_job < ${#JOB_LABELS[@]} )); then
-      launch_job "$next_job" "$slot_index"
-      ((next_job += 1))
-    fi
-  done
+  while (( next_job < ${#JOB_LABELS[@]} || ${#active_pids[@]} > 0 )); do
+    local made_progress=0
+    local pid
+    local status
+    local finished_slot
+    local finished_label
+    local -a active_snapshot=("${active_pids[@]}")
 
-  while (( ${#active_pids[@]} > 0 )); do
-    if ! wait_for_one_job; then
-      log_queue "ERROR: wait returned without a child PID."
-      failed=1
-      break
-    fi
-    local finished_pid="$waited_pid"
-    local status="$waited_status"
+    # Poll jobs launched by this scheduler and release their four-GPU slot
+    # only after the actual Python process has exited.
+    for pid in "${active_snapshot[@]}"; do
+      if kill -0 "$pid" 2>/dev/null; then
+        continue
+      fi
+      set +e
+      wait "$pid"
+      status=$?
+      set -e
+      finished_slot="${pid_to_slot[$pid]}"
+      finished_label="${pid_to_label[$pid]}"
+      slot_pid[$finished_slot]=""
+      remove_active_pid "$pid"
+      unset 'pid_to_slot[$pid]' 'pid_to_label[$pid]'
+      made_progress=1
 
-    local freed_slot="${pid_to_slot[$finished_pid]}"
-    local finished_label="${pid_to_label[$finished_pid]}"
-    remove_active_pid "$finished_pid"
-    unset 'pid_to_slot[$finished_pid]' 'pid_to_label[$finished_pid]'
-
-    if (( status == 0 )); then
-      log_queue "Completed ${finished_label} successfully."
-    else
-      log_queue "ERROR: ${finished_label} failed with exit code ${status}. No queued jobs will be started."
-      failed=1
-    fi
+      if (( status == 0 )); then
+        log_queue "Completed ${finished_label} successfully; GPU slot ${gpu_slots[$finished_slot]} released."
+      else
+        log_queue "ERROR: ${finished_label} failed with exit code ${status}. No queued jobs will be started."
+        failed=1
+      fi
+    done
 
     if (( failed == 0 && next_job < ${#JOB_LABELS[@]} )); then
-      launch_job "$next_job" "$freed_slot"
-      ((next_job += 1))
+      local memory_query_ok=1
+      if (( gpu_wait_enabled == 1 )) && ! refresh_gpu_free_memory; then
+        memory_query_ok=0
+      fi
+
+      local slot_index
+      for slot_index in 0 1; do
+        if (( next_job >= ${#JOB_LABELS[@]} )); then
+          break
+        fi
+        if [[ -n "${slot_pid[$slot_index]}" ]]; then
+          continue
+        fi
+        if (( memory_query_ok == 1 )) && slot_has_enough_memory "$slot_index"; then
+          launch_job "$next_job" "$slot_index"
+          slot_pid[$slot_index]="${active_pids[-1]}"
+          ((next_job += 1))
+          made_progress=1
+        fi
+      done
+
+      if (( made_progress == 0 )); then
+        local now
+        now="$(date +%s)"
+        if (( now - last_gpu_status_log >= gpu_status_log_seconds )); then
+          if (( memory_query_ok == 0 )); then
+            log_queue "Waiting: nvidia-smi memory query failed; retrying in ${gpu_poll_seconds}s."
+          else
+            log_queue "Waiting for a free four-GPU slot (threshold=${gpu_min_free_mib}MiB): slot0[$(gpu_slot_status 0)] slot1[$(gpu_slot_status 1)]"
+          fi
+          last_gpu_status_log="$now"
+        fi
+      fi
+    fi
+
+    if (( failed != 0 && ${#active_pids[@]} == 0 )); then
+      break
+    fi
+    if (( made_progress == 0 )); then
+      sleep "$gpu_poll_seconds"
     fi
   done
 
