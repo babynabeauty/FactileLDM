@@ -23,6 +23,27 @@ mkdir -p logs
 
 ## 归一化
 
+### 自动并行生成三套归一化文件
+
+脚本会轮询空闲 GPU，并行生成 structured calc-force、非结构化 calc-force 和 structured raw 三套统计。
+默认要求空闲显存至少 50000 MiB、GPU 利用率不高于 20%。已有文件会自动跳过。
+
+```bash
+setsid nohup env \
+  GPU_IDS=0,1,2,3,4,5,6,7 \
+  MIN_FREE_MEMORY_MB=50000 \
+  MAX_GPU_UTIL=20 \
+  POLL_INTERVAL=30 \
+  bash scripts/run_xhand_norm_stats_parallel.sh "$DATA_REPO" \
+  > "logs/norm_scheduler_${ASSET_ID}.log" 2>&1 &
+```
+
+强制重新计算已有统计时增加：
+
+```bash
+OVERWRITE_NORM=1 bash scripts/run_xhand_norm_stats_parallel.sh "$DATA_REPO"
+```
+
 ### 5x3 structured dual AE
 
 ```bash
@@ -66,6 +87,7 @@ setsid nohup env \
     --exp-name pi0_xhand_full_finetune_106ep_20k \
     --data.repo-id "$DATA_REPO" \
     --data.assets.asset-id "$ASSET_ID" \
+    --data.assets.assets-dir assets/pi0_xhand_tactile_structured_dual_ae \
     --num-train-steps 20000 \
     --batch-size 8 \
     --fsdp-devices 4 \
@@ -121,6 +143,7 @@ setsid nohup env \
     --exp-name structured_single_ae_106ep_20k \
     --data.repo-id "$DATA_REPO" \
     --data.assets.asset-id "$ASSET_ID" \
+    --data.assets.assets-dir assets/pi0_xhand_tactile_structured_dual_ae \
     --num-train-steps 20000 \
     --batch-size 8 \
     --fsdp-devices 4 \
@@ -318,6 +341,7 @@ setsid nohup env \
   /data/workspace/zhangshiqi/forceWAM/env/.venv/bin/python \
   /data/workspace/zhangshiqi/forceWAM/scripts/train.py pi0_xhand_full_finetune \
     --exp-name pi0_xhand_full_finetune_20k_4gpu \
+    --data.assets.assets-dir assets/pi0_xhand_tactile_structured_dual_ae \
     --num-train-steps 20000 \
     --batch-size 8 \
     --fsdp-devices 4 \
@@ -364,6 +388,7 @@ setsid nohup env \
     --exp-name structured_single_ae_60ep_20k_0616 \
     --data.repo-id "$DATA_REPO" \
     --data.assets.asset-id "$ASSET_ID" \
+    --data.assets.assets-dir assets/pi0_xhand_tactile_structured_dual_ae \
     --num-train-steps 20000 \
     --batch-size 8 \
     --fsdp-devices 4 \
@@ -392,6 +417,7 @@ setsid nohup env \
     --no-wandb-enabled \
     --overwrite \
     --weight-loader.params-path checkpoints/pi0_base/params \
+    --data.assets.assets-dir assets/pi0_xhand_tactile_forceonly_full_finetune \
     --model.flow-vae-name /data/shared_workspace/zhangshiqi/hf/models--stabilityai--sdxl-vae \
   > /data/workspace/zhangshiqi/forceWAM/logs/pi0_xhand_tactile_flow_full_finetune_20k_4gpu.log 2>&1 &
 
@@ -457,7 +483,7 @@ setsid nohup env \
     --no-wandb-enabled \
     --overwrite \
     --weight-loader.params-path checkpoints/pi0_base/params \
-    --data.assets.assets-dir /data/workspace/zhangshiqi/forceWAM/assets/pi0_xhand_tactile_flow_full_finetune
+    --data.assets.assets-dir assets/pi0_xhand_tactile_forceonly_full_finetune
   > /data/workspace/zhangshiqi/forceWAM/logs/pi0_xhand_tactile_3dflow_full_finetune_20k_4gpu.log 2>&1 &
 
 # config总结：
@@ -467,6 +493,11 @@ scripts/run_action_aware_stage1_stage2.sh
 future_tactile_encoder_pretrain_flare_dit
 pi0_xhand_tactile_action_aware_flare_single_ae
 
+5*3
+pi0_xhand_tactile_structured_dual_ae
+pi0_xhand_tactile_structured_single_ae
+
+5\*120\*3
 pi0_xhand_tactile_structured_raw_dual_ae
 pi0_xhand_tactile_structured_raw_single_ae
 
