@@ -488,18 +488,30 @@ setsid nohup env \
 
 # config总结：
 
-仿FLARE setting
+
+
++ pi0_xhand_tactile_structured_dual_ae：5*3 per-finger token；双AE结构
++ pi0_xhand_tactile_structured_single_ae：5*3 per-finger token；单AE结构
++ pi0_xhand_tactile_structured_dual_ae_arm_future_hand_mask：5*3 per-finger token；双AE结构，加模型mask
+
++ pi0_xhand_tactile_structured_raw_dual_ae
++ pi0_xhand_tactile_structured_raw_single_ae
++ pi0_xhand_tactile_structured_raw_dual_ae_arm_future_hand_mask
+
++ pi0_xhand_tactile_flow: 5*3压成一个token，加未来flow
++ pi0_xhand_tactile_forceonly_full_finetune： 5*3压成一个token
++ pi0_xhand_tactile_3dflow_full_finetune： 5*3压成一个token，加3D场景流
+
++ pi0_xhand_full_finetune：原始pi0
+
++ pi0_xhand_tactile_obs_ae_full_finetune：tactile输入为当前观测
+
+
++ 仿FLARE setting
 scripts/run_action_aware_stage1_stage2.sh
 future_tactile_encoder_pretrain_flare_dit
 pi0_xhand_tactile_action_aware_flare_single_ae
 
-5*3
-pi0_xhand_tactile_structured_dual_ae
-pi0_xhand_tactile_structured_single_ae
-
-5\*120\*3
-pi0_xhand_tactile_structured_raw_dual_ae
-pi0_xhand_tactile_structured_raw_single_ae
 
 # 模型推理
 ```bash
