@@ -3,8 +3,8 @@ set -Eeuo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
-NO_TACTILE_ASSETS_DIR="${NO_TACTILE_ASSETS_DIR:-assets/pi0_xhand_full_finetune}"
 CALC_TACTILE_ASSETS_DIR="${CALC_TACTILE_ASSETS_DIR:-assets/pi0_xhand_tactile_structured_dual_ae}"
+NO_TACTILE_ASSETS_DIR="${NO_TACTILE_ASSETS_DIR:-$CALC_TACTILE_ASSETS_DIR}"
 
 JOB_LABELS=(
   "A_no_tactile"

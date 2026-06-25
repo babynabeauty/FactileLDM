@@ -17,11 +17,14 @@ run_four_gpu_training_queue() {
   local data_asset_id="${DATA_ASSET_ID:-$(basename "$data_repo")}" 
   local train_steps="${TRAIN_STEPS:-20000}"
   local global_batch_size="${GLOBAL_BATCH_SIZE:-8}"
-  local fsdp_devices="${FSDP_DEVICES:-4}"
+  # 1 disables parameter sharding. All four visible GPUs are still used for
+  # data parallelism, with a full model/optimizer replica on every GPU.
+  local fsdp_devices="${FSDP_DEVICES:-1}"
   local num_workers="${NUM_WORKERS:-2}"
   local save_interval="${SAVE_INTERVAL:-5000}"
   local keep_period="${KEEP_PERIOD:-5000}"
   local run_tag="${RUN_TAG:-task1_2_206ep_20k_$(date +%m%d_%H%M%S)}"
+  local overwrite_existing="${ALLOW_OVERWRITE:-0}"
   local python_bin="${PYTHON:-env/.venv/bin/python}"
   local weight_path="${WEIGHT_PATH:-checkpoints/pi0_base/params}"
   local gpu_wait_enabled="${GPU_WAIT_ENABLED:-1}"
@@ -32,6 +35,10 @@ run_four_gpu_training_queue() {
 
   if [[ ! "$gpu_wait_enabled" =~ ^[01]$ ]]; then
     echo "ERROR: GPU_WAIT_ENABLED must be 0 or 1, got: $gpu_wait_enabled" >&2
+    return 2
+  fi
+  if [[ ! "$overwrite_existing" =~ ^[01]$ ]]; then
+    echo "ERROR: ALLOW_OVERWRITE must be 0 or 1, got: $overwrite_existing" >&2
     return 2
   fi
   if [[ ! "$gpu_min_free_mib" =~ ^[0-9]+$ || ! "$gpu_poll_seconds" =~ ^[1-9][0-9]*$ ]]; then
@@ -68,6 +75,17 @@ run_four_gpu_training_queue() {
   for asset_dir in "${JOB_ASSET_DIRS[@]}"; do
     if [[ ! -f "$asset_dir/$data_asset_id/norm_stats.json" ]]; then
       echo "ERROR: Norm stats not found: $asset_dir/$data_asset_id/norm_stats.json" >&2
+      return 2
+    fi
+  done
+
+  local job_index
+  local checkpoint_dir
+  for job_index in "${!JOB_LABELS[@]}"; do
+    checkpoint_dir="checkpoints/${JOB_CONFIGS[$job_index]}/${JOB_LABELS[$job_index]}_${run_tag}"
+    if [[ -e "$checkpoint_dir" && "$overwrite_existing" == "0" ]]; then
+      echo "ERROR: Checkpoint directory already exists: $checkpoint_dir" >&2
+      echo "Use a new RUN_TAG to keep old checkpoints, or set ALLOW_OVERWRITE=1 to delete and rerun it." >&2
       return 2
     fi
   done
@@ -183,6 +201,10 @@ run_four_gpu_training_queue() {
     local gpu_ids="${gpu_slots[$slot_index]}"
     local exp_name="${label}_${run_tag}"
     local log_file="logs/${exp_name}.log"
+    local -a overwrite_args=()
+    if (( overwrite_existing == 1 )); then
+      overwrite_args=(--overwrite)
+    fi
 
     log_queue "Starting ${label}: config=${config}, GPUs=${gpu_ids}, assets=${assets_dir}"
     setsid --wait env \
@@ -204,7 +226,7 @@ run_four_gpu_training_queue() {
         --save-interval "$save_interval" \
         --keep-period "$keep_period" \
         --no-wandb-enabled \
-        --overwrite \
+        "${overwrite_args[@]}" \
         --weight-loader.params-path "$weight_path" \
       > "$log_file" 2>&1 &
 
@@ -218,6 +240,12 @@ run_four_gpu_training_queue() {
   log_queue "Dataset: $data_repo"
   log_queue "Asset ID: $data_asset_id"
   log_queue "Jobs: ${#JOB_LABELS[@]}, steps=${train_steps}, batch=${global_batch_size}, FSDP=${fsdp_devices}"
+  log_queue "Run tag: ${run_tag}"
+  if (( overwrite_existing == 1 )); then
+    log_queue "Checkpoint overwrite is ENABLED by ALLOW_OVERWRITE=1."
+  else
+    log_queue "Checkpoint overwrite is disabled; existing checkpoint dirs will stop the scheduler."
+  fi
   log_queue "Two GPU slots: ${gpu_slots[0]} and ${gpu_slots[1]}"
   if (( gpu_wait_enabled == 1 )); then
     log_queue "GPU gate: every GPU in a slot must have at least ${gpu_min_free_mib} MiB free."
