@@ -277,6 +277,8 @@ setsid nohup env \
 + pi0_xhand_tactile_structured_raw_single_ae：5*120*3 per-finger token；单AE结构
 + pi0_xhand_tactile_structured_raw_dual_ae_arm_future_hand_mask：5*120*3 per-finger token；单AE结构
 
++ pi0_xhand_tactile_structured_adaptive_patch_raw_dual_ae
+
 + pi0_xhand_tactile_flow: 5*3压成一个token，加未来flow
 + pi0_xhand_tactile_forceonly_full_finetune： 5*3压成一个token
 + pi0_xhand_tactile_3dflow_full_finetune： 5*3压成一个token，加3D场景流

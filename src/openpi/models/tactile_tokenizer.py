@@ -337,33 +337,34 @@ class AdaptiveFingertipPatchTokenizer(RawTactileSpatialTokenizer):
             raise ValueError("Official XHand patch map currently supports 120 taxels per finger.")
 
         # Patch IDs: 0=tip, 1=center, 2=base, 3=left, 4=right.
-        # T30 is the thumb sensor. It is split using the delivered transformed
-        # right-hand coordinates: distal axis y, lateral axis x.
+        # Taxels are assigned to the nearest of five anchors in normalized
+        # tactile coordinates. This avoids making center a tiny middle cell.
+        # T30 is the thumb sensor, using distal axis y and lateral axis x.
         t30_thumb = (
-            2, 2, 2, 2, 2, 2, 3, 3, 3, 3, 3, 0,
-            2, 2, 2, 2, 2, 3, 3, 3, 3, 0, 0, 0,
-            2, 2, 2, 2, 3, 3, 3, 0, 0, 0, 0, 0,
-            2, 2, 2, 3, 3, 3, 3, 0, 0, 0, 0, 0,
+            2, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
+            2, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
+            2, 2, 3, 3, 3, 3, 3, 3, 3, 0, 0, 0,
+            2, 2, 2, 1, 1, 1, 1, 1, 0, 0, 0, 0,
             2, 2, 2, 1, 1, 1, 1, 0, 0, 0, 0, 0,
             2, 2, 2, 1, 1, 1, 1, 0, 0, 0, 0, 0,
-            2, 2, 2, 4, 4, 4, 4, 0, 0, 0, 0, 0,
-            2, 2, 2, 2, 4, 4, 4, 0, 0, 0, 0, 0,
-            2, 2, 2, 2, 2, 4, 4, 4, 4, 0, 0, 0,
-            2, 2, 2, 2, 2, 2, 4, 4, 4, 4, 4, 0,
+            2, 2, 2, 1, 1, 1, 1, 1, 0, 0, 0, 0,
+            2, 2, 4, 4, 4, 4, 4, 4, 4, 0, 0, 0,
+            2, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
+            2, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
         )
-        # T16 is used by index/middle/ring/little. It is split using the
-        # delivered transformed coordinates: distal axis z, lateral axis y.
+        # T16 is used by index/middle/ring/little, using distal axis z and
+        # lateral axis y.
         t16_other = (
-            2, 2, 2, 2, 3, 3, 3, 3, 0, 0, 0, 0,
-            2, 2, 2, 2, 3, 3, 3, 3, 0, 0, 0, 0,
-            2, 2, 2, 2, 3, 3, 3, 0, 0, 0, 0, 0,
-            2, 2, 2, 3, 3, 3, 3, 0, 0, 0, 0, 0,
-            2, 2, 2, 1, 1, 1, 1, 0, 0, 0, 0, 0,
-            2, 2, 2, 1, 1, 1, 1, 0, 0, 0, 0, 0,
-            2, 2, 2, 4, 4, 4, 4, 0, 0, 0, 0, 0,
-            2, 2, 2, 2, 4, 4, 4, 0, 0, 0, 0, 0,
-            2, 2, 2, 2, 4, 4, 4, 4, 0, 0, 0, 0,
-            2, 2, 2, 2, 4, 4, 4, 4, 0, 0, 0, 0,
+            2, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 0,
+            3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 0, 0,
+            2, 3, 3, 3, 3, 3, 3, 3, 3, 0, 0, 0,
+            2, 2, 2, 1, 1, 3, 3, 3, 0, 0, 0, 0,
+            2, 2, 2, 1, 1, 1, 1, 1, 0, 0, 0, 0,
+            2, 2, 2, 1, 1, 1, 1, 1, 0, 0, 0, 0,
+            2, 2, 2, 1, 1, 4, 4, 4, 0, 0, 0, 0,
+            2, 4, 4, 4, 4, 4, 4, 4, 4, 0, 0, 0,
+            4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 0, 0,
+            2, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 0,
         )
         if len(t30_thumb) != num_points or len(t16_other) != num_points:
             raise ValueError("Internal XHand patch map has the wrong number of points.")
