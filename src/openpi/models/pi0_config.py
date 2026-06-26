@@ -265,6 +265,16 @@ class Pi0LatentFlowConfig(Pi0Config):
     arm_hand_mask_attention: bool = False
     arm_action_dim: int = 6
     hand_action_dim: int = 12
+    tactile_refiner_enabled: bool = False
+    tactile_refiner_layers: int = 2
+    tactile_refiner_width: int = 256
+    tactile_refiner_heads: int = 4
+    tactile_refiner_mlp_dim: int = 1024
+    hand_synergy_dim: int = 4
+    hand_synergy_loss_weight: float = 0.03
+    tactile_refiner_delta_loss_weight: float = 0.0001
+    tactile_refiner_gate_bias: float = -2.0
+    tactile_refiner_delta_scale: float = 0.1
 
     @override
     def __post_init__(self):
@@ -311,6 +321,21 @@ class Pi0LatentFlowConfig(Pi0Config):
                 raise ValueError("arm_action_dim and hand_action_dim must be positive.")
             if self.arm_action_dim + self.hand_action_dim > self.action_dim:
                 raise ValueError("Arm and hand action slices exceed action_dim.")
+        if self.tactile_refiner_enabled:
+            if not self.arm_hand_mask_attention:
+                raise ValueError("tactile_refiner_enabled requires arm_hand_mask_attention=True.")
+            if self.tactile_refiner_layers <= 0:
+                raise ValueError("tactile_refiner_layers must be positive.")
+            if self.tactile_refiner_width <= 0 or self.tactile_refiner_mlp_dim <= 0:
+                raise ValueError("tactile_refiner_width and tactile_refiner_mlp_dim must be positive.")
+            if self.tactile_refiner_width % self.tactile_refiner_heads != 0:
+                raise ValueError("tactile_refiner_width must be divisible by tactile_refiner_heads.")
+            if self.hand_synergy_dim <= 0:
+                raise ValueError("hand_synergy_dim must be positive.")
+            if self.hand_synergy_loss_weight < 0 or self.tactile_refiner_delta_loss_weight < 0:
+                raise ValueError("Refiner loss weights must be non-negative.")
+            if self.tactile_refiner_delta_scale < 0:
+                raise ValueError("tactile_refiner_delta_scale must be non-negative.")
         if not 0 <= self.future_rgb_step <= self.action_horizon:
             raise ValueError(
                 f"future_rgb_step must satisfy 0 <= future_rgb_step <= action_horizon={self.action_horizon}, "

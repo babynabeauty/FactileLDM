@@ -1,3 +1,5 @@
+import math
+
 import einops
 from diffusers import FlaxAutoencoderKL
 import flax.nnx as nnx
@@ -41,6 +43,40 @@ def _get_flow_vae(model_name: str) -> tuple[FlaxAutoencoderKL, at.Params]:
             "Call preload_flow_vae(...) in Python before initializing training."
         )
     return _FLOW_VAE_REGISTRY[model_name]
+
+
+class _TactileRefinerBlock(nnx.Module):
+    """Small pre-norm Transformer block for tactile residual refinement."""
+
+    def __init__(self, *, width: int, num_heads: int, mlp_dim: int, rngs: nnx.Rngs):
+        if width % num_heads != 0:
+            raise ValueError(f"width={width} must be divisible by num_heads={num_heads}.")
+        self.width = int(width)
+        self.num_heads = int(num_heads)
+        self.head_dim = self.width // self.num_heads
+
+        self.q = nnx.Linear(width, width, rngs=rngs)
+        self.k = nnx.Linear(width, width, rngs=rngs)
+        self.v = nnx.Linear(width, width, rngs=rngs)
+        self.attn_out = nnx.Linear(width, width, rngs=rngs)
+        self.ffn_in = nnx.Linear(width, mlp_dim, rngs=rngs)
+        self.ffn_out = nnx.Linear(mlp_dim, width, rngs=rngs)
+        self.attn_norm = nnx.LayerNorm(num_features=width, rngs=rngs)
+        self.ffn_norm = nnx.LayerNorm(num_features=width, rngs=rngs)
+
+    def _attention(self, x: jax.Array) -> jax.Array:
+        query = einops.rearrange(self.q(x), "b n (h d) -> b h n d", h=self.num_heads)
+        key = einops.rearrange(self.k(x), "b n (h d) -> b h n d", h=self.num_heads)
+        value = einops.rearrange(self.v(x), "b n (h d) -> b h n d", h=self.num_heads)
+        logits = jnp.einsum("bhqd,bhkd->bhqk", query, key) / math.sqrt(float(self.head_dim))
+        weights = jax.nn.softmax(logits.astype(jnp.float32), axis=-1).astype(value.dtype)
+        attended = jnp.einsum("bhqk,bhkd->bhqd", weights, value)
+        return einops.rearrange(attended, "b h n d -> b n (h d)")
+
+    def __call__(self, tokens: jax.Array) -> jax.Array:
+        tokens = tokens + self.attn_out(self._attention(self.attn_norm(tokens)))
+        tokens = tokens + self.ffn_out(nnx.swish(self.ffn_in(self.ffn_norm(tokens))))
+        return tokens
 
 
 class Pi0LatentFlow(_model.BaseModel):
@@ -104,6 +140,16 @@ class Pi0LatentFlow(_model.BaseModel):
         self.arm_action_dim = int(config.arm_action_dim)
         self.hand_action_dim = int(config.hand_action_dim)
         self.hand_action_start = self.arm_action_dim
+        self.tactile_refiner_enabled = bool(getattr(config, "tactile_refiner_enabled", False))
+        self.tactile_refiner_layers = int(getattr(config, "tactile_refiner_layers", 2))
+        self.tactile_refiner_width = int(getattr(config, "tactile_refiner_width", 256))
+        self.tactile_refiner_heads = int(getattr(config, "tactile_refiner_heads", 4))
+        self.tactile_refiner_mlp_dim = int(getattr(config, "tactile_refiner_mlp_dim", 1024))
+        self.hand_synergy_dim = int(getattr(config, "hand_synergy_dim", 4))
+        self.hand_synergy_loss_weight = float(getattr(config, "hand_synergy_loss_weight", 0.03))
+        self.tactile_refiner_delta_loss_weight = float(getattr(config, "tactile_refiner_delta_loss_weight", 0.0001))
+        self.tactile_refiner_gate_bias = float(getattr(config, "tactile_refiner_gate_bias", -2.0))
+        self.tactile_refiner_delta_scale = float(getattr(config, "tactile_refiner_delta_scale", 0.1))
         self.uses_train_progress = True
         self._debug_lengths_logged = False
 
@@ -278,6 +324,32 @@ class Pi0LatentFlow(_model.BaseModel):
                 dtype=jnp.float32,
             )
         )
+
+        if self.tactile_refiner_enabled:
+            synergy_input_dim = self.student_width * 4
+            synergy_hidden_dim = self.student_width
+            self.hand_synergy_in = nnx.Linear(synergy_input_dim, synergy_hidden_dim, rngs=rngs)
+            self.hand_synergy_out = nnx.Linear(synergy_hidden_dim, self.hand_synergy_dim, rngs=rngs)
+            self.hand_synergy_decoder_in = nnx.Linear(self.hand_synergy_dim, 128, rngs=rngs)
+            self.hand_synergy_decoder_out = nnx.Linear(128, self.hand_action_dim, rngs=rngs)
+
+            self.refiner_history_proj = nnx.Linear(self.student_width, self.tactile_refiner_width, rngs=rngs)
+            self.refiner_future_proj = nnx.Linear(self.student_width, self.tactile_refiner_width, rngs=rngs)
+            self.refiner_arm_proj = nnx.Linear(self.student_width, self.tactile_refiner_width, rngs=rngs)
+            self.refiner_hand_proj = nnx.Linear(self.student_width, self.tactile_refiner_width, rngs=rngs)
+            self.refiner_synergy_proj = nnx.Linear(self.hand_synergy_dim, self.tactile_refiner_width, rngs=rngs)
+            self.refiner_coarse_proj = nnx.Linear(self.hand_action_dim, self.tactile_refiner_width, rngs=rngs)
+            self.tactile_refiner_blocks = [
+                _TactileRefinerBlock(
+                    width=self.tactile_refiner_width,
+                    num_heads=self.tactile_refiner_heads,
+                    mlp_dim=self.tactile_refiner_mlp_dim,
+                    rngs=rngs,
+                )
+                for _ in range(self.tactile_refiner_layers)
+            ]
+            self.refiner_delta_out = nnx.Linear(self.tactile_refiner_width, self.hand_action_dim, rngs=rngs)
+            self.refiner_gate_out = nnx.Linear(self.tactile_refiner_width, 1, rngs=rngs)
 
         self.deterministic = True
 
@@ -601,7 +673,7 @@ class Pi0LatentFlow(_model.BaseModel):
             "action": slice(action_start, action_start + action_len),
         }
 
-    def _decode_action_velocity(self, hidden: at.Array, *, expert: str) -> _model.Actions:
+    def _decode_base_action_velocity(self, hidden: at.Array, *, expert: str) -> _model.Actions:
         projection = (
             self.action_out_proj_student
             if expert == "student"
@@ -623,6 +695,78 @@ class Pi0LatentFlow(_model.BaseModel):
         velocity = velocity.at[..., hand_slice].set(hand_full[..., hand_slice])
         padding_start = self.hand_action_start + self.hand_action_dim
         return velocity.at[..., padding_start:].set(arm_full[..., padding_start:])
+
+    def _tactile_refine_student_velocity(
+        self,
+        hidden: at.Array,
+        base_velocity: _model.Actions,
+    ) -> tuple[_model.Actions, dict[str, at.Array]]:
+        if not self.tactile_refiner_enabled:
+            return base_velocity, {}
+        if not self.arm_hand_mask_attention:
+            raise ValueError("Tactile refiner requires arm_hand_mask_attention=True.")
+
+        slices = self._suffix_slices(self.action_horizon)
+        history_slice = slice(1, 1 + self.history_force_token_count)
+        hand_hidden = hidden[:, slices["hand"]]
+        arm_hidden = hidden[:, slices["arm"]]
+        history_hidden = hidden[:, history_slice]
+        future_hidden = hidden[:, slices["future_force"]]
+
+        history_context = jnp.mean(history_hidden, axis=1)
+        future_context = jnp.mean(future_hidden, axis=1)
+        history_context = jnp.broadcast_to(history_context[:, None, :], hand_hidden.shape)
+        future_context = jnp.broadcast_to(future_context[:, None, :], hand_hidden.shape)
+
+        synergy_input = jnp.concatenate(
+            [hand_hidden, arm_hidden, history_context, future_context],
+            axis=-1,
+        )
+        synergy_hidden = nnx.swish(self.hand_synergy_in(synergy_input))
+        z_hand = self.hand_synergy_out(synergy_hidden)
+        coarse_hand = self.hand_synergy_decoder_out(nnx.swish(self.hand_synergy_decoder_in(z_hand)))
+
+        refiner_tokens = jnp.concatenate(
+            [
+                self.refiner_history_proj(history_hidden),
+                self.refiner_future_proj(future_hidden),
+                self.refiner_arm_proj(arm_hidden),
+                self.refiner_synergy_proj(z_hand),
+                self.refiner_coarse_proj(coarse_hand),
+                self.refiner_hand_proj(hand_hidden),
+            ],
+            axis=1,
+        )
+        for block in self.tactile_refiner_blocks:
+            refiner_tokens = block(refiner_tokens)
+
+        hand_refined = refiner_tokens[:, -self.action_horizon :]
+        delta_hand = self.tactile_refiner_delta_scale * self.refiner_delta_out(hand_refined)
+        gate = jax.nn.sigmoid(self.refiner_gate_out(hand_refined) + self.tactile_refiner_gate_bias)
+
+        hand_slice = slice(self.hand_action_start, self.hand_action_start + self.hand_action_dim)
+        base_hand = base_velocity[..., hand_slice]
+        final_hand = base_hand + gate * delta_hand
+        final_velocity = base_velocity.at[..., hand_slice].set(final_hand)
+        return final_velocity, {
+            "z_hand": z_hand,
+            "coarse_hand": coarse_hand,
+            "delta_hand": delta_hand,
+            "gate": gate,
+        }
+
+    def _decode_student_action_velocity_with_stats(
+        self, hidden: at.Array
+    ) -> tuple[_model.Actions, dict[str, at.Array]]:
+        base_velocity = self._decode_base_action_velocity(hidden, expert="student")
+        return self._tactile_refine_student_velocity(hidden, base_velocity)
+
+    def _decode_action_velocity(self, hidden: at.Array, *, expert: str) -> _model.Actions:
+        base_velocity = self._decode_base_action_velocity(hidden, expert=expert)
+        if expert == "student":
+            refined_velocity, _ = self._tactile_refine_student_velocity(hidden, base_velocity)
+            return refined_velocity
+        return base_velocity
 
     def _action_losses(self, prediction: _model.Actions, target: _model.Actions) -> tuple[at.Array, at.Array, at.Array]:
         arm_loss = jnp.mean(
@@ -1074,12 +1218,22 @@ class Pi0LatentFlow(_model.BaseModel):
             teacher_adarms=teacher_adarms,
         )
 
-        student_v = self._decode_action_velocity(student_out, expert="student")
+        student_v, tactile_refiner_stats = self._decode_student_action_velocity_with_stats(student_out)
         teacher_v = self._decode_action_velocity(teacher_out, expert="teacher")
         student_action_loss = jnp.mean(jnp.square(student_v - u_t_action), axis=(-2, -1))
         teacher_action_loss = jnp.mean(jnp.square(teacher_v - u_t_action), axis=(-2, -1))
         _, student_arm_loss, student_hand_loss = self._action_losses(student_v, u_t_action)
         _, teacher_arm_loss, teacher_hand_loss = self._action_losses(teacher_v, u_t_action)
+        hand_slice = slice(self.hand_action_start, self.hand_action_start + self.hand_action_dim)
+        if self.tactile_refiner_enabled:
+            synergy_loss = jnp.mean(
+                jnp.square(tactile_refiner_stats["coarse_hand"] - actions[..., hand_slice]),
+                axis=(-2, -1),
+            )
+            delta_reg_loss = jnp.mean(jnp.square(tactile_refiner_stats["delta_hand"]), axis=(-2, -1))
+        else:
+            synergy_loss = jnp.zeros_like(student_action_loss)
+            delta_reg_loss = jnp.zeros_like(student_action_loss)
 
         force_losses = []
         flow_losses = []
@@ -1127,6 +1281,8 @@ class Pi0LatentFlow(_model.BaseModel):
             + self.teacher_action_loss_weight * teacher_action_loss
             + self.future_force_align_loss_weight * future_force_align_loss
             + self.future_flow_align_loss_weight * future_flow_align_loss
+            + self.hand_synergy_loss_weight * synergy_loss
+            + self.tactile_refiner_delta_loss_weight * delta_reg_loss
         )
         stats = {
             "loss/student_action": student_action_loss,
@@ -1139,6 +1295,18 @@ class Pi0LatentFlow(_model.BaseModel):
             "loss/distill_future_flow": future_flow_align_loss,
             "loss/distill_future_force_mean": jnp.mean(raw_future_force_align_loss),
             "loss/distill_future_flow_mean": jnp.mean(raw_future_flow_align_loss),
+            "loss/hand_synergy": synergy_loss,
+            "loss/tactile_refiner_delta_reg": delta_reg_loss,
+            "tactile_refiner/gate_mean": (
+                jnp.mean(tactile_refiner_stats["gate"], axis=(-2, -1))
+                if self.tactile_refiner_enabled
+                else jnp.zeros_like(student_action_loss)
+            ),
+            "tactile_refiner/delta_abs_mean": (
+                jnp.mean(jnp.abs(tactile_refiner_stats["delta_hand"]), axis=(-2, -1))
+                if self.tactile_refiner_enabled
+                else jnp.zeros_like(student_action_loss)
+            ),
             "noise/student_future_query_token_rate": jnp.mean(noised_token_rate),
             "noise/student_future_query_scale": self._student_query_noise_scale(train_progress),
             "loss/total": total_loss,
