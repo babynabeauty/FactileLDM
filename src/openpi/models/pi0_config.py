@@ -257,6 +257,9 @@ class Pi0LatentFlowConfig(Pi0Config):
     tactile_raw_contact_top_k: int = 16
     tactile_raw_contact_threshold: float = 1.0
     tactile_raw_contact_temperature: float = 5.0
+    tactile_patch_tokenizer: bool = False
+    tactile_patch_fingers: tuple[int, ...] = (0, 1, 2)
+    tactile_num_patches: int = 5
     future_tactile_align_layer: int = 12
     tactile_sample_hz: float = 15.0
     arm_hand_mask_attention: bool = False
@@ -290,6 +293,16 @@ class Pi0LatentFlowConfig(Pi0Config):
                 raise ValueError("tactile_raw_contact_top_k must be non-negative.")
             if self.tactile_raw_contact_temperature <= 0:
                 raise ValueError("tactile_raw_contact_temperature must be positive.")
+            if self.tactile_patch_tokenizer:
+                if self.tactile_points_per_finger <= 1:
+                    raise ValueError("tactile_patch_tokenizer requires raw tactile points.")
+                if self.tactile_num_patches <= 0:
+                    raise ValueError("tactile_num_patches must be positive.")
+                if any(finger < 0 or finger >= self.tactile_num_fingers for finger in self.tactile_patch_fingers):
+                    raise ValueError(
+                        f"tactile_patch_fingers must be in [0, {self.tactile_num_fingers}), "
+                        f"got {self.tactile_patch_fingers}."
+                    )
             object.__setattr__(self, "distill_layer_indices", (self.future_tactile_align_layer,))
         if self.arm_hand_mask_attention:
             if not self.structured_tactile:

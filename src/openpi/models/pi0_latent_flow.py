@@ -10,6 +10,7 @@ from openpi.models import model_tavla as _model
 from openpi.models import pi0_config
 from openpi.models import siglip as _siglip
 from openpi.models.pi0_tavla import make_attn_mask, posemb_sincos
+from openpi.models.tactile_tokenizer import AdaptiveFingertipPatchTokenizer
 from openpi.models.tactile_tokenizer import DexterousForceTokenizer
 from openpi.models.tactile_tokenizer import RawTactileSpatialTokenizer
 from openpi.shared import array_typing as at
@@ -65,11 +66,17 @@ class Pi0LatentFlow(_model.BaseModel):
         self.tactile_points_per_finger = int(config.tactile_points_per_finger)
         self.future_tactile_segments = int(config.future_tactile_segments)
         self.future_steps_per_segment = int(config.future_steps_per_segment)
+        self.tactile_patch_tokenizer = bool(getattr(config, "tactile_patch_tokenizer", False))
+        self.tactile_patch_fingers = tuple(int(finger) for finger in getattr(config, "tactile_patch_fingers", (0, 1, 2)))
+        self.tactile_num_patches = int(getattr(config, "tactile_num_patches", 5))
+        self.tactile_tokens_per_step = self.tactile_num_fingers
+        if self.structured_tactile and self.tactile_patch_tokenizer:
+            self.tactile_tokens_per_step = self.tactile_num_fingers + len(self.tactile_patch_fingers) * self.tactile_num_patches
         self.future_force_token_count = (
-            self.future_tactile_segments * self.tactile_num_fingers if self.structured_tactile else 1
+            self.future_tactile_segments * self.tactile_tokens_per_step if self.structured_tactile else 1
         )
         self.history_force_token_count = (
-            self.force_input_frames * self.tactile_num_fingers if self.structured_tactile else 1
+            self.force_input_frames * self.tactile_tokens_per_step if self.structured_tactile else 1
         )
         self.history_times = tuple(
             float(offset) / float(config.tactile_sample_hz) for offset in config.tactile_history_offsets
@@ -169,12 +176,14 @@ class Pi0LatentFlow(_model.BaseModel):
                     contact_threshold=config.tactile_raw_contact_threshold,
                     contact_temperature=config.tactile_raw_contact_temperature,
                 )
-                self.student_force_tokenizer = RawTactileSpatialTokenizer(
-                    output_dim=student_config.width, rngs=rngs, **tokenizer_kwargs
-                )
-                self.teacher_force_tokenizer = RawTactileSpatialTokenizer(
-                    output_dim=teacher_config.width, rngs=rngs, **tokenizer_kwargs
-                )
+                tokenizer_cls = AdaptiveFingertipPatchTokenizer if self.tactile_patch_tokenizer else RawTactileSpatialTokenizer
+                if self.tactile_patch_tokenizer:
+                    tokenizer_kwargs.update(
+                        patch_fingers=self.tactile_patch_fingers,
+                        num_patches=self.tactile_num_patches,
+                    )
+                self.student_force_tokenizer = tokenizer_cls(output_dim=student_config.width, rngs=rngs, **tokenizer_kwargs)
+                self.teacher_force_tokenizer = tokenizer_cls(output_dim=teacher_config.width, rngs=rngs, **tokenizer_kwargs)
             else:
                 tokenizer_kwargs = dict(
                     hidden_dim=config.tactile_tokenizer_dim,
@@ -201,7 +210,7 @@ class Pi0LatentFlow(_model.BaseModel):
             self.student_query_finger_embedding = nnx.Param(
                 0.02
                 * jax.random.normal(
-                    rngs.params(), (self.tactile_num_fingers, student_config.width), dtype=jnp.float32
+                    rngs.params(), (self.tactile_tokens_per_step, student_config.width), dtype=jnp.float32
                 )
             )
         else:
@@ -356,7 +365,7 @@ class Pi0LatentFlow(_model.BaseModel):
                 + self.student_query_segment_embedding.value[:, None, :]
                 + self.student_query_finger_embedding.value[None, :, :]
             )
-            query = einops.rearrange(query, "s f d -> (s f) d").astype(dtype)
+            query = einops.rearrange(query, "s k d -> (s k) d").astype(dtype)
             return jnp.broadcast_to(query[None, :, :], (batch_size, query.shape[0], query.shape[1]))
         query = jnp.asarray(self.student_query.value, dtype=dtype)
         return jnp.broadcast_to(query[None, None, :], (batch_size, 1, query.shape[0]))
