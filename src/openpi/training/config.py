@@ -1324,7 +1324,7 @@ _CONFIGS = [
             tactile_tokenizer_dim=256,
             tactile_raw_contact_top_k=16,
             tactile_raw_contact_threshold=1.0,
-            tactile_raw_contact_temperature=5.0,
+            tactile_raw_contact_temperature=0.5,
             future_tactile_align_layer=12,
             tactile_sample_hz=15.0,
             future_force_align_loss_weight=0.1,
@@ -1379,7 +1379,7 @@ _CONFIGS = [
             tactile_tokenizer_dim=256,
             tactile_raw_contact_top_k=16,
             tactile_raw_contact_threshold=1.0,
-            tactile_raw_contact_temperature=5.0,
+            tactile_raw_contact_temperature=0.5,
             future_tactile_align_layer=12,
             tactile_sample_hz=15.0,
             future_force_align_loss_weight=0.1,
@@ -1431,7 +1431,7 @@ _CONFIGS = [
             tactile_tokenizer_dim=256,
             tactile_raw_contact_top_k=16,
             tactile_raw_contact_threshold=1.0,
-            tactile_raw_contact_temperature=5.0,
+            tactile_raw_contact_temperature=0.5,
             future_tactile_align_layer=12,
             tactile_sample_hz=15.0,
             future_force_align_loss_weight=0.1,
@@ -1486,7 +1486,7 @@ _CONFIGS = [
             tactile_tokenizer_dim=256,
             tactile_raw_contact_top_k=16,
             tactile_raw_contact_threshold=1.0,
-            tactile_raw_contact_temperature=5.0,
+            tactile_raw_contact_temperature=0.5,
             future_tactile_align_layer=12,
             tactile_sample_hz=15.0,
             future_force_align_loss_weight=0.1,
@@ -1554,7 +1554,7 @@ _CONFIGS = [
             tactile_tokenizer_dim=256,
             tactile_raw_contact_top_k=16,
             tactile_raw_contact_threshold=1.0,
-            tactile_raw_contact_temperature=5.0,
+            tactile_raw_contact_temperature=0.5,
             future_tactile_align_layer=12,
             tactile_sample_hz=15.0,
             future_force_align_loss_weight=0.1,
@@ -1618,7 +1618,7 @@ _CONFIGS = [
             tactile_tokenizer_dim=256,
             tactile_raw_contact_top_k=16,
             tactile_raw_contact_threshold=1.0,
-            tactile_raw_contact_temperature=5.0,
+            tactile_raw_contact_temperature=0.5,
             future_tactile_align_layer=12,
             tactile_sample_hz=15.0,
             future_tactile_latent_loss_weight=0.1,
@@ -2018,6 +2018,53 @@ _CONFIGS = [
         ema_decay = None # 节省显存
     ),
 ]
+
+
+def _history_future_tactile_pooled_config(source_name: str, new_name: str) -> TrainConfig:
+    """Pool both tactile history and all 32 future steps along time.
+
+    This keeps finger/patch identity but removes the per-frame history/future
+    token explosion. Per-finger tactile becomes 5 history + 5 future tokens;
+    adaptive patch tactile becomes 20 history + 20 future tokens.
+    """
+
+    source = next(config for config in _CONFIGS if config.name == source_name)
+    return dataclasses.replace(
+        source,
+        name=new_name,
+        model=dataclasses.replace(
+            source.model,
+            pool_tactile_history=True,
+            future_tactile_segments=1,
+            future_steps_per_segment=32,
+        ),
+    )
+
+
+_CONFIGS.extend(
+    [
+        _history_future_tactile_pooled_config(
+            "pi0_xhand_tactile_structured_dual_ae",
+            "pi0_xhand_tactile_structured_dual_ae_history_future_pool",
+        ),
+        _history_future_tactile_pooled_config(
+            "pi0_xhand_tactile_structured_single_ae",
+            "pi0_xhand_tactile_structured_single_ae_history_future_pool",
+        ),
+        _history_future_tactile_pooled_config(
+            "pi0_xhand_tactile_structured_raw_dual_ae",
+            "pi0_xhand_tactile_structured_raw_dual_ae_history_future_pool",
+        ),
+        _history_future_tactile_pooled_config(
+            "pi0_xhand_tactile_structured_raw_single_ae",
+            "pi0_xhand_tactile_structured_raw_single_ae_history_future_pool",
+        ),
+        _history_future_tactile_pooled_config(
+            "pi0_xhand_tactile_structured_adaptive_patch_raw_dual_ae",
+            "pi0_xhand_tactile_structured_adaptive_patch_raw_dual_ae_history_future_pool",
+        ),
+    ]
+)
 
 if len({config.name for config in _CONFIGS}) != len(_CONFIGS):
     raise ValueError("Config names must be unique.")

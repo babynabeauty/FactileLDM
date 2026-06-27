@@ -22,11 +22,17 @@ POLL_INTERVAL="${POLL_INTERVAL:-30}"
 OVERWRITE_NORM="${OVERWRITE_NORM:-0}"
 RUN_TAG="${RUN_TAG:-${ASSET_ID}_$(date +%m%d_%H%M%S)}"
 
-CONFIGS=(
-  pi0_xhand_tactile_structured_dual_ae
-  pi0_xhand_tactile_forceonly_full_finetune
-  pi0_xhand_tactile_structured_raw_dual_ae
-)
+if [[ -n "${NORM_CONFIGS:-}" ]]; then
+  # Space-separated override, e.g.
+  # NORM_CONFIGS="pi0_xhand_tactile_structured_dual_ae pi0_xhand_tactile_structured_raw_dual_ae"
+  read -r -a CONFIGS <<< "$NORM_CONFIGS"
+else
+  CONFIGS=(
+    pi0_xhand_tactile_structured_dual_ae
+    pi0_xhand_tactile_forceonly_full_finetune
+    pi0_xhand_tactile_structured_raw_dual_ae
+  )
+fi
 
 export HF_LEROBOT_HOME="${HF_LEROBOT_HOME:-$PWD}"
 export HF_DATASETS_CACHE="${HF_DATASETS_CACHE:-$PWD/.hf_datasets_cache}"
@@ -128,7 +134,7 @@ for config in "${CONFIGS[@]}"; do
 done
 
 if (( ${#PENDING[@]} == 0 )); then
-  log "All three normalization files already exist for asset ${ASSET_ID}."
+  log "All requested normalization files already exist for asset ${ASSET_ID}."
   exit 0
 fi
 

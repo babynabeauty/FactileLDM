@@ -102,6 +102,7 @@ class Pi0LatentFlow(_model.BaseModel):
         self.tactile_points_per_finger = int(config.tactile_points_per_finger)
         self.future_tactile_segments = int(config.future_tactile_segments)
         self.future_steps_per_segment = int(config.future_steps_per_segment)
+        self.pool_tactile_history = bool(getattr(config, "pool_tactile_history", False))
         self.tactile_patch_tokenizer = bool(getattr(config, "tactile_patch_tokenizer", False))
         self.tactile_patch_fingers = tuple(int(finger) for finger in getattr(config, "tactile_patch_fingers", (0, 1, 2)))
         self.tactile_num_patches = int(getattr(config, "tactile_num_patches", 5))
@@ -112,7 +113,13 @@ class Pi0LatentFlow(_model.BaseModel):
             self.future_tactile_segments * self.tactile_tokens_per_step if self.structured_tactile else 1
         )
         self.history_force_token_count = (
-            self.force_input_frames * self.tactile_tokens_per_step if self.structured_tactile else 1
+            (
+                self.tactile_tokens_per_step
+                if self.pool_tactile_history
+                else self.force_input_frames * self.tactile_tokens_per_step
+            )
+            if self.structured_tactile
+            else 1
         )
         self.history_times = tuple(
             float(offset) / float(config.tactile_sample_hz) for offset in config.tactile_history_offsets
@@ -259,6 +266,13 @@ class Pi0LatentFlow(_model.BaseModel):
                     rngs.params(), (self.tactile_tokens_per_step, student_config.width), dtype=jnp.float32
                 )
             )
+            if self.pool_tactile_history:
+                self.student_history_pool_logits = nnx.Param(
+                    jnp.zeros((self.force_input_frames,), dtype=jnp.float32)
+                )
+                self.teacher_history_pool_logits = nnx.Param(
+                    jnp.zeros((self.force_input_frames,), dtype=jnp.float32)
+                )
         else:
             history_dim = self.force_input_frames * self.effort_dim_in
             future_dim = config.action_horizon * self.effort_dim_in
@@ -400,13 +414,27 @@ class Pi0LatentFlow(_model.BaseModel):
             future_effort = self._pad_or_crop_effort(future_effort, self.action_horizon, from_end=False)
         return history_effort, future_effort
 
+    def _pool_history_tokens(self, tokens: at.Array, logits: at.Array | None) -> at.Array:
+        if not self.pool_tactile_history:
+            return tokens
+        tokens = einops.rearrange(
+            tokens,
+            "b (h k) d -> b h k d",
+            h=self.force_input_frames,
+            k=self.tactile_tokens_per_step,
+        )
+        weights = jax.nn.softmax(jnp.asarray(logits, dtype=jnp.float32)).astype(tokens.dtype)
+        return jnp.einsum("h,bhkd->bkd", weights, tokens)
+
     def _project_history_force_student(
         self, history_effort: at.Array
     ) -> at.Array:
         if self.structured_tactile:
-            return self.student_force_tokenizer.encode_history(
+            tokens = self.student_force_tokenizer.encode_history(
                 history_effort, jnp.asarray(self.history_times, dtype=jnp.float32)
             )
+            logits = self.student_history_pool_logits.value if self.pool_tactile_history else None
+            return self._pool_history_tokens(tokens, logits)
         hidden = self.history_force_proj_student(einops.rearrange(history_effort, "b h e -> b (h e)"))
         return hidden[:, None, :]
 
@@ -414,9 +442,11 @@ class Pi0LatentFlow(_model.BaseModel):
         self, history_effort: at.Array
     ) -> at.Array:
         if self.structured_tactile:
-            return self.teacher_force_tokenizer.encode_history(
+            tokens = self.teacher_force_tokenizer.encode_history(
                 history_effort, jnp.asarray(self.history_times, dtype=jnp.float32)
             )
+            logits = self.teacher_history_pool_logits.value if self.pool_tactile_history else None
+            return self._pool_history_tokens(tokens, logits)
         hidden = self.history_force_proj_teacher(einops.rearrange(history_effort, "b h e -> b (h e)"))
         return hidden[:, None, :]
 

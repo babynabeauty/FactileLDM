@@ -26,7 +26,13 @@ class Pi0FutureTactile(Pi0):
         self.points_per_finger = int(config.tactile_points_per_finger)
         self.future_segments = int(config.future_tactile_segments)
         self.steps_per_segment = int(config.future_steps_per_segment)
-        self.history_token_count = self.force_input_frames * self.num_fingers
+        self.pool_tactile_history = bool(getattr(config, "pool_tactile_history", False))
+        self.tactile_tokens_per_step = self.num_fingers
+        self.history_token_count = (
+            self.tactile_tokens_per_step
+            if self.pool_tactile_history
+            else self.force_input_frames * self.tactile_tokens_per_step
+        )
         self.future_token_count = self.future_segments * self.num_fingers
         self.align_layer = int(config.future_tactile_align_layer)
         self.latent_loss_weight = float(config.future_tactile_latent_loss_weight)
@@ -121,6 +127,8 @@ class Pi0FutureTactile(Pi0):
         self.future_query_finger_embedding = nnx.Param(
             0.02 * jax.random.normal(rngs.params(), (self.num_fingers, action_width), dtype=jnp.float32)
         )
+        if self.pool_tactile_history:
+            self.history_pool_logits = nnx.Param(jnp.zeros((self.force_input_frames,), dtype=jnp.float32))
         self.future_force_decoder = nnx.Linear(
             action_width, self.steps_per_segment * self.dim_per_finger, rngs=rngs
         )
@@ -180,6 +188,21 @@ class Pi0FutureTactile(Pi0):
         query = einops.rearrange(query, "s f d -> (s f) d").astype(dtype)
         return jnp.broadcast_to(query[None], (batch_size, *query.shape))
 
+    def _encode_history_tokens(self, history_effort: jax.Array) -> jax.Array:
+        tokens = self.force_tokenizer.encode_history(
+            history_effort, jnp.asarray(self.history_times, dtype=jnp.float32)
+        )
+        if not self.pool_tactile_history:
+            return tokens
+        tokens = einops.rearrange(
+            tokens,
+            "b (h f) d -> b h f d",
+            h=self.force_input_frames,
+            f=self.tactile_tokens_per_step,
+        )
+        weights = jax.nn.softmax(self.history_pool_logits.value.astype(jnp.float32)).astype(tokens.dtype)
+        return jnp.einsum("h,bhfd->bfd", weights, tokens)
+
     def embed_prefix(self, obs):
         tokens = []
         input_mask = []
@@ -204,9 +227,7 @@ class Pi0FutureTactile(Pi0):
 
     def embed_structured_suffix(self, obs, history_effort, noisy_actions, timestep):
         state_token = self.state_proj(obs.state)[:, None, :]
-        history_tokens = self.force_tokenizer.encode_history(
-            history_effort, jnp.asarray(self.history_times, dtype=jnp.float32)
-        )
+        history_tokens = self._encode_history_tokens(history_effort)
         future_queries = self._future_queries(obs.state.shape[0], history_tokens.dtype)
 
         action_tokens = self.action_in_proj(noisy_actions)
@@ -243,9 +264,7 @@ class Pi0FutureTactile(Pi0):
         observation: _model.Observation,
         history_effort: jax.Array,
     ) -> jax.Array:
-        history_tokens = self.force_tokenizer.encode_history(
-            history_effort, jnp.asarray(self.history_times, dtype=jnp.float32)
-        )
+        history_tokens = self._encode_history_tokens(history_effort)
         condition = self.future_hand_condition_norm(
             self.future_hand_state_proj(observation.state)
             + self.future_hand_history_proj(jnp.mean(history_tokens, axis=1))

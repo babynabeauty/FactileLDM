@@ -242,8 +242,11 @@ class RawTactileSpatialTokenizer(nnx.Module):
         score = jnp.squeeze(self.point_score(nnx.swish(point_tokens)), axis=-1).astype(jnp.float32)
         score = score + jnp.log(gate + 1e-6)
         if 0 < self.contact_top_k < self.num_points:
-            contact_mask = self._contact_top_k_mask(magnitude)
-            score = jnp.where(contact_mask, score, -1e4)
+            hard_contact = magnitude > self.contact_threshold
+            hard_contact_count = jnp.sum(hard_contact, axis=-1, keepdims=True)
+            top_k_mask = self._contact_top_k_mask(magnitude)
+            selected_mask = jnp.where(hard_contact_count >= self.contact_top_k, top_k_mask, hard_contact)
+            score = jnp.where(hard_contact_count > 0, jnp.where(selected_mask, score, -1e4), score)
 
         weights = jax.nn.softmax(score, axis=-1).astype(point_tokens.dtype)
         pooled = jnp.einsum("btfp,btfpd->btfd", weights, point_tokens)
@@ -413,8 +416,11 @@ class AdaptiveFingertipPatchTokenizer(RawTactileSpatialTokenizer):
         score = jnp.squeeze(self.point_score(nnx.swish(point_tokens)), axis=-1).astype(jnp.float32)
         score = score + jnp.log(gate + 1e-6)
         if 0 < self.contact_top_k < self.num_points:
-            contact_mask = self._contact_top_k_mask(magnitude)
-            score = jnp.where(contact_mask, score, -1e4)
+            hard_contact = magnitude > self.contact_threshold
+            hard_contact_count = jnp.sum(hard_contact, axis=-1, keepdims=True)
+            top_k_mask = self._contact_top_k_mask(magnitude)
+            selected_mask = jnp.where(hard_contact_count >= self.contact_top_k, top_k_mask, hard_contact)
+            score = jnp.where(hard_contact_count > 0, jnp.where(selected_mask, score, -1e4), score)
 
         summary_weights = jax.nn.softmax(score, axis=-1).astype(point_tokens.dtype)
         summary_tokens = jnp.einsum("btfp,btfpd->btfd", summary_weights, point_tokens)

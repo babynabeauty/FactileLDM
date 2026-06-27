@@ -31,6 +31,23 @@ def test_structured_force_token_counts():
     assert future_tokens.shape == (2, 40, 32)
 
 
+def test_future_force_can_pool_all_steps_per_finger():
+    tokenizer = DexterousForceTokenizer(
+        output_dim=32,
+        hidden_dim=16,
+        num_fingers=5,
+        dim_per_finger=3,
+        future_segments=1,
+        future_steps_per_segment=32,
+        rngs=nnx.Rngs(0),
+    )
+    future = jnp.zeros((2, 32, 5, 3))
+
+    future_tokens = tokenizer.encode_future(future, jnp.arange(1, 33) / 15.0)
+
+    assert future_tokens.shape == (2, 5, 32)
+
+
 def test_finger_force_changes_only_corresponding_input_tokens():
     tokenizer = _tokenizer()
     history = jnp.zeros((1, 10, 5, 3))
@@ -59,4 +76,3 @@ def test_structured_effort_normalization_preserves_per_finger_stats():
 
     assert normalized.shape == (1, 5, 3)
     assert np.allclose(normalized, 0)
-

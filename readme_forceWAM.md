@@ -293,6 +293,14 @@ future_tactile_encoder_pretrain_flare_dit
 pi0_xhand_tactile_action_aware_flare_single_ae
 
 
++ 
+pi0_xhand_tactile_structured_dual_ae_history_future_pool
+pi0_xhand_tactile_structured_single_ae_history_future_pool
+pi0_xhand_tactile_structured_raw_dual_ae_history_future_pool
+pi0_xhand_tactile_structured_raw_single_ae_history_future_pool
+pi0_xhand_tactile_structured_adaptive_patch_raw_dual_ae_history_future_pool
+
+
 ## 历史内容归档
 
 下面是之前的命令和杂项记录，保留备用；日常跑实验优先复制上面的推荐命令。
@@ -416,6 +424,12 @@ aws s3 cp s3://sqzhang26-2/data.tar.gz data.tar.gz \
 aws s3 cp s3://sqzhang26-2/path/to/folder ./folder \
   --recursive \
   --endpoint-url https://eos-huhehaote-1.cmecloud.cn
+
+#上载整个目录
+aws s3 cp /Users/babyna/Downloads/0627_grasp_cob s3://sqzhang26-2/0627_grasp_cob  \
+  --recursive \
+  --endpoint-url https://eos-huhehaote-1.cmecloud.cn
+
 
 # 大文件上传  mac支持\
 s3cmd put /Users/babyna/Downloads/grasp_pipette_and_press_w_force_w_depth_0615_good_tactile_26ep.zip \
