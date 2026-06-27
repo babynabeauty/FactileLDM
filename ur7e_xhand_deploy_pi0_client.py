@@ -44,6 +44,7 @@ TACTILE_BLOCK_SIZE = 384
 TACTILE_BLOCK_START = 52
 TACTILE_CALC_FORCE_OFFSET = 0
 TACTILE_AXES = ("x", "y", "z")
+DEBUG_INFER_PRINT_LIMIT = 3
 
 FALLBACK_STATE_NAMES = [
     *[f"arm_joint_{i}.pos" for i in range(6)],
@@ -89,6 +90,42 @@ def unpack_array(obj):
         return np.dtype(obj[b"dtype"]).type(obj[b"data"])
 
     return obj
+
+
+def summarize_array(value: np.ndarray) -> str:
+    array = np.asarray(value)
+    summary = f"shape={array.shape}, dtype={array.dtype}"
+    if array.size == 0:
+        return summary + ", empty"
+    if np.issubdtype(array.dtype, np.number):
+        finite = array[np.isfinite(array)]
+        if finite.size:
+            summary += (
+                f", min={float(finite.min()):.6g}, max={float(finite.max()):.6g}, "
+                f"mean={float(finite.mean()):.6g}"
+            )
+        else:
+            summary += ", no finite values"
+    return summary
+
+
+def debug_print_client_observation(observation: dict, *, query_index: int, policy_input_mode: str) -> None:
+    print(f"=== CLIENT OBS BEFORE SEND #{query_index} mode={policy_input_mode} ===", flush=True)
+    for key in sorted(observation):
+        value = observation[key]
+        if isinstance(value, np.ndarray):
+            print(f"[client] {key}: {summarize_array(value)}", flush=True)
+        else:
+            print(f"[client] {key}: {type(value).__name__}={value}", flush=True)
+
+    state = observation.get("observation/state")
+    if isinstance(state, np.ndarray):
+        current_state = state[-1] if state.ndim >= 2 else state
+        print(f"[client] current state summary: {summarize_array(current_state)}", flush=True)
+
+    tactile = observation.get("observation/tactile")
+    if isinstance(tactile, np.ndarray):
+        print(f"[client] current calc_force tactile [5,3]:\n{np.array2string(tactile, precision=4)}", flush=True)
 
 
 def import_msgpack():
@@ -689,6 +726,12 @@ def main() -> int:
                     state_history=state_history,
                     frame_idx=frame_idx,
                 )
+                if current_action_step < DEBUG_INFER_PRINT_LIMIT:
+                    debug_print_client_observation(
+                        observation,
+                        query_index=current_action_step,
+                        policy_input_mode=policy_input_mode,
+                    )
                 try:
                     infer_start = time.perf_counter()
                     inference_result = client.infer(observation)

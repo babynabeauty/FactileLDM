@@ -21,6 +21,56 @@ from openpi.shared import nnx_utils
 
 BasePolicy: TypeAlias = _base_policy.BasePolicy
 
+DEBUG_INFER_PRINT_LIMIT = 3
+
+
+def _summarize_debug_value(value: Any) -> str:
+    if isinstance(value, str):
+        return f"str={value!r}"
+    if isinstance(value, bytes):
+        return f"bytes len={len(value)}"
+    if not hasattr(value, "shape"):
+        return f"{type(value).__name__}={value}"
+
+    array = np.asarray(value)
+    summary = f"shape={array.shape}, dtype={array.dtype}"
+    if array.size == 0:
+        return summary + ", empty"
+    if np.issubdtype(array.dtype, np.number):
+        finite = array[np.isfinite(array)]
+        if finite.size:
+            summary += (
+                f", min={float(finite.min()):.6g}, max={float(finite.max()):.6g}, "
+                f"mean={float(finite.mean()):.6g}"
+            )
+        else:
+            summary += ", no finite values"
+    return summary
+
+
+def _debug_print_tree(title: str, tree: dict, *, infer_index: int) -> None:
+    print(f"=== {title} #{infer_index} ===", flush=True)
+    flat = flax.traverse_util.flatten_dict(tree, sep="/")
+    for key in sorted(flat):
+        print(f"[server] {key}: {_summarize_debug_value(flat[key])}", flush=True)
+
+    effort = flat.get("effort")
+    if effort is not None:
+        effort_array = np.asarray(effort)
+        print(f"[server] effort detailed shape={effort_array.shape}", flush=True)
+        if effort_array.ndim >= 3 and effort_array.shape[-2:] == (5, 3):
+            current = effort_array[-1] if effort_array.ndim == 3 else effort_array.reshape(-1, 5, 3)[-1]
+            print(f"[server] latest calc_force [5,3]:\n{np.array2string(current, precision=4)}", flush=True)
+        elif effort_array.ndim >= 4 and effort_array.shape[-3:] == (5, 120, 3):
+            latest = effort_array[-1] if effort_array.ndim == 4 else effort_array.reshape(-1, 5, 120, 3)[-1]
+            magnitude = np.linalg.norm(latest, axis=-1)
+            print(
+                "[server] latest raw tactile per-finger "
+                f"mag_max={np.array2string(magnitude.max(axis=-1), precision=4)}, "
+                f"mag_mean={np.array2string(magnitude.mean(axis=-1), precision=4)}",
+                flush=True,
+            )
+
 
 class Policy(BasePolicy):
     def __init__(
@@ -55,6 +105,7 @@ class Policy(BasePolicy):
         self._metadata = metadata or {}
         self._is_pytorch_model = is_pytorch
         self._pytorch_device = pytorch_device
+        self._debug_infer_count = 0
 
         if self._is_pytorch_model:
             self._model = self._model.to(pytorch_device)
@@ -68,8 +119,14 @@ class Policy(BasePolicy):
     @override
     def infer(self, obs: dict, *, noise: np.ndarray | None = None) -> dict:  # type: ignore[misc]
         # Make a copy since transformations may modify the inputs in place.
+        debug_index = self._debug_infer_count
         inputs = jax.tree.map(lambda x: x, obs)
+        if debug_index < DEBUG_INFER_PRINT_LIMIT:
+            _debug_print_tree("SERVER RAW OBS FROM CLIENT", inputs, infer_index=debug_index)
         inputs = self._input_transform(inputs)
+        if debug_index < DEBUG_INFER_PRINT_LIMIT:
+            _debug_print_tree("SERVER MODEL INPUT AFTER TRANSFORM", inputs, infer_index=debug_index)
+        self._debug_infer_count += 1
         if not self._is_pytorch_model:
             # Make a batch and convert to jax.Array.
             inputs = jax.tree.map(lambda x: jnp.asarray(x)[np.newaxis, ...], inputs)

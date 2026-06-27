@@ -1,7 +1,8 @@
 """Analyze low-dimensional structure in XHand action trajectories.
 
 This script reads local LeRobot v2.x parquet files directly, extracts the hand
-action slice, runs PCA with NumPy SVD, and writes plots/tables for choosing a
+action slice, optionally mixes in legacy zarr datasets with ``hand_action``
+arrays, runs PCA with NumPy SVD, and writes plots/tables for choosing a
 learnable hand-synergy bottleneck dimension.
 """
 
@@ -60,6 +61,59 @@ def _load_actions(repo_id: Path, *, max_frames: int | None) -> np.ndarray:
     return np.concatenate(chunks, axis=0)
 
 
+def _zarr_dataset_dirs(root: Path) -> list[Path]:
+    if (root / "episode_0").exists() or any(root.glob("episode_*")):
+        return [root]
+    return sorted([path for path in root.iterdir() if path.is_dir() and any(path.glob("episode_*"))])
+
+
+def _zarr_episode_dirs(dataset_dir: Path) -> list[Path]:
+    def _episode_index(path: Path) -> int:
+        suffix = path.name.removeprefix("episode_")
+        return int(suffix) if suffix.isdigit() else 10**9
+
+    return sorted(
+        [path for path in dataset_dir.iterdir() if path.is_dir() and path.name.startswith("episode_")],
+        key=_episode_index,
+    )
+
+
+def _load_zarr_hand_actions(
+    root: Path,
+    *,
+    zarr_key: str,
+    hand_dim: int,
+    max_frames: int | None,
+) -> list[tuple[str, np.ndarray]]:
+    try:
+        import zarr
+    except ImportError as exc:
+        raise ImportError("Reading --zarr-root requires the zarr package in the active environment.") from exc
+
+    outputs = []
+    for dataset_dir in _zarr_dataset_dirs(root):
+        chunks = []
+        total = 0
+        for episode_dir in _zarr_episode_dirs(dataset_dir):
+            array_path = episode_dir / zarr_key
+            if not array_path.exists():
+                continue
+            values = np.asarray(zarr.open_array(str(array_path), mode="r")[:], dtype=np.float32)
+            if values.ndim != 2 or values.shape[-1] != hand_dim:
+                raise ValueError(f"{array_path} has shape {values.shape}; expected [T,{hand_dim}].")
+            if max_frames is not None and total + len(values) > max_frames:
+                values = values[: max_frames - total]
+            chunks.append(values)
+            total += len(values)
+            if max_frames is not None and total >= max_frames:
+                break
+        if chunks:
+            outputs.append((str(dataset_dir), np.concatenate(chunks, axis=0)))
+    if not outputs:
+        raise FileNotFoundError(f"No zarr arrays named {zarr_key!r} found under {root}.")
+    return outputs
+
+
 def _pca(x: np.ndarray, *, standardize: bool) -> dict[str, np.ndarray]:
     mean = x.mean(axis=0)
     centered = x - mean
@@ -87,6 +141,23 @@ def _write_summary_csv(path: Path, explained_ratio: np.ndarray, cumulative_ratio
         writer.writerow(["component", "explained_ratio", "cumulative_ratio"])
         for i, (ratio, cumulative) in enumerate(zip(explained_ratio, cumulative_ratio, strict=True), start=1):
             writer.writerow([i, float(ratio), float(cumulative)])
+
+
+def _write_source_counts(path: Path, sources: list[tuple[str, np.ndarray]]) -> None:
+    with path.open("w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["source", "num_frames", "min", "max", "mean", "std"])
+        for name, values in sources:
+            writer.writerow(
+                [
+                    name,
+                    int(values.shape[0]),
+                    json.dumps(values.min(axis=0).astype(float).tolist()),
+                    json.dumps(values.max(axis=0).astype(float).tolist()),
+                    json.dumps(values.mean(axis=0).astype(float).tolist()),
+                    json.dumps(values.std(axis=0).astype(float).tolist()),
+                ]
+            )
 
 
 def _plot_explained_variance(path: Path, explained_ratio: np.ndarray, cumulative_ratio: np.ndarray) -> None:
@@ -144,11 +215,25 @@ def _plot_component_bars(output_dir: Path, components: np.ndarray, names: list[s
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--repo-id", type=Path, required=True, help="Local LeRobot dataset root.")
+    parser.add_argument(
+        "--repo-id",
+        type=Path,
+        action="append",
+        default=[],
+        help="Local LeRobot dataset root. May be passed multiple times.",
+    )
+    parser.add_argument(
+        "--zarr-root",
+        type=Path,
+        action="append",
+        default=[],
+        help="Legacy zarr root containing *_dataset/episode_*/hand_action. May be passed multiple times.",
+    )
+    parser.add_argument("--zarr-key", type=str, default="hand_action")
     parser.add_argument("--output-dir", type=Path, default=Path("outputs/hand_action_pca"))
     parser.add_argument("--hand-start", type=int, default=6)
     parser.add_argument("--hand-dim", type=int, default=12)
-    parser.add_argument("--max-frames", type=int, default=None)
+    parser.add_argument("--max-frames", type=int, default=None, help="Maximum frames loaded per source.")
     parser.add_argument(
         "--standardize",
         action="store_true",
@@ -157,26 +242,49 @@ def main() -> None:
     parser.add_argument("--num-components-to-plot", type=int, default=8)
     args = parser.parse_args()
 
-    repo_id = args.repo_id.expanduser().resolve()
     output_dir = args.output_dir.expanduser().resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    actions = _load_actions(repo_id, max_frames=args.max_frames)
-    if args.hand_start < 0 or args.hand_dim <= 0 or args.hand_start + args.hand_dim > actions.shape[-1]:
-        raise ValueError(
-            f"Invalid hand slice [{args.hand_start}:{args.hand_start + args.hand_dim}] "
-            f"for action_dim={actions.shape[-1]}."
+    sources: list[tuple[str, np.ndarray]] = []
+    hand_names: list[str] | None = None
+    for repo_id_arg in args.repo_id:
+        repo_id = repo_id_arg.expanduser().resolve()
+        actions = _load_actions(repo_id, max_frames=args.max_frames)
+        if args.hand_start < 0 or args.hand_dim <= 0 or args.hand_start + args.hand_dim > actions.shape[-1]:
+            raise ValueError(
+                f"Invalid hand slice [{args.hand_start}:{args.hand_start + args.hand_dim}] "
+                f"for action_dim={actions.shape[-1]} in {repo_id}."
+            )
+        sources.append((str(repo_id), actions[:, args.hand_start : args.hand_start + args.hand_dim]))
+        if hand_names is None:
+            action_names = _load_action_names(repo_id, actions.shape[-1])
+            hand_names = action_names[args.hand_start : args.hand_start + args.hand_dim]
+
+    for zarr_root_arg in args.zarr_root:
+        zarr_root = zarr_root_arg.expanduser().resolve()
+        sources.extend(
+            _load_zarr_hand_actions(
+                zarr_root,
+                zarr_key=args.zarr_key,
+                hand_dim=args.hand_dim,
+                max_frames=args.max_frames,
+            )
         )
-    hand_actions = actions[:, args.hand_start : args.hand_start + args.hand_dim]
-    action_names = _load_action_names(repo_id, actions.shape[-1])
-    hand_names = action_names[args.hand_start : args.hand_start + args.hand_dim]
+
+    if not sources:
+        raise ValueError("Pass at least one --repo-id or --zarr-root.")
+
+    hand_actions = np.concatenate([values for _, values in sources], axis=0)
+    if hand_names is None:
+        hand_names = [f"hand_joint_{i}.pos" for i in range(args.hand_dim)]
 
     result = _pca(hand_actions, standardize=args.standardize)
     summary = {
-        "repo_id": str(repo_id),
+        "sources": [{"name": name, "num_frames": int(values.shape[0])} for name, values in sources],
         "num_frames": int(hand_actions.shape[0]),
         "hand_start": int(args.hand_start),
         "hand_dim": int(args.hand_dim),
+        "zarr_key": args.zarr_key,
         "standardize": bool(args.standardize),
         "hand_names": hand_names,
         "explained_ratio": result["explained_ratio"].astype(float).tolist(),
@@ -184,6 +292,7 @@ def main() -> None:
     }
     (output_dir / "summary.json").write_text(json.dumps(summary, indent=2))
     _write_summary_csv(output_dir / "explained_variance.csv", result["explained_ratio"], result["cumulative_ratio"])
+    _write_source_counts(output_dir / "source_counts.csv", sources)
     np.save(output_dir / "hand_action_mean.npy", result["mean"])
     np.save(output_dir / "hand_action_pca_components.npy", result["components"])
 
@@ -205,7 +314,9 @@ def main() -> None:
         num_components=min(args.num_components_to_plot, args.hand_dim),
     )
 
-    print(f"Loaded {hand_actions.shape[0]} frames from {repo_id}")
+    print(f"Loaded {hand_actions.shape[0]} frames from {len(sources)} source(s)")
+    for name, values in sources:
+        print(f"  - {name}: {values.shape[0]} frames")
     print(f"Saved PCA analysis to {output_dir}")
     for k in (2, 4, 6, 8, 10, 12):
         if k <= len(result["cumulative_ratio"]):
