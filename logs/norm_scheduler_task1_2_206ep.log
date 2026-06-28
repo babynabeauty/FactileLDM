@@ -1,9 +1,0 @@
-nohup: ignoring input
-[2026-06-24 21:04:12] Dataset=data/task1_2_206ep, asset=task1_2_206ep
-[2026-06-24 21:04:12] GPU pool=0,1,2,3,4,5,6,7, min free=50000 MiB, max util=20%
-[2026-06-24 21:04:12] Starting pi0_xhand_tactile_structured_dual_ae on GPU 0; log=logs/norm_pi0_xhand_tactile_structured_dual_ae_task1_2_206ep_0624_210412.log
-[2026-06-24 21:04:12] Launched pi0_xhand_tactile_structured_dual_ae: PID=134526, GPU=0
-[2026-06-24 21:04:13] Starting pi0_xhand_tactile_forceonly_full_finetune on GPU 1; log=logs/norm_pi0_xhand_tactile_forceonly_full_finetune_task1_2_206ep_0624_210412.log
-[2026-06-24 21:04:13] Launched pi0_xhand_tactile_forceonly_full_finetune: PID=134609, GPU=1
-[2026-06-24 21:04:14] Starting pi0_xhand_tactile_structured_raw_dual_ae on GPU 2; log=logs/norm_pi0_xhand_tactile_structured_raw_dual_ae_task1_2_206ep_0624_210412.log
-[2026-06-24 21:04:14] Launched pi0_xhand_tactile_structured_raw_dual_ae: PID=134678, GPU=2

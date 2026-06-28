@@ -2,11 +2,11 @@
 """Plot total and component losses from a dual-AE tactile training log.
 
 env/.venv/bin/python scripts/plot_dual_ae_losses_from_log.py \
-  --log logs/B_calc_dual_ae_history_future_pool_task1_2_3_315ep_pool_20k_0628.log \
-  --output outputs/loss_curves/B_calc_dual_ae_task1_2_3_315ep.png \
+  --log logs/B_calc_dual_ae_history_future_pool_0627_grasp_cob_pool_20k_0628.log \
+  --output logs/loss_curves/B_calc_dual_ae_history_future_pool_0627_grasp_cob_pool_20k_0628.png \
   --smooth 3
 
-  
+
 """
 
 from __future__ import annotations

@@ -2,8 +2,8 @@
 """Plot the training loss curve from a vanilla pi0 training log.
 
 env/.venv/bin/python scripts/plot_pi0_loss_from_log.py \
-  --log logs/A_pi0_full_task1_2_3_315ep_pool_30k_0628.log \
-  --output outputs/loss_curves/A_pi0_full_task1_2_3_315ep_pool_30k_0628.png \
+  --log logs/B_calc_dual_ae_history_future_pool_0627_grasp_cob_pool_20k_0628.log \
+  --output outputs/loss_curves/B_calc_dual_ae_history_future_pool_0627_grasp_cob_pool_20k_0628.png \
   --smooth 3
 
 """
