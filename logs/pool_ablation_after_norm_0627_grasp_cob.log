@@ -1,0 +1,94 @@
+[2026-06-28 02:57:01] Stage 1/2: normalization for data/0627_grasp_cob (asset=0627_grasp_cob)
+[2026-06-28 02:57:01] Dataset=data/0627_grasp_cob, asset=0627_grasp_cob
+[2026-06-28 02:57:01] GPU pool=0,1,2,3,4,5,6,7, min free=50000 MiB, max util=20%
+[2026-06-28 02:57:01] Starting pi0_xhand_tactile_structured_dual_ae on GPU 0; log=logs/norm_pi0_xhand_tactile_structured_dual_ae_0627_grasp_cob_pool_20k_0628.log
+[2026-06-28 02:57:01] Launched pi0_xhand_tactile_structured_dual_ae: PID=559862, GPU=0
+[2026-06-28 02:57:01] Starting pi0_xhand_tactile_structured_raw_dual_ae on GPU 1; log=logs/norm_pi0_xhand_tactile_structured_raw_dual_ae_0627_grasp_cob_pool_20k_0628.log
+[2026-06-28 02:57:01] Launched pi0_xhand_tactile_structured_raw_dual_ae: PID=559875, GPU=1
+[2026-06-28 03:57:31] Completed pi0_xhand_tactile_structured_dual_ae on GPU 0: assets/pi0_xhand_tactile_structured_dual_ae/0627_grasp_cob/norm_stats.json
+[2026-06-28 03:58:01] Completed pi0_xhand_tactile_structured_raw_dual_ae on GPU 1: assets/pi0_xhand_tactile_structured_raw_dual_ae/0627_grasp_cob/norm_stats.json
+[2026-06-28 03:58:01] All requested normalization jobs completed successfully.
+[2026-06-28 03:58:01] Stage 2/2: queued training for history/future pooled ablations
+[2026-06-28 03:58:01] No-tactile assets: assets/pi0_xhand_tactile_structured_dual_ae
+[2026-06-28 03:58:01] Calc tactile assets: assets/pi0_xhand_tactile_structured_dual_ae
+[2026-06-28 03:58:01] Raw tactile assets: assets/pi0_xhand_tactile_structured_raw_dual_ae
+[2026-06-28 03:58:01] Patch raw tactile assets: assets/pi0_xhand_tactile_structured_raw_dual_ae
+[2026-06-28 03:58:01] Dataset: data/0627_grasp_cob
+[2026-06-28 03:58:01] Asset ID: 0627_grasp_cob
+[2026-06-28 03:58:01] Jobs: 4, steps=20000, batch=8, FSDP=1
+[2026-06-28 03:58:01] Run tag: 0627_grasp_cob_pool_20k_0628
+[2026-06-28 03:58:01] Checkpoint overwrite is disabled; existing checkpoint dirs will stop the scheduler.
+[2026-06-28 03:58:01] Two GPU slots: 0,1,2,3 and 4,5,6,7
+[2026-06-28 03:58:01] GPU gate: every GPU in a slot must have at least 70000 MiB free.
+[2026-06-28 03:58:01] GPU polling interval: 60s
+[2026-06-28 03:58:01] Starting A_pi0_full: config=pi0_xhand_full_finetune, GPUs=0,1,2,3, assets=assets/pi0_xhand_tactile_structured_dual_ae
+[2026-06-28 03:58:01] Started A_pi0_full: PID=579025, log=logs/A_pi0_full_0627_grasp_cob_pool_20k_0628.log
+[2026-06-28 03:58:01] Starting B_calc_dual_ae_history_future_pool: config=pi0_xhand_tactile_structured_dual_ae_history_future_pool, GPUs=4,5,6,7, assets=assets/pi0_xhand_tactile_structured_dual_ae
+[2026-06-28 03:58:01] Started B_calc_dual_ae_history_future_pool: PID=579028, log=logs/B_calc_dual_ae_history_future_pool_0627_grasp_cob_pool_20k_0628.log
+[2026-06-28 03:58:02] Waiting for a free four-GPU slot (threshold=70000MiB): slot0[GPU0=81226MiB,GPU1=81226MiB,GPU2=81226MiB,GPU3=81226MiB] slot1[GPU4=81226MiB,GPU5=81226MiB,GPU6=81226MiB,GPU7=81226MiB]
+[2026-06-28 04:03:02] Waiting for a free four-GPU slot (threshold=70000MiB): slot0[GPU0=19375MiB,GPU1=19375MiB,GPU2=19375MiB,GPU3=19375MiB] slot1[GPU4=19371MiB,GPU5=19401MiB,GPU6=19401MiB,GPU7=19401MiB]
+[2026-06-28 04:08:02] Waiting for a free four-GPU slot (threshold=70000MiB): slot0[GPU0=19375MiB,GPU1=19375MiB,GPU2=19375MiB,GPU3=19375MiB] slot1[GPU4=19371MiB,GPU5=19401MiB,GPU6=19401MiB,GPU7=19401MiB]
+[2026-06-28 04:13:02] Waiting for a free four-GPU slot (threshold=70000MiB): slot0[GPU0=19375MiB,GPU1=19375MiB,GPU2=19375MiB,GPU3=19375MiB] slot1[GPU4=19355MiB,GPU5=19359MiB,GPU6=19359MiB,GPU7=19359MiB]
+[2026-06-28 04:18:03] Waiting for a free four-GPU slot (threshold=70000MiB): slot0[GPU0=19375MiB,GPU1=19375MiB,GPU2=19375MiB,GPU3=19375MiB] slot1[GPU4=19355MiB,GPU5=19359MiB,GPU6=19359MiB,GPU7=19359MiB]
+[2026-06-28 04:23:03] Waiting for a free four-GPU slot (threshold=70000MiB): slot0[GPU0=19375MiB,GPU1=19375MiB,GPU2=19375MiB,GPU3=19375MiB] slot1[GPU4=19355MiB,GPU5=19359MiB,GPU6=19359MiB,GPU7=19359MiB]
+[2026-06-28 04:28:03] Waiting for a free four-GPU slot (threshold=70000MiB): slot0[GPU0=19375MiB,GPU1=19375MiB,GPU2=19375MiB,GPU3=19375MiB] slot1[GPU4=19355MiB,GPU5=19359MiB,GPU6=19359MiB,GPU7=19359MiB]
+[2026-06-28 04:33:04] Waiting for a free four-GPU slot (threshold=70000MiB): slot0[GPU0=19375MiB,GPU1=19375MiB,GPU2=19375MiB,GPU3=19375MiB] slot1[GPU4=19355MiB,GPU5=19359MiB,GPU6=19359MiB,GPU7=19359MiB]
+[2026-06-28 04:38:04] Waiting for a free four-GPU slot (threshold=70000MiB): slot0[GPU0=19375MiB,GPU1=19375MiB,GPU2=19375MiB,GPU3=19375MiB] slot1[GPU4=19355MiB,GPU5=19359MiB,GPU6=19359MiB,GPU7=19359MiB]
+[2026-06-28 04:43:04] Waiting for a free four-GPU slot (threshold=70000MiB): slot0[GPU0=19375MiB,GPU1=19375MiB,GPU2=19375MiB,GPU3=19375MiB] slot1[GPU4=19355MiB,GPU5=19359MiB,GPU6=19359MiB,GPU7=19359MiB]
+[2026-06-28 04:48:05] Waiting for a free four-GPU slot (threshold=70000MiB): slot0[GPU0=19375MiB,GPU1=19375MiB,GPU2=19375MiB,GPU3=19375MiB] slot1[GPU4=19355MiB,GPU5=19359MiB,GPU6=19359MiB,GPU7=19359MiB]
+[2026-06-28 04:53:05] Waiting for a free four-GPU slot (threshold=70000MiB): slot0[GPU0=19373MiB,GPU1=19373MiB,GPU2=19373MiB,GPU3=19373MiB] slot1[GPU4=19355MiB,GPU5=19359MiB,GPU6=19359MiB,GPU7=19359MiB]
+[2026-06-28 04:58:05] Waiting for a free four-GPU slot (threshold=70000MiB): slot0[GPU0=19373MiB,GPU1=19373MiB,GPU2=19373MiB,GPU3=19373MiB] slot1[GPU4=19355MiB,GPU5=19359MiB,GPU6=19359MiB,GPU7=19359MiB]
+[2026-06-28 05:03:06] Waiting for a free four-GPU slot (threshold=70000MiB): slot0[GPU0=19373MiB,GPU1=19373MiB,GPU2=19373MiB,GPU3=19373MiB] slot1[GPU4=19355MiB,GPU5=19359MiB,GPU6=19359MiB,GPU7=19359MiB]
+[2026-06-28 05:08:06] Waiting for a free four-GPU slot (threshold=70000MiB): slot0[GPU0=19373MiB,GPU1=19373MiB,GPU2=19373MiB,GPU3=19373MiB] slot1[GPU4=19355MiB,GPU5=19359MiB,GPU6=19359MiB,GPU7=19359MiB]
+[2026-06-28 05:13:06] Waiting for a free four-GPU slot (threshold=70000MiB): slot0[GPU0=19373MiB,GPU1=19373MiB,GPU2=19373MiB,GPU3=19373MiB] slot1[GPU4=19355MiB,GPU5=19359MiB,GPU6=19359MiB,GPU7=19359MiB]
+[2026-06-28 05:18:07] Waiting for a free four-GPU slot (threshold=70000MiB): slot0[GPU0=19373MiB,GPU1=19373MiB,GPU2=19373MiB,GPU3=19373MiB] slot1[GPU4=19355MiB,GPU5=19359MiB,GPU6=19359MiB,GPU7=19359MiB]
+[2026-06-28 05:23:07] Waiting for a free four-GPU slot (threshold=70000MiB): slot0[GPU0=19373MiB,GPU1=19373MiB,GPU2=19373MiB,GPU3=19373MiB] slot1[GPU4=19355MiB,GPU5=19359MiB,GPU6=19359MiB,GPU7=19359MiB]
+[2026-06-28 05:28:07] Waiting for a free four-GPU slot (threshold=70000MiB): slot0[GPU0=19373MiB,GPU1=19373MiB,GPU2=19373MiB,GPU3=19373MiB] slot1[GPU4=19355MiB,GPU5=19359MiB,GPU6=19359MiB,GPU7=19359MiB]
+[2026-06-28 05:33:08] Waiting for a free four-GPU slot (threshold=70000MiB): slot0[GPU0=19373MiB,GPU1=19373MiB,GPU2=19373MiB,GPU3=19373MiB] slot1[GPU4=19355MiB,GPU5=19359MiB,GPU6=19359MiB,GPU7=19359MiB]
+[2026-06-28 05:38:08] Waiting for a free four-GPU slot (threshold=70000MiB): slot0[GPU0=19373MiB,GPU1=19373MiB,GPU2=19373MiB,GPU3=19373MiB] slot1[GPU4=19355MiB,GPU5=19359MiB,GPU6=19359MiB,GPU7=19359MiB]
+[2026-06-28 05:43:08] Waiting for a free four-GPU slot (threshold=70000MiB): slot0[GPU0=19373MiB,GPU1=19373MiB,GPU2=19373MiB,GPU3=19373MiB] slot1[GPU4=19355MiB,GPU5=19359MiB,GPU6=19359MiB,GPU7=19359MiB]
+[2026-06-28 05:48:09] Waiting for a free four-GPU slot (threshold=70000MiB): slot0[GPU0=19373MiB,GPU1=19373MiB,GPU2=19373MiB,GPU3=19373MiB] slot1[GPU4=19355MiB,GPU5=19359MiB,GPU6=19359MiB,GPU7=19359MiB]
+[2026-06-28 05:53:09] Waiting for a free four-GPU slot (threshold=70000MiB): slot0[GPU0=19373MiB,GPU1=19373MiB,GPU2=19373MiB,GPU3=19373MiB] slot1[GPU4=19355MiB,GPU5=19359MiB,GPU6=19359MiB,GPU7=19359MiB]
+[2026-06-28 05:58:09] Waiting for a free four-GPU slot (threshold=70000MiB): slot0[GPU0=19373MiB,GPU1=19373MiB,GPU2=19373MiB,GPU3=19373MiB] slot1[GPU4=19355MiB,GPU5=19359MiB,GPU6=19359MiB,GPU7=19359MiB]
+[2026-06-28 06:03:10] Waiting for a free four-GPU slot (threshold=70000MiB): slot0[GPU0=19373MiB,GPU1=19373MiB,GPU2=19373MiB,GPU3=19373MiB] slot1[GPU4=19355MiB,GPU5=19359MiB,GPU6=19359MiB,GPU7=19359MiB]
+[2026-06-28 06:08:10] Waiting for a free four-GPU slot (threshold=70000MiB): slot0[GPU0=19373MiB,GPU1=19373MiB,GPU2=19373MiB,GPU3=19373MiB] slot1[GPU4=19355MiB,GPU5=19359MiB,GPU6=19359MiB,GPU7=19359MiB]
+[2026-06-28 06:13:10] Waiting for a free four-GPU slot (threshold=70000MiB): slot0[GPU0=19373MiB,GPU1=19373MiB,GPU2=19373MiB,GPU3=19373MiB] slot1[GPU4=19355MiB,GPU5=19359MiB,GPU6=19359MiB,GPU7=19359MiB]
+[2026-06-28 06:18:11] Waiting for a free four-GPU slot (threshold=70000MiB): slot0[GPU0=19373MiB,GPU1=19373MiB,GPU2=19373MiB,GPU3=19373MiB] slot1[GPU4=19355MiB,GPU5=19359MiB,GPU6=19359MiB,GPU7=19359MiB]
+[2026-06-28 06:23:11] Waiting for a free four-GPU slot (threshold=70000MiB): slot0[GPU0=19373MiB,GPU1=19373MiB,GPU2=19373MiB,GPU3=19373MiB] slot1[GPU4=19355MiB,GPU5=19359MiB,GPU6=19359MiB,GPU7=19359MiB]
+[2026-06-28 06:28:11] Waiting for a free four-GPU slot (threshold=70000MiB): slot0[GPU0=19373MiB,GPU1=19373MiB,GPU2=19373MiB,GPU3=19373MiB] slot1[GPU4=19355MiB,GPU5=19359MiB,GPU6=19359MiB,GPU7=19359MiB]
+[2026-06-28 06:33:12] Waiting for a free four-GPU slot (threshold=70000MiB): slot0[GPU0=19373MiB,GPU1=19373MiB,GPU2=19373MiB,GPU3=19373MiB] slot1[GPU4=19355MiB,GPU5=19359MiB,GPU6=19359MiB,GPU7=19359MiB]
+[2026-06-28 06:38:12] Waiting for a free four-GPU slot (threshold=70000MiB): slot0[GPU0=19373MiB,GPU1=19373MiB,GPU2=19373MiB,GPU3=19373MiB] slot1[GPU4=19355MiB,GPU5=19359MiB,GPU6=19359MiB,GPU7=19359MiB]
+[2026-06-28 06:43:12] Waiting for a free four-GPU slot (threshold=70000MiB): slot0[GPU0=19373MiB,GPU1=19373MiB,GPU2=19373MiB,GPU3=19373MiB] slot1[GPU4=19355MiB,GPU5=19359MiB,GPU6=19359MiB,GPU7=19359MiB]
+[2026-06-28 06:48:13] Waiting for a free four-GPU slot (threshold=70000MiB): slot0[GPU0=19373MiB,GPU1=19373MiB,GPU2=19373MiB,GPU3=19373MiB] slot1[GPU4=19355MiB,GPU5=19359MiB,GPU6=19359MiB,GPU7=19359MiB]
+[2026-06-28 06:53:13] Waiting for a free four-GPU slot (threshold=70000MiB): slot0[GPU0=19373MiB,GPU1=19373MiB,GPU2=19373MiB,GPU3=19373MiB] slot1[GPU4=19355MiB,GPU5=19359MiB,GPU6=19359MiB,GPU7=19359MiB]
+[2026-06-28 06:58:13] Waiting for a free four-GPU slot (threshold=70000MiB): slot0[GPU0=19373MiB,GPU1=19373MiB,GPU2=19373MiB,GPU3=19373MiB] slot1[GPU4=19355MiB,GPU5=19359MiB,GPU6=19359MiB,GPU7=19359MiB]
+[2026-06-28 07:03:14] Waiting for a free four-GPU slot (threshold=70000MiB): slot0[GPU0=19373MiB,GPU1=19373MiB,GPU2=19373MiB,GPU3=19373MiB] slot1[GPU4=19355MiB,GPU5=19359MiB,GPU6=19359MiB,GPU7=19359MiB]
+[2026-06-28 07:08:14] Waiting for a free four-GPU slot (threshold=70000MiB): slot0[GPU0=19373MiB,GPU1=19373MiB,GPU2=19373MiB,GPU3=19373MiB] slot1[GPU4=19355MiB,GPU5=19359MiB,GPU6=19359MiB,GPU7=19359MiB]
+[2026-06-28 07:13:14] Waiting for a free four-GPU slot (threshold=70000MiB): slot0[GPU0=19373MiB,GPU1=19373MiB,GPU2=19373MiB,GPU3=19373MiB] slot1[GPU4=19355MiB,GPU5=19359MiB,GPU6=19359MiB,GPU7=19359MiB]
+[2026-06-28 07:18:15] Waiting for a free four-GPU slot (threshold=70000MiB): slot0[GPU0=19373MiB,GPU1=19373MiB,GPU2=19373MiB,GPU3=19373MiB] slot1[GPU4=19355MiB,GPU5=19359MiB,GPU6=19359MiB,GPU7=19359MiB]
+[2026-06-28 07:23:15] Waiting for a free four-GPU slot (threshold=70000MiB): slot0[GPU0=19373MiB,GPU1=19373MiB,GPU2=19373MiB,GPU3=19373MiB] slot1[GPU4=19355MiB,GPU5=19359MiB,GPU6=19359MiB,GPU7=19359MiB]
+[2026-06-28 07:25:15] Completed A_pi0_full successfully; GPU slot 0,1,2,3 released.
+[2026-06-28 07:25:15] Starting C_raw_dual_ae_history_future_pool: config=pi0_xhand_tactile_structured_raw_dual_ae_history_future_pool, GPUs=0,1,2,3, assets=assets/pi0_xhand_tactile_structured_raw_dual_ae
+[2026-06-28 07:25:15] Started C_raw_dual_ae_history_future_pool: PID=15531, log=logs/C_raw_dual_ae_history_future_pool_0627_grasp_cob_pool_20k_0628.log
+[2026-06-28 07:28:16] Waiting for a free four-GPU slot (threshold=70000MiB): slot0[GPU0=80795MiB,GPU1=80803MiB,GPU2=80803MiB,GPU3=80803MiB] slot1[GPU4=19355MiB,GPU5=19359MiB,GPU6=19359MiB,GPU7=19359MiB]
+[2026-06-28 07:33:16] Waiting for a free four-GPU slot (threshold=70000MiB): slot0[GPU0=19383MiB,GPU1=19401MiB,GPU2=19401MiB,GPU3=19401MiB] slot1[GPU4=19355MiB,GPU5=19359MiB,GPU6=19359MiB,GPU7=19359MiB]
+[2026-06-28 07:38:16] Waiting for a free four-GPU slot (threshold=70000MiB): slot0[GPU0=19383MiB,GPU1=19401MiB,GPU2=19401MiB,GPU3=19401MiB] slot1[GPU4=19355MiB,GPU5=19359MiB,GPU6=19359MiB,GPU7=19359MiB]
+[2026-06-28 07:43:17] Waiting for a free four-GPU slot (threshold=70000MiB): slot0[GPU0=19361MiB,GPU1=19361MiB,GPU2=19361MiB,GPU3=19361MiB] slot1[GPU4=19355MiB,GPU5=19359MiB,GPU6=19359MiB,GPU7=19359MiB]
+[2026-06-28 07:48:17] Waiting for a free four-GPU slot (threshold=70000MiB): slot0[GPU0=19361MiB,GPU1=19361MiB,GPU2=19361MiB,GPU3=19361MiB] slot1[GPU4=19355MiB,GPU5=19359MiB,GPU6=19359MiB,GPU7=19359MiB]
+[2026-06-28 07:53:17] Waiting for a free four-GPU slot (threshold=70000MiB): slot0[GPU0=19361MiB,GPU1=19361MiB,GPU2=19361MiB,GPU3=19361MiB] slot1[GPU4=19355MiB,GPU5=19359MiB,GPU6=19359MiB,GPU7=19359MiB]
+[2026-06-28 07:58:18] Waiting for a free four-GPU slot (threshold=70000MiB): slot0[GPU0=19361MiB,GPU1=19361MiB,GPU2=19361MiB,GPU3=19361MiB] slot1[GPU4=19355MiB,GPU5=19359MiB,GPU6=19359MiB,GPU7=19359MiB]
+[2026-06-28 08:03:18] Waiting for a free four-GPU slot (threshold=70000MiB): slot0[GPU0=19361MiB,GPU1=19361MiB,GPU2=19361MiB,GPU3=19361MiB] slot1[GPU4=19355MiB,GPU5=19359MiB,GPU6=19359MiB,GPU7=19359MiB]
+[2026-06-28 08:08:18] Waiting for a free four-GPU slot (threshold=70000MiB): slot0[GPU0=19361MiB,GPU1=19361MiB,GPU2=19361MiB,GPU3=19361MiB] slot1[GPU4=19355MiB,GPU5=19359MiB,GPU6=19359MiB,GPU7=19359MiB]
+[2026-06-28 08:13:19] Waiting for a free four-GPU slot (threshold=70000MiB): slot0[GPU0=19361MiB,GPU1=19361MiB,GPU2=19361MiB,GPU3=19361MiB] slot1[GPU4=19355MiB,GPU5=19359MiB,GPU6=19359MiB,GPU7=19359MiB]
+[2026-06-28 08:18:19] Waiting for a free four-GPU slot (threshold=70000MiB): slot0[GPU0=19361MiB,GPU1=19361MiB,GPU2=19361MiB,GPU3=19361MiB] slot1[GPU4=19355MiB,GPU5=19359MiB,GPU6=19359MiB,GPU7=19359MiB]
+[2026-06-28 08:23:19] Waiting for a free four-GPU slot (threshold=70000MiB): slot0[GPU0=19361MiB,GPU1=19361MiB,GPU2=19361MiB,GPU3=19361MiB] slot1[GPU4=19355MiB,GPU5=19359MiB,GPU6=19359MiB,GPU7=19359MiB]
+[2026-06-28 08:28:20] Waiting for a free four-GPU slot (threshold=70000MiB): slot0[GPU0=19361MiB,GPU1=19361MiB,GPU2=19361MiB,GPU3=19361MiB] slot1[GPU4=19355MiB,GPU5=19359MiB,GPU6=19359MiB,GPU7=19359MiB]
+[2026-06-28 08:33:20] Waiting for a free four-GPU slot (threshold=70000MiB): slot0[GPU0=19361MiB,GPU1=19361MiB,GPU2=19361MiB,GPU3=19361MiB] slot1[GPU4=19355MiB,GPU5=19359MiB,GPU6=19359MiB,GPU7=19359MiB]
+[2026-06-28 08:38:20] Waiting for a free four-GPU slot (threshold=70000MiB): slot0[GPU0=19361MiB,GPU1=19361MiB,GPU2=19361MiB,GPU3=19361MiB] slot1[GPU4=19355MiB,GPU5=19359MiB,GPU6=19359MiB,GPU7=19359MiB]
+[2026-06-28 08:43:21] Waiting for a free four-GPU slot (threshold=70000MiB): slot0[GPU0=19361MiB,GPU1=19361MiB,GPU2=19361MiB,GPU3=19361MiB] slot1[GPU4=19355MiB,GPU5=19359MiB,GPU6=19359MiB,GPU7=19359MiB]
+[2026-06-28 08:46:21] Completed B_calc_dual_ae_history_future_pool successfully; GPU slot 4,5,6,7 released.
+[2026-06-28 08:46:21] Starting D_adaptive_patch_raw_dual_ae_history_future_pool: config=pi0_xhand_tactile_structured_adaptive_patch_raw_dual_ae_history_future_pool, GPUs=4,5,6,7, assets=assets/pi0_xhand_tactile_structured_raw_dual_ae
+[2026-06-28 08:46:21] Started D_adaptive_patch_raw_dual_ae_history_future_pool: PID=24653, log=logs/D_adaptive_patch_raw_dual_ae_history_future_pool_0627_grasp_cob_pool_20k_0628.log
+[2026-06-28 12:17:21] Completed C_raw_dual_ae_history_future_pool successfully; GPU slot 0,1,2,3 released.
+[2026-06-28 13:35:21] Completed D_adaptive_patch_raw_dual_ae_history_future_pool successfully; GPU slot 4,5,6,7 released.
+[2026-06-28 13:35:21] All queued experiments completed successfully.

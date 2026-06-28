@@ -1,5 +1,12 @@
 #!/usr/bin/env python3
-"""Plot the training loss curve from a vanilla pi0 training log."""
+"""Plot the training loss curve from a vanilla pi0 training log.
+
+env/.venv/bin/python scripts/plot_pi0_loss_from_log.py \
+  --log logs/A_pi0_full_task1_2_3_315ep_pool_30k_0628.log \
+  --output outputs/loss_curves/A_pi0_full_task1_2_3_315ep_pool_30k_0628.png \
+  --smooth 3
+
+"""
 
 from __future__ import annotations
 
