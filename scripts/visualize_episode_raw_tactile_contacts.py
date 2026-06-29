@@ -219,6 +219,31 @@ def _plot_episode_traces(
     plt.close(fig)
 
 
+def _plot_active_points_curve(
+    magnitude: np.ndarray,
+    timestamps: np.ndarray,
+    output_png: Path,
+    threshold: float,
+) -> None:
+    time_axis = timestamps - timestamps[0] if timestamps.size else np.arange(magnitude.shape[0])
+    active_counts = np.sum(magnitude > threshold, axis=-1)
+
+    fig, ax = plt.subplots(figsize=(14, 4.5), constrained_layout=True)
+    for finger in range(xhand_policy.TACTILE_SENSOR_COUNT):
+        name = FINGER_NAMES[finger] if finger < len(FINGER_NAMES) else f"finger {finger}"
+        ax.plot(time_axis, active_counts[:, finger], label=f"finger {finger}", linewidth=1.5)
+
+    ax.set_title(f"Active raw tactile points per finger, threshold |F| > {threshold:g}")
+    ax.set_xlabel("time (s)")
+    ax.set_ylabel("active points out of 120")
+    ax.set_ylim(0, xhand_policy.TACTILE_RAW_FORCE_POINTS)
+    ax.grid(True, alpha=0.25)
+    ax.legend(loc="upper right", ncols=xhand_policy.TACTILE_SENSOR_COUNT, fontsize=8)
+    output_png.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_png, dpi=180)
+    plt.close(fig)
+
+
 def _build_summary(
     *,
     repo: Path,
@@ -304,6 +329,11 @@ def main() -> None:
     parser.add_argument("--vmax", type=float, default=None, help="Optional heatmap max value.")
     parser.add_argument("--show-patch-overlay", action="store_true", help="Overlay adaptive patch regions.")
     parser.add_argument("--no-traces", action="store_true", help="Do not save per-finger time traces.")
+    parser.add_argument(
+        "--no-active-curve",
+        action="store_true",
+        help="Do not save active-point count curves.",
+    )
     args = parser.parse_args()
 
     episode_path, tactile, frame_indices, timestamps = _load_episode(args.repo_id, args.episode_index)
@@ -348,6 +378,7 @@ def main() -> None:
     stem = "_".join(stem_parts)
     heatmap_png = args.output_dir / f"{stem}_contacts.png"
     traces_png = args.output_dir / f"{stem}_traces.png"
+    active_points_png = args.output_dir / f"{stem}_active_points.png"
     summary_json = args.output_dir / f"{stem}_summary.json"
 
     titles = []
@@ -374,6 +405,9 @@ def main() -> None:
     if not args.no_traces:
         _plot_episode_traces(magnitude, timestamps, traces_png, args.threshold)
         outputs["traces_png"] = str(traces_png)
+    if not args.no_active_curve:
+        _plot_active_points_curve(magnitude, timestamps, active_points_png, args.threshold)
+        outputs["active_points_png"] = str(active_points_png)
 
     summary = _build_summary(
         repo=args.repo_id,
@@ -399,6 +433,8 @@ def main() -> None:
     print(f"Saved contact heatmap: {heatmap_png}")
     if not args.no_traces:
         print(f"Saved tactile traces:  {traces_png}")
+    if not args.no_active_curve:
+        print(f"Saved active curve:    {active_points_png}")
     print(f"Saved summary:         {summary_json}")
 
 
