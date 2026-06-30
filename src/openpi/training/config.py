@@ -2089,11 +2089,34 @@ def _async_tactile_hand_refiner_config(source_name: str, new_name: str) -> Train
     )
 
 
+def _async_tactile_flow_refiner_config(source_name: str, new_name: str) -> TrainConfig:
+    source = next(config for config in _CONFIGS if config.name == source_name)
+    return dataclasses.replace(
+        source,
+        name=new_name,
+        model=dataclasses.replace(
+            source.model,
+            async_tactile_flow_refiner_enabled=True,
+            async_flow_refiner_offsets=(4, 8, 12),
+            async_flow_refiner_layers=2,
+            async_flow_refiner_width=256,
+            async_flow_refiner_heads=4,
+            async_flow_refiner_mlp_dim=1024,
+            async_flow_refiner_loss_weight=1.0,
+            async_flow_refiner_tau_split=0.4,
+        ),
+    )
+
+
 _CONFIGS.extend(
     [
         _async_tactile_hand_refiner_config(
             "pi0_xhand_tactile_structured_adaptive_patch_raw_dual_ae_history_future_pool",
             "pi0_xhand_tactile_structured_adaptive_patch_raw_dual_ae_history_future_pool_async_refiner",
+        ),
+        _async_tactile_flow_refiner_config(
+            "pi0_xhand_tactile_structured_adaptive_patch_raw_dual_ae_history_future_pool",
+            "pi0_xhand_tactile_structured_adaptive_patch_raw_dual_ae_history_future_pool_async_flow_refiner",
         ),
     ]
 )

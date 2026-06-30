@@ -223,6 +223,18 @@ class Pi0LatentFlow(_model.BaseModel):
         self.async_refiner_gate_loss_weight = float(getattr(config, "async_refiner_gate_loss_weight", 0.0))
         self.async_refiner_gate_bias = float(getattr(config, "async_refiner_gate_bias", -2.0))
         self.async_refiner_delta_scale = float(getattr(config, "async_refiner_delta_scale", 0.1))
+        self.async_tactile_flow_refiner_enabled = bool(
+            getattr(config, "async_tactile_flow_refiner_enabled", False)
+        )
+        self.async_flow_refiner_offsets = tuple(
+            int(offset) for offset in getattr(config, "async_flow_refiner_offsets", (4, 8, 12))
+        )
+        self.async_flow_refiner_layers = int(getattr(config, "async_flow_refiner_layers", 2))
+        self.async_flow_refiner_width = int(getattr(config, "async_flow_refiner_width", 256))
+        self.async_flow_refiner_heads = int(getattr(config, "async_flow_refiner_heads", 4))
+        self.async_flow_refiner_mlp_dim = int(getattr(config, "async_flow_refiner_mlp_dim", 1024))
+        self.async_flow_refiner_loss_weight = float(getattr(config, "async_flow_refiner_loss_weight", 1.0))
+        self.async_flow_refiner_tau_split = float(getattr(config, "async_flow_refiner_tau_split", 0.4))
         self.uses_train_progress = True
         self._debug_lengths_logged = False
 
@@ -460,6 +472,49 @@ class Pi0LatentFlow(_model.BaseModel):
             ]
             self.async_delta_out = nnx.Linear(self.async_refiner_width, self.hand_action_dim, rngs=rngs)
             self.async_gate_out = nnx.Linear(self.async_refiner_width, 1, rngs=rngs)
+
+        if self.async_tactile_flow_refiner_enabled:
+            self.async_flow_action_proj = nnx.Linear(self.hand_action_dim, self.async_flow_refiner_width, rngs=rngs)
+            self.async_flow_arm_context_proj = nnx.Linear(
+                self.arm_action_dim, self.async_flow_refiner_width, rngs=rngs
+            )
+            self.async_flow_state_context_proj = nnx.Linear(config.action_dim, self.async_flow_refiner_width, rngs=rngs)
+            self.async_flow_fresh_tactile_proj = nnx.Linear(
+                self.student_width, self.async_flow_refiner_width, rngs=rngs
+            )
+            self.async_flow_future_contact_proj = nnx.Linear(
+                self.student_width, self.async_flow_refiner_width, rngs=rngs
+            )
+            self.async_flow_time_mlp_in = nnx.Linear(
+                self.async_flow_refiner_width, self.async_flow_refiner_width, rngs=rngs
+            )
+            self.async_flow_time_mlp_out = nnx.Linear(
+                self.async_flow_refiner_width, self.async_flow_refiner_width, rngs=rngs
+            )
+            self.async_flow_step_embedding = nnx.Param(
+                0.02
+                * jax.random.normal(
+                    rngs.params(), (self.action_horizon, self.async_flow_refiner_width), dtype=jnp.float32
+                )
+            )
+            self.async_flow_offset_embedding = nnx.Param(
+                0.02
+                * jax.random.normal(
+                    rngs.params(), (self.action_horizon + 1, self.async_flow_refiner_width), dtype=jnp.float32
+                )
+            )
+            self.async_flow_refiner_blocks = [
+                _AsyncTactileRefinerBlock(
+                    width=self.async_flow_refiner_width,
+                    num_heads=self.async_flow_refiner_heads,
+                    mlp_dim=self.async_flow_refiner_mlp_dim,
+                    rngs=rngs,
+                )
+                for _ in range(self.async_flow_refiner_layers)
+            ]
+            self.async_flow_velocity_out = nnx.Linear(
+                self.async_flow_refiner_width, self.hand_action_dim, rngs=rngs
+            )
 
         self.deterministic = True
 
@@ -1010,6 +1065,86 @@ class Pi0LatentFlow(_model.BaseModel):
             "offset": jnp.asarray(offset, dtype=jnp.float32),
         }
 
+    def _async_refine_hand_velocity(
+        self,
+        *,
+        noisy_actions: _model.Actions,
+        target_velocity: _model.Actions,
+        student_contact_hidden: at.Array,
+        history_effort: at.Array,
+        future_effort: at.Array,
+        state: at.Array,
+        offset: at.Array,
+        timestep: at.Array,
+    ) -> tuple[at.Array, dict[str, at.Array]]:
+        if not self.async_tactile_flow_refiner_enabled:
+            zeros = jnp.zeros(noisy_actions.shape[0], dtype=noisy_actions.dtype)
+            return zeros, {
+                "loss": zeros,
+                "velocity_abs_mean": zeros,
+                "offset": jnp.asarray(offset, dtype=jnp.float32),
+                "timestep": jnp.zeros_like(zeros),
+            }
+
+        hand_slice = slice(self.hand_action_start, self.hand_action_start + self.hand_action_dim)
+        student_contact_hidden = jax.lax.stop_gradient(student_contact_hidden)
+
+        noisy_hand = noisy_actions[..., hand_slice]
+        noisy_arm = noisy_actions[..., : self.arm_action_dim]
+        target_hand_velocity = target_velocity[..., hand_slice]
+
+        step_embedding = jnp.asarray(self.async_flow_step_embedding.value, dtype=noisy_hand.dtype)
+        offset_embedding = jnp.asarray(self.async_flow_offset_embedding.value, dtype=noisy_hand.dtype)[offset]
+        time_embedding = posemb_sincos(
+            timestep,
+            self.async_flow_refiner_width,
+            min_period=4e-3,
+            max_period=4.0,
+        )
+        time_embedding = self.async_flow_time_mlp_out(nnx.swish(self.async_flow_time_mlp_in(time_embedding)))
+
+        hand_query = (
+            self.async_flow_action_proj(noisy_hand)
+            + step_embedding[None, :, :]
+            + offset_embedding[None, None, :]
+            + time_embedding[:, None, :]
+        )
+
+        fresh_tactile_tokens = self._fresh_tactile_tokens_for_async_refiner(history_effort, future_effort, offset)
+        arm_context = self.async_flow_arm_context_proj(noisy_arm) + step_embedding[None, :, :]
+        state_context = self.async_flow_state_context_proj(jax.lax.stop_gradient(state))[:, None, :]
+        context = jnp.concatenate(
+            [
+                self.async_flow_fresh_tactile_proj(fresh_tactile_tokens),
+                self.async_flow_future_contact_proj(student_contact_hidden),
+                arm_context,
+                state_context,
+            ],
+            axis=1,
+        )
+
+        for block in self.async_flow_refiner_blocks:
+            hand_query = block(hand_query, context)
+
+        predicted_hand_velocity = self.async_flow_velocity_out(hand_query)
+        suffix_mask = (
+            jnp.arange(self.action_horizon, dtype=jnp.int32)[None, :, None]
+            >= jnp.asarray(offset, dtype=jnp.int32)
+        ).astype(noisy_hand.dtype)
+        suffix_steps = jnp.maximum(jnp.sum(suffix_mask), 1.0)
+        denom = suffix_steps * float(self.hand_action_dim)
+        flow_loss = (
+            jnp.sum(jnp.square((predicted_hand_velocity - target_hand_velocity) * suffix_mask), axis=(-2, -1))
+            / denom
+        )
+        velocity_abs_mean = jnp.sum(jnp.abs(predicted_hand_velocity) * suffix_mask, axis=(-2, -1)) / denom
+        return flow_loss, {
+            "loss": flow_loss,
+            "velocity_abs_mean": velocity_abs_mean,
+            "offset": jnp.asarray(offset, dtype=jnp.float32),
+            "timestep": timestep,
+        }
+
     def _student_future_flow_tokens(self, batch_size: int, dtype: jnp.dtype) -> at.Float[at.Array, "b n d"]:
         if not self.use_future_flow:
             return jnp.zeros((batch_size, 0, self.student_width), dtype=dtype)
@@ -1380,7 +1515,14 @@ class Pi0LatentFlow(_model.BaseModel):
         train: bool = False,
         train_progress: at.Float[at.Array, ""] | float | None = None,
     ) -> tuple[at.Float[at.Array, "*b"], dict[str, at.Array]]:
-        preprocess_rng, noise_rng, time_rng, query_noise_rng, async_offset_rng = jax.random.split(rng, 5)
+        (
+            preprocess_rng,
+            noise_rng,
+            time_rng,
+            query_noise_rng,
+            async_offset_rng,
+            async_flow_time_rng,
+        ) = jax.random.split(rng, 6)
         original_flow_img = observation.flow_img
         original_wrist_flow_img = observation.wrist_flow_img
         original_future_rgb_img = observation.future_rgb_img
@@ -1478,6 +1620,11 @@ class Pi0LatentFlow(_model.BaseModel):
             async_offset = async_offsets[
                 jax.random.randint(async_offset_rng, (), minval=0, maxval=async_offsets.shape[0])
             ]
+        elif self.async_tactile_flow_refiner_enabled:
+            async_offsets = jnp.asarray(self.async_flow_refiner_offsets, dtype=jnp.int32)
+            async_offset = async_offsets[
+                jax.random.randint(async_offset_rng, (), minval=0, maxval=async_offsets.shape[0])
+            ]
         else:
             async_offset = jnp.asarray(0, dtype=jnp.int32)
         base_action_estimate = x_t_action - time_expanded * student_base_v
@@ -1489,6 +1636,24 @@ class Pi0LatentFlow(_model.BaseModel):
             future_effort=future_effort,
             state=observation.state,
             offset=async_offset,
+        )
+        async_flow_time = (
+            self.async_flow_refiner_tau_split
+            * (jax.random.beta(async_flow_time_rng, 1.5, 1, batch_shape) * 0.999 + 0.001)
+            if self.async_tactile_flow_refiner_enabled
+            else jnp.zeros(batch_shape, dtype=actions.dtype)
+        )
+        async_flow_time_expanded = async_flow_time[..., None, None]
+        x_t_async_flow = async_flow_time_expanded * noise + (1 - async_flow_time_expanded) * actions
+        async_flow_refiner_loss, async_flow_refiner_stats = self._async_refine_hand_velocity(
+            noisy_actions=x_t_async_flow,
+            target_velocity=u_t_action,
+            student_contact_hidden=student_layer_hiddens[-1][:, future_force_slice, :],
+            history_effort=history_effort,
+            future_effort=future_effort,
+            state=observation.state,
+            offset=async_offset,
+            timestep=async_flow_time,
         )
         for student_hidden, teacher_hidden in zip(student_layer_hiddens, teacher_layer_hiddens, strict=True):
             student_force_hidden = self._project_prompt_distill(student_hidden[:, future_force_slice, :])
@@ -1530,6 +1695,7 @@ class Pi0LatentFlow(_model.BaseModel):
             + self.async_refiner_loss_weight * async_refiner_loss
             + self.async_refiner_delta_loss_weight * async_refiner_stats["delta_reg"]
             + self.async_refiner_gate_loss_weight * async_refiner_stats["gate_reg"]
+            + self.async_flow_refiner_loss_weight * async_flow_refiner_loss
         )
         stats = {
             "loss/student_action": student_action_loss,
@@ -1552,6 +1718,12 @@ class Pi0LatentFlow(_model.BaseModel):
             "async_refiner/offset": jnp.broadcast_to(
                 async_refiner_stats["offset"], student_action_loss.shape
             ),
+            "loss/async_flow_refiner": async_flow_refiner_loss,
+            "async_flow_refiner/velocity_abs_mean": async_flow_refiner_stats["velocity_abs_mean"],
+            "async_flow_refiner/offset": jnp.broadcast_to(
+                async_flow_refiner_stats["offset"], student_action_loss.shape
+            ),
+            "async_flow_refiner/timestep": async_flow_refiner_stats["timestep"],
             "tactile_refiner/gate_mean": (
                 jnp.mean(tactile_refiner_stats["gate"], axis=(-2, -1))
                 if self.tactile_refiner_enabled

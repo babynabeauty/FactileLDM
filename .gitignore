@@ -10,6 +10,7 @@ flow_videos/
 g26ep/
 flow_videos/
 tmp/
+logs/
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
