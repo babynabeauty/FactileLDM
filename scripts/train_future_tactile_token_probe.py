@@ -55,6 +55,7 @@ import tqdm_loggable.auto as tqdm
 import tyro
 
 from openpi.models import model_tavla as _model
+from openpi.models import gemma as _gemma
 from openpi.models.pi0_tavla import make_attn_mask
 import openpi.shared.array_typing as at
 import openpi.training.config as _config
@@ -589,9 +590,12 @@ def main(args: Args) -> None:
         model_def, model_params = _init_frozen_model(train_config, model_rng)
         model_params = jax.device_put(model_params, replicated)
 
-        student_width = int(train_config.model.action_expert_config.width)
+        student_width = int(_gemma.get_config(train_config.model.action_expert_variant).width)
+        teacher_variant = getattr(train_config.model, "force_expert_variant", train_config.model.action_expert_variant)
+        teacher_width = int(_gemma.get_config(teacher_variant).width)
+        probe_input_width = teacher_width if args.token_source == "teacher" else student_width
         probe = FutureTactileForceProbe(
-            input_dim=student_width,
+            input_dim=probe_input_width,
             hidden_dim=args.decoder_dim,
             action_horizon=train_config.model.action_horizon,
             num_fingers=train_config.model.tactile_num_fingers,
