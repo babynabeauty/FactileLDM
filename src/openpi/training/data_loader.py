@@ -53,7 +53,7 @@ def _load_episode_indices(filter_dict_path: str | None) -> list[int] | None:
 class EpisodeSubsetDataset:
     """Frame-level subset that keeps the wrapped LeRobotDataset's global indices."""
 
-    def __init__(self, dataset: Dataset, indices: Sequence[int]):
+    def __init__(self, dataset, indices: Sequence[int]):
         self._dataset = dataset
         self._indices = [int(index) for index in indices]
 
