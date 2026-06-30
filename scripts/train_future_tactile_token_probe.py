@@ -4,6 +4,35 @@
 This script freezes a trained Pi0LatentFlow policy, extracts the hidden states
 of the future tactile tokens at a selected transformer layer, and trains a small
 decoder to reconstruct the normalized future five-finger force sequence.
+
+export HF_LEROBOT_HOME=$PWD
+export HF_HUB_OFFLINE=1
+
+DATA_REPO=data/task1_2_3_315ep
+ASSET_ID=$(basename "$DATA_REPO")
+POLICY_PARAMS=checkpoints/pi0_xhand_tactile_structured_dual_ae_history_future_pool/B_calc_dual_ae_history_future_pool_task1_2_3_315ep_pool_30k_0628/29999/params
+
+setsid nohup env \
+  CUDA_VISIBLE_DEVICES=4,5,6,7 \
+  XLA_PYTHON_CLIENT_PREALLOCATE=false \
+  env/.venv/bin/python scripts/train_future_tactile_token_probe.py \
+    --exp-name probe_teacher_task123_valsplit \
+    --pretrained-params "$POLICY_PARAMS" \
+    --repo-id "$DATA_REPO" \
+    --asset-id "$ASSET_ID" \
+    --assets-dir assets/pi0_xhand_tactile_structured_dual_ae \
+    --train-filter-path outputs/episode_splits/task1_2_3_315ep/train_episodes.json \
+    --eval-filter-path outputs/episode_splits/task1_2_3_315ep/val_episodes.json \
+    --token-source teacher \
+    --num-train-steps 5000 \
+    --batch-size 8 \
+    --fsdp-devices 1 \
+    --num-workers 2 \
+    --save-interval 1000 \
+    --overwrite \
+  > logs/probe_teacher_task123_valsplit.log 2>&1 &
+
+
 """
 
 import dataclasses

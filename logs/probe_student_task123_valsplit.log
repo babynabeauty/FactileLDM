@@ -1,0 +1,31 @@
+nohup: ignoring input
+INFO:2026-06-30 16:52:53,409:jax._src.xla_bridge:925: Unable to initialize backend 'rocm': module 'jaxlib.xla_extension' has no attribute 'GpuAllocatorConfig'
+16:52:53.409 [I] Unable to initialize backend 'rocm': module 'jaxlib.xla_extension' has no attribute 'GpuAllocatorConfig' (487541:xla_bridge.py:925)
+INFO:2026-06-30 16:52:53,410:jax._src.xla_bridge:925: Unable to initialize backend 'tpu': INTERNAL: Failed to open libtpu.so: libtpu.so: cannot open shared object file: No such file or directory
+16:52:53.410 [I] Unable to initialize backend 'tpu': INTERNAL: Failed to open libtpu.so: libtpu.so: cannot open shared object file: No such file or directory (487541:xla_bridge.py:925)
+16:52:53.509 [I] Loaded norm stats from assets/pi0_xhand_tactile_structured_dual_ae/task1_2_3_315ep (487541:config.py:240)
+16:52:53.510 [I] data_config: DataConfig(repo_id='data/task1_2_3_315ep', asset_id='task1_2_3_315ep', norm_stats={'state': NormStats(mean=array([-0.18195134, -1.52172315,  1.95208824, -1.28855908, -0.98346072,
+       -1.4981755 ,  0.32129675,  0.4334887 ,  1.20495081,  0.01292114,
+        0.58247441,  0.82203656,  0.60930419,  0.77307791,  0.62125075,
+        0.84333265,  0.47791129,  0.88999599]), std=array([0.14416067, 0.19558026, 0.29506937, 0.72256559, 0.51179475,
+       0.79574579, 0.33694413, 0.22053258, 0.13200085, 0.04327354,
+       0.64923388, 0.73011488, 0.74725908, 0.68048066, 0.74755859,
+       0.7393446 , 0.66348273, 0.75919288]), q01=array([-0.46577469, -1.89494213,  1.37261828, -2.40691801, -1.69242382,
+       -3.1030094 , -0.0229095 ,  0.14804809,  0.87505989, -0.09956472,
+        0.00805352,  0.09792294,  0.0083146 ,  0.07555625,  0.01857484,
+        0.09384414,  0.01162963,  0.05909829]), q99=array([ 0.11743314, -1.11927727,  2.5107278 ,  0.14657851, -0.12977512,
+       -0.56086875,  1.05071053,  0.88169512,  1.53065697,  0.12306444,
+        1.76066786,  1.89529826,  1.88515212,  1.83964778,  1.88222764,
+        1.83424628,  1.66361503,  1.90264818])), 'actions': NormStats(mean=array([-0.19150323, -1.52110052,  1.9752332 , -1.27310991, -0.94207203,
+       -1.5382092 ,  0.39647338,  0.43314448,  1.26058853,  0.00919365,
+        0.76811457,  0.92806572,  0.74429041,  0.85215759,  0.71810979,
+        0.959319  ,  0.52849454,  0.96159089]), std=array([0.14140266, 0.20269202, 0.28701261, 0.74376792, 0.50591403,
+       0.79907638, 0.46438792, 0.22718456, 0.15998645, 0.07105496,
+       0.76051128, 0.75914735, 0.86045098, 0.72788113, 0.84708637,
+       0.78122562, 0.73781836, 0.79615372]), q01=array([-0.46475539, -1.89722662,  1.36474048, -2.4062589 , -1.69994188,
+       -3.10159743,  0.        ,  0.12735934,  0.85011724, -0.17453292,
+        0.        ,  0.08726646,  0.        ,  0.08726646,  0.        ,
+        0.08726646,  0.        ,  0.08726646]), q99=array([ 0.11976029, -1.11955333,  2.51031291,  0.14618409, -0.12965343,
+       -0.55636768,  1.32481759,  0.96628928,  1.58107836,  0.17446311,
+        1.91832626,  1.91949563,  1.91947818,  1.91949563,  1.91947818,
+        1.91949563,  1.84690739,  1.91949563])), 'effort': NormStats(mean=array([-0.36026341, -7.73860741, 17.40533447]), std=array([19.76742744, 19.51356316, 30.7988987 ]), q01=array([-67.004, -84.145,   0.   ]), q99=array([ 95.839,  18.706, 119.952]))}, max_episodes=None, rcs_sample_enable=False, repack_transforms=Group(inputs=(), outputs=()), data_transforms=Group(inputs=[XHandTactileFlowInputs(model_type=<ModelType.PI0: 'pi0'>, tactile_mode='calc_force', structured_tactile=True, tactile_history_frames=10, state_dim=18, primary_image_key='observation.images.cam_front', wrist_image_key='observation.images.cam_right', extra_image_key='observation.images.cam_left', future_flow_key=None, future_wrist_flow_key=None, scene_flow_root=None, scene_flow_future_step=32, scene_flow_num_points=4096, scene_flow_required=False, prompt_key='prompt', task_key='task')], outputs=[XHandTactileFlowOutputs(action_dim=18)]), model_transforms=Group(inputs=[InjectDefaultPrompt(prompt=None), ResizeImages(height=224, width=224), TokenizePrompt(tokenizer=<openpi.models.tokenizer.PaligemmaTokenizer object at 0x7fbcacff3410>, discrete_state_input=False), PadStatesAndActions(model_action_dim=32)], outputs=()), use_quantile_norm=False, action_sequence_keys=('action',), effort_history=(0,), state_delta_timestamps=(-18, -16, -14, -12, -10, -8, -6, -4, -2, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32), prompt_from_task=True, rlds_data_dir=None, filter_dict_path='outputs/episode_splits/task1_2_3_315ep/train_episodes.json') (487541:data_loader.py:363)

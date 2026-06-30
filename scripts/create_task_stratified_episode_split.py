@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""Create task-stratified train/val episode splits for local LeRobot datasets."""
+"""Create task-stratified train/val episode splits for local LeRobot datasets.
+划分测试集和val集
+"""
 
 from __future__ import annotations
 
