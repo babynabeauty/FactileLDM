@@ -50,6 +50,29 @@ def _load_episode_indices(filter_dict_path: str | None) -> list[int] | None:
     return [int(episode) for episode in episodes]
 
 
+class EpisodeSubsetDataset:
+    """Frame-level subset that keeps the wrapped LeRobotDataset's global indices."""
+
+    def __init__(self, dataset: Dataset, indices: Sequence[int]):
+        self._dataset = dataset
+        self._indices = [int(index) for index in indices]
+
+    def __getitem__(self, index: SupportsIndex):
+        return self._dataset[self._indices[int(index)]]
+
+    def __len__(self) -> int:
+        return len(self._indices)
+
+
+def _frame_indices_for_episodes(dataset: lerobot_dataset.LeRobotDataset, episodes: Sequence[int]) -> list[int]:
+    selected = set(int(episode) for episode in episodes)
+    episode_index = torch.stack(dataset.hf_dataset["episode_index"]).numpy()
+    indices = np.nonzero(np.isin(episode_index, list(selected)))[0].astype(np.int64).tolist()
+    if not indices:
+        raise ValueError(f"Episode filter selected no frames. Requested episodes: {sorted(selected)[:20]}")
+    return indices
+
+
 class Dataset(Protocol[T_co]):
     """Interface for a dataset with random access."""
 
@@ -279,9 +302,16 @@ def create_torch_dataset(
 
     dataset = lerobot_dataset.LeRobotDataset(
         repo_id,
-        episodes=episode_indices,
         delta_timestamps=delta_timestamps
     )
+    if episode_indices is not None:
+        frame_indices = _frame_indices_for_episodes(dataset, episode_indices)
+        logging.info(
+            "Episode filter kept %d frames from %d episodes.",
+            len(frame_indices),
+            len(episode_indices),
+        )
+        dataset = EpisodeSubsetDataset(dataset, frame_indices)
 
     if data_config.prompt_from_task:
         dataset = TransformedDataset(dataset, [_transforms.PromptFromLeRobotTask(dataset_meta.tasks)])
