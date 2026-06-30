@@ -582,7 +582,7 @@ def main(args: Args) -> None:
     data_sharding = jax.sharding.NamedSharding(mesh, jax.sharding.PartitionSpec(sharding.DATA_AXIS))
     replicated = jax.sharding.NamedSharding(mesh, jax.sharding.PartitionSpec())
     train_loader = _data_loader.create_data_loader(train_config, sharding=data_sharding, shuffle=True)
-    eval_loader = _data_loader.create_data_loader(eval_config, sharding=data_sharding, shuffle=False, num_batches=1)
+    eval_loader = _data_loader.create_data_loader(eval_config, sharding=data_sharding, shuffle=False)
 
     init_rng = jax.random.PRNGKey(args.seed)
     model_rng, probe_rng, train_rng = jax.random.split(init_rng, 3)
@@ -673,7 +673,12 @@ def main(args: Args) -> None:
             step = int(jax.device_get(state.step))
             if step == 1 or step % args.log_interval == 0:
                 logging.info("step=%d train %s", step, _format_stats(stats))
-                eval_stats = peval_step(model_params, state, next(eval_iter), train_rng)
+                try:
+                    eval_batch = next(eval_iter)
+                except StopIteration:
+                    eval_iter = iter(eval_loader)
+                    eval_batch = next(eval_iter)
+                eval_stats = peval_step(model_params, state, eval_batch, train_rng)
                 logging.info("step=%d eval  %s", step, _format_stats(eval_stats))
             if step % args.save_interval == 0:
                 checkpointer.save(step, args=ocp.args.Composite(probe_state=ocp.args.PyTreeSave(state)))
