@@ -43,6 +43,8 @@ class Args:
     repo_id: str | None = None
     asset_id: str | None = None
     assets_dir: str | None = None
+    train_filter_path: str | None = None
+    eval_filter_path: str | None = None
 
     token_source: Literal["student", "teacher"] = "student"
     probe_layer: int | None = None
@@ -191,11 +193,17 @@ def _load_weights_and_validate(loader: _weight_loaders.WeightLoader, params_shap
     return traverse_util.unflatten_dict(filtered)
 
 
-def _override_config(args: Args) -> _config.TrainConfig:
+def _override_config(args: Args, *, filter_path: str | None = None) -> _config.TrainConfig:
     base = _config.get_config(args.config_name)
     data = base.data
     if args.repo_id is not None:
         data = dataclasses.replace(data, repo_id=args.repo_id)
+    if filter_path is not None:
+        base_data_config = data.base_config or _config.DataConfig()
+        data = dataclasses.replace(
+            data,
+            base_config=dataclasses.replace(base_data_config, filter_dict_path=filter_path),
+        )
     if args.asset_id is not None or args.assets_dir is not None:
         assets = data.assets
         assets = dataclasses.replace(
@@ -526,9 +534,11 @@ def main(args: Args) -> None:
     if args.resume and args.overwrite:
         raise ValueError("--resume and --overwrite cannot both be set.")
 
-    config = _override_config(args)
-    _validate_model_config(config)
-    probe_layer = int(args.probe_layer if args.probe_layer is not None else config.model.future_tactile_align_layer)
+    train_config = _override_config(args, filter_path=args.train_filter_path)
+    eval_config = _override_config(args, filter_path=args.eval_filter_path)
+    _validate_model_config(train_config)
+    _validate_model_config(eval_config)
+    probe_layer = int(args.probe_layer if args.probe_layer is not None else train_config.model.future_tactile_align_layer)
     if args.batch_size % jax.device_count() != 0:
         raise ValueError(f"--batch-size must be divisible by jax.device_count()={jax.device_count()}.")
 
@@ -541,22 +551,22 @@ def main(args: Args) -> None:
     mesh = sharding.make_mesh(args.fsdp_devices)
     data_sharding = jax.sharding.NamedSharding(mesh, jax.sharding.PartitionSpec(sharding.DATA_AXIS))
     replicated = jax.sharding.NamedSharding(mesh, jax.sharding.PartitionSpec())
-    train_loader = _data_loader.create_data_loader(config, sharding=data_sharding, shuffle=True)
-    eval_loader = _data_loader.create_data_loader(config, sharding=data_sharding, shuffle=False, num_batches=1)
+    train_loader = _data_loader.create_data_loader(train_config, sharding=data_sharding, shuffle=True)
+    eval_loader = _data_loader.create_data_loader(eval_config, sharding=data_sharding, shuffle=False, num_batches=1)
 
     init_rng = jax.random.PRNGKey(args.seed)
     model_rng, probe_rng, train_rng = jax.random.split(init_rng, 3)
     with sharding.set_mesh(mesh):
-        model_def, model_params = _init_frozen_model(config, model_rng)
+        model_def, model_params = _init_frozen_model(train_config, model_rng)
         model_params = jax.device_put(model_params, replicated)
 
-        student_width = int(config.model.action_expert_config.width)
+        student_width = int(train_config.model.action_expert_config.width)
         probe = FutureTactileForceProbe(
             input_dim=student_width,
             hidden_dim=args.decoder_dim,
-            action_horizon=config.model.action_horizon,
-            num_fingers=config.model.tactile_num_fingers,
-            force_dim=config.model.tactile_dim_per_finger,
+            action_horizon=train_config.model.action_horizon,
+            num_fingers=train_config.model.tactile_num_fingers,
+            force_dim=train_config.model.tactile_dim_per_finger,
             depth=args.decoder_depth,
             rngs=nnx.Rngs(probe_rng),
         )
@@ -599,7 +609,12 @@ def main(args: Args) -> None:
         logging.info("Frozen policy config: %s", args.config_name)
         logging.info("Frozen policy params: %s", args.pretrained_params)
         logging.info("Token source: %s, layer: %d", args.token_source, probe_layer)
-        logging.info("Future token count expected by model: %d", config.model.future_tactile_segments * config.model.tactile_num_fingers)
+        logging.info(
+            "Future token count expected by model: %d",
+            train_config.model.future_tactile_segments * train_config.model.tactile_num_fingers,
+        )
+        logging.info("Train filter: %s", args.train_filter_path)
+        logging.info("Eval filter: %s", args.eval_filter_path)
 
         progress = tqdm.tqdm(range(int(state.step), args.num_train_steps), total=args.num_train_steps, initial=int(state.step))
         for _ in progress:

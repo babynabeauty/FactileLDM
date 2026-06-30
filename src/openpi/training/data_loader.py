@@ -1,4 +1,5 @@
 from collections.abc import Iterator, Sequence
+import json
 import logging
 import multiprocessing
 import os
@@ -21,6 +22,32 @@ from openpi.shared.effort_type import EffortType
 
 
 T_co = TypeVar("T_co", covariant=True)
+
+
+def _load_episode_indices(filter_dict_path: str | None) -> list[int] | None:
+    if not filter_dict_path:
+        return None
+    path = pathlib.Path(filter_dict_path).expanduser()
+    with path.open() as f:
+        data = json.load(f)
+    if isinstance(data, list):
+        episodes = data
+    elif isinstance(data, dict):
+        episodes = (
+            data.get("episodes")
+            or data.get("episode_indices")
+            or data.get("episode_index")
+            or data.get("train")
+            or data.get("val")
+        )
+    else:
+        raise ValueError(f"Unsupported filter file format in {path}")
+    if episodes is None:
+        raise ValueError(
+            f"Episode filter {path} must contain a list or one of keys: "
+            "episodes, episode_indices, episode_index, train, val."
+        )
+    return [int(episode) for episode in episodes]
 
 
 class Dataset(Protocol[T_co]):
@@ -246,8 +273,13 @@ def create_torch_dataset(
             model_config.future_rgb_step / dataset_meta.fps,
         ]
 
+    episode_indices = _load_episode_indices(data_config.filter_dict_path)
+    if episode_indices is not None:
+        logging.info("Using %d filtered episodes from %s", len(episode_indices), data_config.filter_dict_path)
+
     dataset = lerobot_dataset.LeRobotDataset(
         repo_id,
+        episodes=episode_indices,
         delta_timestamps=delta_timestamps
     )
 
