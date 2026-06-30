@@ -556,7 +556,14 @@ def _format_stats(stats: dict[str, at.Array]) -> str:
 
 
 def _checkpoint_dir(args: Args) -> pathlib.Path:
-    return pathlib.Path(args.checkpoint_base_dir) / args.config_name / args.exp_name / args.token_source
+    return (
+        pathlib.Path(args.checkpoint_base_dir)
+        .expanduser()
+        .resolve()
+        / args.config_name
+        / args.exp_name
+        / args.token_source
+    )
 
 
 def main(args: Args) -> None:
