@@ -627,15 +627,32 @@ def main(args: Args) -> None:
                 ]
                 logging.info("Resumed probe checkpoint step %d from %s.", latest_step, checkpoint_dir)
 
-        ptrain_step = jax.jit(
-            train_step,
-            static_argnames=("args", "probe_layer", "model_def", "probe_def"),
-            donate_argnums=(5,),
-        )
-        peval_step = jax.jit(
-            eval_step,
-            static_argnames=("args", "probe_layer", "model_def", "probe_def"),
-        )
+        def _ptrain_step(model_params_arg, state_arg, batch_arg, rng_arg):
+            return train_step(
+                args,
+                probe_layer,
+                model_def,
+                model_params_arg,
+                probe_def,
+                state_arg,
+                batch_arg,
+                rng_arg,
+            )
+
+        def _peval_step(model_params_arg, state_arg, batch_arg, rng_arg):
+            return eval_step(
+                args,
+                probe_layer,
+                model_def,
+                model_params_arg,
+                probe_def,
+                state_arg,
+                batch_arg,
+                rng_arg,
+            )
+
+        ptrain_step = jax.jit(_ptrain_step, donate_argnums=(1,))
+        peval_step = jax.jit(_peval_step)
 
         train_iter = iter(train_loader)
         eval_iter = iter(eval_loader)
@@ -652,11 +669,11 @@ def main(args: Args) -> None:
         progress = tqdm.tqdm(range(int(state.step), args.num_train_steps), total=args.num_train_steps, initial=int(state.step))
         for _ in progress:
             batch = next(train_iter)
-            state, stats = ptrain_step(args, probe_layer, model_def, model_params, probe_def, state, batch, train_rng)
+            state, stats = ptrain_step(model_params, state, batch, train_rng)
             step = int(jax.device_get(state.step))
             if step == 1 or step % args.log_interval == 0:
                 logging.info("step=%d train %s", step, _format_stats(stats))
-                eval_stats = peval_step(args, probe_layer, model_def, model_params, probe_def, state, next(eval_iter), train_rng)
+                eval_stats = peval_step(model_params, state, next(eval_iter), train_rng)
                 logging.info("step=%d eval  %s", step, _format_stats(eval_stats))
             if step % args.save_interval == 0:
                 checkpointer.save(step, args=ocp.args.Composite(probe_state=ocp.args.PyTreeSave(state)))
