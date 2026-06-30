@@ -2066,6 +2066,39 @@ _CONFIGS.extend(
     ]
 )
 
+
+def _async_tactile_hand_refiner_config(source_name: str, new_name: str) -> TrainConfig:
+    source = next(config for config in _CONFIGS if config.name == source_name)
+    return dataclasses.replace(
+        source,
+        name=new_name,
+        model=dataclasses.replace(
+            source.model,
+            async_tactile_refiner_enabled=True,
+            async_refiner_offsets=(4, 8, 12),
+            async_refiner_layers=2,
+            async_refiner_width=256,
+            async_refiner_heads=4,
+            async_refiner_mlp_dim=1024,
+            async_refiner_loss_weight=0.2,
+            async_refiner_delta_loss_weight=0.0001,
+            async_refiner_gate_loss_weight=0.0,
+            async_refiner_gate_bias=-2.0,
+            async_refiner_delta_scale=0.1,
+        ),
+    )
+
+
+_CONFIGS.extend(
+    [
+        _async_tactile_hand_refiner_config(
+            "pi0_xhand_tactile_structured_adaptive_patch_raw_dual_ae_history_future_pool",
+            "pi0_xhand_tactile_structured_adaptive_patch_raw_dual_ae_history_future_pool_async_refiner",
+        ),
+    ]
+)
+
+
 if len({config.name for config in _CONFIGS}) != len(_CONFIGS):
     raise ValueError("Config names must be unique.")
 _CONFIGS_DICT = {config.name: config for config in _CONFIGS}

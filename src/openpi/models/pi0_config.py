@@ -276,6 +276,17 @@ class Pi0LatentFlowConfig(Pi0Config):
     tactile_refiner_delta_loss_weight: float = 0.0001
     tactile_refiner_gate_bias: float = -2.0
     tactile_refiner_delta_scale: float = 0.1
+    async_tactile_refiner_enabled: bool = False
+    async_refiner_offsets: tuple[int, ...] = (4, 8, 12)
+    async_refiner_layers: int = 2
+    async_refiner_width: int = 256
+    async_refiner_heads: int = 4
+    async_refiner_mlp_dim: int = 1024
+    async_refiner_loss_weight: float = 0.2
+    async_refiner_delta_loss_weight: float = 0.0001
+    async_refiner_gate_loss_weight: float = 0.0
+    async_refiner_gate_bias: float = -2.0
+    async_refiner_delta_scale: float = 0.1
 
     @override
     def __post_init__(self):
@@ -337,6 +348,30 @@ class Pi0LatentFlowConfig(Pi0Config):
                 raise ValueError("Refiner loss weights must be non-negative.")
             if self.tactile_refiner_delta_scale < 0:
                 raise ValueError("tactile_refiner_delta_scale must be non-negative.")
+        if self.async_tactile_refiner_enabled:
+            if not self.structured_tactile:
+                raise ValueError("async_tactile_refiner_enabled requires structured_tactile=True.")
+            if not self.async_refiner_offsets:
+                raise ValueError("async_refiner_offsets must be non-empty.")
+            if any(offset <= 0 or offset >= self.action_horizon for offset in self.async_refiner_offsets):
+                raise ValueError(
+                    "async_refiner_offsets must be inside the predicted action chunk, "
+                    f"got {self.async_refiner_offsets} for action_horizon={self.action_horizon}."
+                )
+            if self.async_refiner_layers <= 0:
+                raise ValueError("async_refiner_layers must be positive.")
+            if self.async_refiner_width <= 0 or self.async_refiner_mlp_dim <= 0:
+                raise ValueError("async_refiner_width and async_refiner_mlp_dim must be positive.")
+            if self.async_refiner_width % self.async_refiner_heads != 0:
+                raise ValueError("async_refiner_width must be divisible by async_refiner_heads.")
+            if (
+                self.async_refiner_loss_weight < 0
+                or self.async_refiner_delta_loss_weight < 0
+                or self.async_refiner_gate_loss_weight < 0
+            ):
+                raise ValueError("Async refiner loss weights must be non-negative.")
+            if self.async_refiner_delta_scale < 0:
+                raise ValueError("async_refiner_delta_scale must be non-negative.")
         if not 0 <= self.future_rgb_step <= self.action_horizon:
             raise ValueError(
                 f"future_rgb_step must satisfy 0 <= future_rgb_step <= action_horizon={self.action_horizon}, "
