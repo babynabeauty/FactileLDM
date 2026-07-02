@@ -249,7 +249,7 @@ class Pi0LatentFlowConfig(Pi0Config):
     student_future_query_noise_start_ratio: float = 0
     student_future_query_noise_end_ratio: float = 0
     structured_tactile: bool = False
-    tactile_history_offsets: tuple[int, ...] = (-18, -16, -14, -12, -10, -8, -6, -4, -2, 0)
+    tactile_history_offsets: tuple[int, ...] = tuple(range(-9, 1))
     pool_tactile_history: bool = False
     future_tactile_segments: int = 8
     future_steps_per_segment: int = 4
@@ -483,7 +483,7 @@ class Pi0FutureTactileConfig(Pi0Config):
     effort_type: str | None = EffortType.MOT
     effort_dim: int | None = 15
     force_input_frames: int = 10
-    tactile_history_offsets: tuple[int, ...] = (-18, -16, -14, -12, -10, -8, -6, -4, -2, 0)
+    tactile_history_offsets: tuple[int, ...] = tuple(range(-9, 1))
     pool_tactile_history: bool = False
     future_tactile_segments: int = 8
     future_steps_per_segment: int = 4
@@ -596,7 +596,7 @@ class FutureTactileEncoderPretrainConfig(_model.BaseModelConfig):
     tactile_dim_per_finger: int = 3
     effort_dim: int | None = 15
     force_input_frames: int = 10
-    tactile_history_offsets: tuple[int, ...] = (-18, -16, -14, -12, -10, -8, -6, -4, -2, 0)
+    tactile_history_offsets: tuple[int, ...] = tuple(range(-9, 1))
     future_tactile_segments: int = 8
     future_steps_per_segment: int = 4
     tactile_sample_hz: float = 15.0

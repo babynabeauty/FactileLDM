@@ -1056,7 +1056,7 @@ _CONFIGS = [
         ),
         data=LeRobotXHandTactileFlowDataConfig(
             repo_id="test_demo_depth",
-            state_delta_timestamps=tuple(list((4 * i - 36 for i in range(10))) + list(range(1, 33))),
+            state_delta_timestamps=tuple(list(range(-9, 1)) + list(range(1, 33))),
             tactile_mode="calc_force",
             primary_image_key="observation.images.cam_front",
             wrist_image_key="observation.images.cam_right",
@@ -1149,7 +1149,7 @@ _CONFIGS = [
         ),
         data=LeRobotXHandTactileFlowDataConfig(
             repo_id="grasp_pipette_and_press_button",
-            state_delta_timestamps=tuple(list((4 * i - 36 for i in range(10))) + list(range(1, 33))),
+            state_delta_timestamps=tuple(list(range(-9, 1)) + list(range(1, 33))),
             tactile_mode="calc_force",
             primary_image_key="observation.images.cam_front",
             wrist_image_key="observation.images.cam_right",
@@ -1189,7 +1189,7 @@ _CONFIGS = [
         ),
         data=LeRobotXHandTactileFlowDataConfig(
             repo_id="grasp_pipette_and_press_button",
-            state_delta_timestamps=tuple(list((4 * i - 36 for i in range(10))) + list(range(1, 33))),
+            state_delta_timestamps=tuple(list(range(-9, 1)) + list(range(1, 33))),
             tactile_mode="calc_force",
             primary_image_key="observation.images.cam_front",
             wrist_image_key="observation.images.cam_right",
@@ -1220,7 +1220,7 @@ _CONFIGS = [
             effort_dim=15,
             force_input_frames=10,
             structured_tactile=True,
-            tactile_history_offsets=(-18, -16, -14, -12, -10, -8, -6, -4, -2, 0),
+            tactile_history_offsets=tuple(range(-9, 1)),
             future_tactile_segments=8,
             future_steps_per_segment=4,
             tactile_tokenizer_dim=256,
@@ -1235,7 +1235,7 @@ _CONFIGS = [
         data=LeRobotXHandTactileFlowDataConfig(
             repo_id="grasp_pipette_and_press_button",
             state_delta_timestamps=tuple(
-                [-18, -16, -14, -12, -10, -8, -6, -4, -2, 0] + list(range(1, 33))
+                list(range(-9, 1)) + list(range(1, 33))
             ),
             tactile_mode="calc_force",
             structured_tactile=True,
@@ -1266,7 +1266,7 @@ _CONFIGS = [
             effort_dim=15,
             force_input_frames=10,
             structured_tactile=True,
-            tactile_history_offsets=(-18, -16, -14, -12, -10, -8, -6, -4, -2, 0),
+            tactile_history_offsets=tuple(range(-9, 1)),
             future_tactile_segments=8,
             future_steps_per_segment=4,
             tactile_tokenizer_dim=256,
@@ -1284,7 +1284,7 @@ _CONFIGS = [
         data=LeRobotXHandTactileFlowDataConfig(
             repo_id="grasp_pipette_and_press_button",
             state_delta_timestamps=tuple(
-                [-18, -16, -14, -12, -10, -8, -6, -4, -2, 0] + list(range(1, 33))
+                list(range(-9, 1)) + list(range(1, 33))
             ),
             tactile_mode="calc_force",
             structured_tactile=True,
@@ -1318,7 +1318,7 @@ _CONFIGS = [
             tactile_num_fingers=5,
             tactile_points_per_finger=120,
             tactile_dim_per_finger=3,
-            tactile_history_offsets=(-18, -16, -14, -12, -10, -8, -6, -4, -2, 0),
+            tactile_history_offsets=tuple(range(-9, 1)),
             future_tactile_segments=8,
             future_steps_per_segment=4,
             tactile_tokenizer_dim=256,
@@ -1336,7 +1336,7 @@ _CONFIGS = [
         data=LeRobotXHandTactileFlowDataConfig(
             repo_id="grasp_pipette_and_press_button",
             state_delta_timestamps=tuple(
-                [-18, -16, -14, -12, -10, -8, -6, -4, -2, 0] + list(range(1, 33))
+                list(range(-9, 1)) + list(range(1, 33))
             ),
             tactile_mode="raw_force",
             structured_tactile=True,
@@ -1373,7 +1373,7 @@ _CONFIGS = [
             tactile_patch_tokenizer=True,
             tactile_patch_fingers=(0, 1, 2),
             tactile_num_patches=5,
-            tactile_history_offsets=(-18, -16, -14, -12, -10, -8, -6, -4, -2, 0),
+            tactile_history_offsets=tuple(range(-9, 1)),
             future_tactile_segments=8,
             future_steps_per_segment=4,
             tactile_tokenizer_dim=256,
@@ -1391,7 +1391,7 @@ _CONFIGS = [
         data=LeRobotXHandTactileFlowDataConfig(
             repo_id="grasp_pipette_and_press_button",
             state_delta_timestamps=tuple(
-                [-18, -16, -14, -12, -10, -8, -6, -4, -2, 0] + list(range(1, 33))
+                list(range(-9, 1)) + list(range(1, 33))
             ),
             tactile_mode="raw_force",
             structured_tactile=True,
@@ -1425,7 +1425,7 @@ _CONFIGS = [
             tactile_num_fingers=5,
             tactile_points_per_finger=120,
             tactile_dim_per_finger=3,
-            tactile_history_offsets=(-18, -16, -14, -12, -10, -8, -6, -4, -2, 0),
+            tactile_history_offsets=tuple(range(-9, 1)),
             future_tactile_segments=8,
             future_steps_per_segment=4,
             tactile_tokenizer_dim=256,
@@ -1446,7 +1446,7 @@ _CONFIGS = [
         data=LeRobotXHandTactileFlowDataConfig(
             repo_id="grasp_pipette_and_press_button",
             state_delta_timestamps=tuple(
-                [-18, -16, -14, -12, -10, -8, -6, -4, -2, 0] + list(range(1, 33))
+                list(range(-9, 1)) + list(range(1, 33))
             ),
             tactile_mode="raw_force",
             structured_tactile=True,
@@ -1480,7 +1480,7 @@ _CONFIGS = [
             tactile_num_fingers=5,
             tactile_points_per_finger=120,
             tactile_dim_per_finger=3,
-            tactile_history_offsets=(-18, -16, -14, -12, -10, -8, -6, -4, -2, 0),
+            tactile_history_offsets=tuple(range(-9, 1)),
             future_tactile_segments=8,
             future_steps_per_segment=4,
             tactile_tokenizer_dim=256,
@@ -1511,7 +1511,7 @@ _CONFIGS = [
         data=LeRobotXHandTactileFlowDataConfig(
             repo_id="grasp_pipette_and_press_button",
             state_delta_timestamps=tuple(
-                [-18, -16, -14, -12, -10, -8, -6, -4, -2, 0] + list(range(1, 33))
+                list(range(-9, 1)) + list(range(1, 33))
             ),
             tactile_mode="raw_force",
             structured_tactile=True,
@@ -1548,7 +1548,7 @@ _CONFIGS = [
             tactile_patch_tokenizer=True,
             tactile_patch_fingers=(0, 1, 2),
             tactile_num_patches=5,
-            tactile_history_offsets=(-18, -16, -14, -12, -10, -8, -6, -4, -2, 0),
+            tactile_history_offsets=tuple(range(-9, 1)),
             future_tactile_segments=8,
             future_steps_per_segment=4,
             tactile_tokenizer_dim=256,
@@ -1579,7 +1579,7 @@ _CONFIGS = [
         data=LeRobotXHandTactileFlowDataConfig(
             repo_id="grasp_pipette_and_press_button",
             state_delta_timestamps=tuple(
-                [-18, -16, -14, -12, -10, -8, -6, -4, -2, 0] + list(range(1, 33))
+                list(range(-9, 1)) + list(range(1, 33))
             ),
             tactile_mode="raw_force",
             structured_tactile=True,
@@ -1612,7 +1612,7 @@ _CONFIGS = [
             tactile_num_fingers=5,
             tactile_points_per_finger=120,
             tactile_dim_per_finger=3,
-            tactile_history_offsets=(-18, -16, -14, -12, -10, -8, -6, -4, -2, 0),
+            tactile_history_offsets=tuple(range(-9, 1)),
             future_tactile_segments=8,
             future_steps_per_segment=4,
             tactile_tokenizer_dim=256,
@@ -1629,7 +1629,7 @@ _CONFIGS = [
         data=LeRobotXHandTactileFlowDataConfig(
             repo_id="grasp_pipette_and_press_button",
             state_delta_timestamps=tuple(
-                [-18, -16, -14, -12, -10, -8, -6, -4, -2, 0] + list(range(1, 33))
+                list(range(-9, 1)) + list(range(1, 33))
             ),
             tactile_mode="raw_force",
             structured_tactile=True,
@@ -1660,7 +1660,7 @@ _CONFIGS = [
             effort_type=EffortType.MOT,
             effort_dim=15,
             force_input_frames=10,
-            tactile_history_offsets=(-18, -16, -14, -12, -10, -8, -6, -4, -2, 0),
+            tactile_history_offsets=tuple(range(-9, 1)),
             future_tactile_segments=8,
             future_steps_per_segment=4,
             tactile_tokenizer_dim=256,
@@ -1673,7 +1673,7 @@ _CONFIGS = [
         data=LeRobotXHandTactileFlowDataConfig(
             repo_id="grasp_pipette_and_press_button",
             state_delta_timestamps=tuple(
-                [-18, -16, -14, -12, -10, -8, -6, -4, -2, 0] + list(range(1, 33))
+                list(range(-9, 1)) + list(range(1, 33))
             ),
             tactile_mode="calc_force",
             structured_tactile=True,
@@ -1704,7 +1704,7 @@ _CONFIGS = [
             effort_dim=15,
             state_dim=18,
             force_input_frames=10,
-            tactile_history_offsets=(-18, -16, -14, -12, -10, -8, -6, -4, -2, 0),
+            tactile_history_offsets=tuple(range(-9, 1)),
             future_tactile_segments=8,
             future_steps_per_segment=4,
             tactile_sample_hz=15.0,
@@ -1719,7 +1719,7 @@ _CONFIGS = [
         data=LeRobotXHandTactileFlowDataConfig(
             repo_id="grasp_pipette_and_press_button",
             state_delta_timestamps=tuple(
-                [-18, -16, -14, -12, -10, -8, -6, -4, -2, 0] + list(range(1, 33))
+                list(range(-9, 1)) + list(range(1, 33))
             ),
             tactile_mode="calc_force",
             structured_tactile=True,
@@ -1749,7 +1749,7 @@ _CONFIGS = [
             effort_dim=15,
             state_dim=18,
             force_input_frames=10,
-            tactile_history_offsets=(-18, -16, -14, -12, -10, -8, -6, -4, -2, 0),
+            tactile_history_offsets=tuple(range(-9, 1)),
             future_tactile_segments=8,
             future_steps_per_segment=4,
             tactile_sample_hz=15.0,
@@ -1765,7 +1765,7 @@ _CONFIGS = [
         data=LeRobotXHandTactileFlowDataConfig(
             repo_id="grasp_pipette_and_press_button",
             state_delta_timestamps=tuple(
-                [-18, -16, -14, -12, -10, -8, -6, -4, -2, 0] + list(range(1, 33))
+                list(range(-9, 1)) + list(range(1, 33))
             ),
             tactile_mode="calc_force",
             structured_tactile=True,
@@ -1795,7 +1795,7 @@ _CONFIGS = [
             effort_dim=15,
             state_dim=18,
             force_input_frames=10,
-            tactile_history_offsets=(-18, -16, -14, -12, -10, -8, -6, -4, -2, 0),
+            tactile_history_offsets=tuple(range(-9, 1)),
             future_tactile_segments=8,
             future_steps_per_segment=4,
             tactile_sample_hz=15.0,
@@ -1814,7 +1814,7 @@ _CONFIGS = [
         data=LeRobotXHandTactileFlowDataConfig(
             repo_id="grasp_pipette_and_press_button",
             state_delta_timestamps=tuple(
-                [-18, -16, -14, -12, -10, -8, -6, -4, -2, 0] + list(range(1, 33))
+                list(range(-9, 1)) + list(range(1, 33))
             ),
             tactile_mode="calc_force",
             structured_tactile=True,
@@ -1844,7 +1844,7 @@ _CONFIGS = [
             effort_type=EffortType.MOT,
             effort_dim=15,
             force_input_frames=10,
-            tactile_history_offsets=(-18, -16, -14, -12, -10, -8, -6, -4, -2, 0),
+            tactile_history_offsets=tuple(range(-9, 1)),
             future_tactile_segments=8,
             future_steps_per_segment=4,
             tactile_tokenizer_dim=256,
@@ -1864,7 +1864,7 @@ _CONFIGS = [
         data=LeRobotXHandTactileFlowDataConfig(
             repo_id="grasp_pipette_and_press_button",
             state_delta_timestamps=tuple(
-                [-18, -16, -14, -12, -10, -8, -6, -4, -2, 0] + list(range(1, 33))
+                list(range(-9, 1)) + list(range(1, 33))
             ),
             tactile_mode="calc_force",
             structured_tactile=True,
@@ -1898,7 +1898,7 @@ _CONFIGS = [
             effort_type=EffortType.MOT,
             effort_dim=15,
             force_input_frames=10,
-            tactile_history_offsets=(-18, -16, -14, -12, -10, -8, -6, -4, -2, 0),
+            tactile_history_offsets=tuple(range(-9, 1)),
             future_tactile_segments=8,
             future_steps_per_segment=4,
             tactile_tokenizer_dim=256,
@@ -1919,7 +1919,7 @@ _CONFIGS = [
         data=LeRobotXHandTactileFlowDataConfig(
             repo_id="grasp_pipette_and_press_button",
             state_delta_timestamps=tuple(
-                [-18, -16, -14, -12, -10, -8, -6, -4, -2, 0] + list(range(1, 33))
+                list(range(-9, 1)) + list(range(1, 33))
             ),
             tactile_mode="calc_force",
             structured_tactile=True,
@@ -1965,7 +1965,7 @@ _CONFIGS = [
         ),
         data=LeRobotXHandTactileFlowDataConfig(
             repo_id="grasp_pipette_and_press_button",
-            state_delta_timestamps=tuple(list((4 * i - 36 for i in range(10))) + list(range(1, 33))),
+            state_delta_timestamps=tuple(list(range(-9, 1)) + list(range(1, 33))),
             tactile_mode="calc_force",
             primary_image_key="observation.images.cam_front",
             wrist_image_key="observation.images.cam_right",
