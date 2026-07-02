@@ -114,12 +114,25 @@ class Policy(BasePolicy):
         else:
             # JAX model setup
             self._sample_actions = nnx_utils.module_jit(model.sample_actions)
+            self._sample_actions_trex = (
+                nnx_utils.module_jit(model.sample_actions_trex)
+                if hasattr(model, "sample_actions_trex")
+                else None
+            )
             self._rng = rng or jax.random.key(0)
 
     @override
     def infer(self, obs: dict, *, noise: np.ndarray | None = None) -> dict:  # type: ignore[misc]
         # Make a copy since transformations may modify the inputs in place.
         debug_index = self._debug_infer_count
+        trex_mode = obs.get("trex_mode", obs.get("mode"))
+        if isinstance(trex_mode, np.ndarray):
+            trex_mode = str(trex_mode.item())
+        elif trex_mode is not None:
+            trex_mode = str(trex_mode)
+        trex_chunk_offset = obs.get("trex_chunk_offset", 0)
+        trex_chunk_id = obs.get("trex_chunk_id", -1)
+        trex_requested = trex_mode in {"slow", "fast", "slow_and_fast"}
         inputs = jax.tree.map(lambda x: x, obs)
         if debug_index < DEBUG_INFER_PRINT_LIMIT:
             _debug_print_tree("SERVER RAW OBS FROM CLIENT", inputs, infer_index=debug_index)
@@ -138,6 +151,25 @@ class Policy(BasePolicy):
 
         # Prepare kwargs for sample_actions
         sample_kwargs = dict(self._sample_kwargs)
+        sample_fn = self._sample_actions
+        if trex_requested:
+            if self._is_pytorch_model:
+                raise RuntimeError("T-Rex slow/fast websocket mode is only wired for JAX policies in this server.")
+            if self._sample_actions_trex is None:
+                # Old configs should not receive fast requests. For slow_and_fast,
+                # fall back to the normal one-shot sampler so legacy deployment
+                # remains usable if a client accidentally includes the mode field.
+                if trex_mode == "fast":
+                    raise RuntimeError(
+                        "Received mode='fast', but this model/server does not expose sample_actions_trex."
+                    )
+            else:
+                sample_fn = self._sample_actions_trex
+                sample_kwargs.update(
+                    trex_mode=trex_mode,
+                    trex_chunk_offset=jnp.asarray(trex_chunk_offset),
+                    trex_chunk_id=jnp.asarray(trex_chunk_id),
+                )
         # sample_kwargs.update(debug_query_noise_scale=0.3)
         if noise is not None:
             noise = torch.from_numpy(noise).to(self._pytorch_device) if self._is_pytorch_model else jnp.asarray(noise)
@@ -153,7 +185,7 @@ class Policy(BasePolicy):
         start_time = time.monotonic()
         outputs = {
             "state": inputs["state"],
-            "actions": self._sample_actions(sample_rng_or_pytorch_device, observation, **sample_kwargs),
+            "actions": sample_fn(sample_rng_or_pytorch_device, observation, **sample_kwargs),
         }
         if "effort" in inputs.keys():
             outputs["effort"] = inputs['effort']
@@ -167,6 +199,10 @@ class Policy(BasePolicy):
         outputs["policy_timing"] = {
             "infer_ms": model_time * 1000,
         }
+        if trex_requested:
+            outputs["trex_mode"] = trex_mode
+            outputs["trex_chunk_offset"] = np.asarray(trex_chunk_offset)
+            outputs["trex_chunk_id"] = np.asarray(trex_chunk_id)
         return outputs
 
     @property

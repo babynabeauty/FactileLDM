@@ -295,6 +295,13 @@ class Pi0LatentFlowConfig(Pi0Config):
     async_flow_refiner_mlp_dim: int = 1024
     async_flow_refiner_loss_weight: float = 1.0
     async_flow_refiner_tau_split: float = 0.4
+    trex_tactile_expert_enabled: bool = False
+    trex_tactile_expert_variant: _gemma.Variant | None = None
+    trex_tactile_loss_weight: float = 1.0
+    trex_tactile_total_steps: int = 10
+    trex_tactile_split_steps: int = 6
+    trex_tactile_delay_offsets: tuple[int, ...] = (0, 4, 8, 12)
+    trex_tactile_hand_only_loss: bool = False
 
     @override
     def __post_init__(self):
@@ -402,6 +409,23 @@ class Pi0LatentFlowConfig(Pi0Config):
                 raise ValueError("async_flow_refiner_loss_weight must be non-negative.")
             if not 0.0 < self.async_flow_refiner_tau_split < 1.0:
                 raise ValueError("async_flow_refiner_tau_split must be inside (0, 1).")
+        if self.trex_tactile_expert_enabled:
+            if not self.structured_tactile:
+                raise ValueError("trex_tactile_expert_enabled requires structured_tactile=True.")
+            if not self.trex_tactile_delay_offsets:
+                raise ValueError("trex_tactile_delay_offsets must be non-empty.")
+            if any(offset < 0 or offset >= self.action_horizon for offset in self.trex_tactile_delay_offsets):
+                raise ValueError(
+                    "trex_tactile_delay_offsets must be inside the predicted action chunk, "
+                    f"got {self.trex_tactile_delay_offsets} for action_horizon={self.action_horizon}."
+                )
+            if not (0 < self.trex_tactile_split_steps < self.trex_tactile_total_steps):
+                raise ValueError(
+                    "trex_tactile_split_steps must be in (0, trex_tactile_total_steps), "
+                    f"got {self.trex_tactile_split_steps}/{self.trex_tactile_total_steps}."
+                )
+            if self.trex_tactile_loss_weight < 0:
+                raise ValueError("trex_tactile_loss_weight must be non-negative.")
         if not 0 <= self.future_rgb_step <= self.action_horizon:
             raise ValueError(
                 f"future_rgb_step must satisfy 0 <= future_rgb_step <= action_horizon={self.action_horizon}, "

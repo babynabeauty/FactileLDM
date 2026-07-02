@@ -15,6 +15,11 @@ an action chunk, and executes it on the robot.
 # 3. structured single-AE，10帧历史 tactile
 --policy-input-mode structured_single_ae
 
+# 4. T-Rex-style slow/fast tactile expert deployment
+--policy-input-mode structured
+--trex-slow-fast
+--trex-fast-offsets 4,8,12
+
 """
 
 import argparse
@@ -39,12 +44,22 @@ DEFAULT_DATASET_NAME = "grasp_pipette"
 DEFAULT_TASK = "pick up the pipette"
 DEFAULT_SERVER_PORT = 8990
 STRUCTURED_TACTILE_HISTORY_OFFSETS = (-18, -16, -14, -12, -10, -8, -6, -4, -2, 0)
+TREX_FAST_OFFSETS = (4, 8, 12)
 TACTILE_SENSOR_COUNT = 5
 TACTILE_BLOCK_SIZE = 384
 TACTILE_BLOCK_START = 52
 TACTILE_CALC_FORCE_OFFSET = 0
 TACTILE_AXES = ("x", "y", "z")
 DEBUG_INFER_PRINT_LIMIT = 3
+
+STRUCTURED_POLICY_INPUT_MODES = {
+    "structured",
+    "structured_single_ae",
+    "structured_dual_ae",
+    "structured_raw_single_ae",
+    "structured_raw_dual_ae",
+    "adaptive_patch_raw_dual_ae",
+}
 
 FALLBACK_STATE_NAMES = [
     *[f"arm_joint_{i}.pos" for i in range(6)],
@@ -243,12 +258,23 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--duration", type=float, default=60.0, help="Run duration in seconds")
     parser.add_argument(
         "--policy-input-mode",
-        choices=["auto", "vanilla", "obs_ae", "structured_single_ae"],
+        choices=[
+            "auto",
+            "vanilla",
+            "obs_ae",
+            "structured",
+            "structured_single_ae",
+            "structured_dual_ae",
+            "structured_raw_single_ae",
+            "structured_raw_dual_ae",
+            "adaptive_patch_raw_dual_ae",
+        ],
         default="auto",
         help=(
             "Observation format sent to the PI0 server. Use obs_ae for "
-            "pi0_xhand_tactile_obs_ae_full_finetune and structured_single_ae for "
-            "pi0_xhand_tactile_structured_single_ae."
+            "pi0_xhand_tactile_obs_ae_full_finetune and structured/structured_* for "
+            "structured tactile AE configs. Raw/patch configs still use structured state history; "
+            "the server-side config chooses calc_force vs raw_force."
         ),
     )
     parser.add_argument(
@@ -256,6 +282,29 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default=",".join(str(x) for x in STRUCTURED_TACTILE_HISTORY_OFFSETS),
         help="Comma-separated frame offsets for structured_single_ae history, matching training.",
+    )
+    parser.add_argument(
+        "--trex-slow-fast",
+        action="store_true",
+        help=(
+            "Enable T-Rex-style client cadence. At chunk start send mode=slow_and_fast, "
+            "then send mode=fast at --trex-fast-offsets with fresh tactile/state."
+        ),
+    )
+    parser.add_argument(
+        "--trex-fast-offsets",
+        type=str,
+        default=",".join(str(x) for x in TREX_FAST_OFFSETS),
+        help="Comma-separated intra-chunk offsets for fast tactile expert requests, e.g. 4,8,12.",
+    )
+    parser.add_argument(
+        "--trex-fast-update",
+        choices=["suffix", "reset"],
+        default="suffix",
+        help=(
+            "How to apply a fast-tick action chunk. suffix replaces the remaining old chunk; "
+            "reset starts executing the returned chunk from index 0."
+        ),
     )
 
     parser.add_argument("--arm-ip", type=str, default="192.168.1.102")
@@ -411,6 +460,22 @@ def parse_history_offsets(offsets: str) -> tuple[int, ...]:
     return parsed
 
 
+def parse_nonnegative_offsets(offsets: str, *, name: str) -> tuple[int, ...]:
+    try:
+        parsed = tuple(int(item.strip()) for item in offsets.split(",") if item.strip())
+    except ValueError as exc:
+        raise ValueError(f"Invalid {name}={offsets!r}") from exc
+    if not parsed:
+        raise ValueError(f"{name} must contain at least one offset")
+    if any(offset < 0 for offset in parsed):
+        raise ValueError(f"{name} must contain non-negative offsets")
+    return tuple(sorted(set(parsed)))
+
+
+def is_structured_policy_input_mode(policy_input_mode: str) -> bool:
+    return policy_input_mode in STRUCTURED_POLICY_INPUT_MODES
+
+
 class StateHistoryBuffer:
     """Stores raw full-state frames and samples the training-time tactile history offsets."""
 
@@ -494,8 +559,14 @@ def infer_policy_input_mode(requested_mode: str, metadata: dict | None = None) -
     if requested_mode != "auto":
         return requested_mode
     metadata_text = json.dumps(metadata or {}, default=str).lower()
-    if "structured_single_ae" in metadata_text or "futuretactile" in metadata_text or "future_tactile" in metadata_text:
-        return "structured_single_ae"
+    if (
+        "structured" in metadata_text
+        or "futuretactile" in metadata_text
+        or "future_tactile" in metadata_text
+        or "raw_dual_ae" in metadata_text
+        or "adaptive_patch" in metadata_text
+    ):
+        return "structured"
     if "tactile_obs" in metadata_text or "use_tactile_observation" in metadata_text:
         return "obs_ae"
     return "obs_ae"
@@ -526,10 +597,13 @@ def build_pi0_observation(
     policy_input_mode: str,
     state_history: StateHistoryBuffer | None = None,
     frame_idx: int | None = None,
+    trex_mode: str | None = None,
+    trex_chunk_offset: int | None = None,
+    trex_chunk_id: int | None = None,
 ) -> dict:
-    if policy_input_mode == "structured_single_ae":
+    if is_structured_policy_input_mode(policy_input_mode):
         if state_history is None or frame_idx is None:
-            raise ValueError("structured_single_ae mode requires state_history and frame_idx")
+            raise ValueError(f"{policy_input_mode} mode requires state_history and frame_idx")
         policy_state = state_history.sample(frame_idx)
     else:
         policy_state = env_state
@@ -539,6 +613,17 @@ def build_pi0_observation(
         "prompt": args.prompt or args.task,
         "current_action_step": current_action_step,
     }
+    if trex_mode is not None:
+        # `mode` mirrors T-Rex's server API; `trex_mode` avoids ambiguity for
+        # servers that reserve `mode` for other routing. New servers should read
+        # this before input transforms, because transforms intentionally drop
+        # non-model fields.
+        observation["mode"] = trex_mode
+        observation["trex_mode"] = trex_mode
+    if trex_chunk_offset is not None:
+        observation["trex_chunk_offset"] = np.asarray(trex_chunk_offset, dtype=np.int32)
+    if trex_chunk_id is not None:
+        observation["trex_chunk_id"] = np.asarray(trex_chunk_id, dtype=np.int32)
 
     if policy_input_mode == "obs_ae":
         tactile = extract_current_calc_force(env_state, state_names)
@@ -576,6 +661,53 @@ def action_array_to_dict(action: np.ndarray, action_names: list[str]) -> dict[st
 def make_hold_action_chunk(obs: dict, action_names: list[str], n_action_steps: int) -> np.ndarray:
     current_action = get_current_action(obs, action_names)
     return np.repeat(current_action[None, :], repeats=n_action_steps, axis=0)
+
+
+def request_action_chunk(
+    *,
+    client: WebsocketClientPolicy,
+    observation: dict,
+    action_names: list[str],
+    max_action_chunk_size: int,
+    label: str,
+) -> tuple[np.ndarray, dict, float]:
+    infer_start = time.perf_counter()
+    inference_result = client.infer(observation)
+    action_chunk = normalize_action_chunk(
+        inference_result["actions"],
+        expected_dim=len(action_names),
+        max_action_chunk_size=max_action_chunk_size,
+    )
+    infer_ms = (time.perf_counter() - infer_start) * 1000
+    policy_ms = inference_result.get("policy_timing", {}).get("infer_ms")
+    server_ms = inference_result.get("server_timing", {}).get("infer_ms")
+    print(
+        f"Got {label} action chunk {action_chunk.shape}: "
+        f"client_roundtrip={infer_ms:.1f}ms, policy={policy_ms}, server={server_ms}",
+        flush=True,
+    )
+    return action_chunk, inference_result, infer_ms
+
+
+def merge_fast_action_chunk(
+    current_chunk: np.ndarray,
+    fast_chunk: np.ndarray,
+    *,
+    chunk_idx: int,
+    update_mode: str,
+) -> tuple[np.ndarray, int]:
+    if update_mode == "reset":
+        return fast_chunk, 0
+    if update_mode != "suffix":
+        raise ValueError(f"Unsupported fast update mode: {update_mode}")
+
+    merged = current_chunk.copy()
+    remaining = max(0, merged.shape[0] - chunk_idx)
+    if remaining <= 0:
+        return fast_chunk, 0
+    take = min(remaining, fast_chunk.shape[0])
+    merged[chunk_idx : chunk_idx + take] = fast_chunk[:take]
+    return merged, chunk_idx
 
 
 def seed_action_target_fallback(robot) -> None:
@@ -634,13 +766,20 @@ def main() -> int:
             f"available cameras are {sorted(supported_cameras)}"
         )
     history_offsets = parse_history_offsets(args.structured_history_offsets)
+    trex_fast_offsets = parse_nonnegative_offsets(args.trex_fast_offsets, name="--trex-fast-offsets")
     preflight_mode = infer_policy_input_mode(args.policy_input_mode, None)
-    if preflight_mode in {"obs_ae", "structured_single_ae"} and not state_schema_has_calc_force(state_names):
+    if preflight_mode in {"obs_ae", *STRUCTURED_POLICY_INPUT_MODES} and not state_schema_has_calc_force(state_names):
         raise ValueError(
             f"{preflight_mode} requires calc_force tactile values in observation.state, but the loaded state schema "
             f"only has {len(state_names)} fields and no hand_tactile_sensor_*.calc_force.* names. "
             "Check --dataset-dir/--dataset-root/--dataset-name."
         )
+    if (
+        args.trex_slow_fast
+        and args.policy_input_mode != "auto"
+        and preflight_mode not in STRUCTURED_POLICY_INPUT_MODES
+    ):
+        raise ValueError("--trex-slow-fast requires a structured policy input mode.")
 
     print("=== UR7e + XHand PI0 Deployment Client ===")
     print(f"Server: {args.server_ip}:{args.server_port}")
@@ -651,6 +790,9 @@ def main() -> int:
     print(f"Prompt: {args.prompt or args.task}")
     print(f"FPS: {args.fps}, duration: {args.duration}s")
     print(f"Policy input mode: {args.policy_input_mode}")
+    print(f"T-Rex slow/fast: {args.trex_slow_fast}")
+    if args.trex_slow_fast:
+        print(f"T-Rex fast offsets: {trex_fast_offsets}, update={args.trex_fast_update}")
     print(f"Dry run: {args.dry_run}")
 
     if args.check_config:
@@ -668,7 +810,9 @@ def main() -> int:
     if metadata:
         print(f"Server metadata: {metadata}")
     policy_input_mode = infer_policy_input_mode(args.policy_input_mode, metadata)
-    state_history = StateHistoryBuffer(history_offsets) if policy_input_mode == "structured_single_ae" else None
+    if args.trex_slow_fast and not is_structured_policy_input_mode(policy_input_mode):
+        raise ValueError(f"--trex-slow-fast resolved to non-structured policy_input_mode={policy_input_mode!r}")
+    state_history = StateHistoryBuffer(history_offsets) if is_structured_policy_input_mode(policy_input_mode) else None
     print(f"Resolved policy input mode: {policy_input_mode}")
     if state_history is not None:
         print(f"Structured tactile history offsets: {history_offsets}")
@@ -682,6 +826,8 @@ def main() -> int:
     n_action_steps = 1
     query_count = 0
     current_action_step = 0
+    active_trex_chunk_id = -1
+    fast_offsets_sent: set[int] = set()
 
     try:
         print("Connecting robot and cameras...")
@@ -715,6 +861,9 @@ def main() -> int:
                 or query_count % args.query_frequency == 0
             )
             if should_query:
+                active_trex_chunk_id += 1
+                fast_offsets_sent = set()
+                trex_mode = "slow_and_fast" if args.trex_slow_fast else None
                 observation = build_pi0_observation(
                     obs=obs,
                     env_state=env_state,
@@ -725,6 +874,9 @@ def main() -> int:
                     policy_input_mode=policy_input_mode,
                     state_history=state_history,
                     frame_idx=frame_idx,
+                    trex_mode=trex_mode,
+                    trex_chunk_offset=0 if args.trex_slow_fast else None,
+                    trex_chunk_id=active_trex_chunk_id if args.trex_slow_fast else None,
                 )
                 if current_action_step < DEBUG_INFER_PRINT_LIMIT:
                     debug_print_client_observation(
@@ -733,22 +885,14 @@ def main() -> int:
                         policy_input_mode=policy_input_mode,
                     )
                 try:
-                    infer_start = time.perf_counter()
-                    inference_result = client.infer(observation)
-                    action_chunk = normalize_action_chunk(
-                        inference_result["actions"],
-                        expected_dim=len(action_names),
+                    action_chunk, inference_result, _ = request_action_chunk(
+                        client=client,
+                        observation=observation,
+                        action_names=action_names,
                         max_action_chunk_size=args.max_action_chunk_size,
+                        label=trex_mode or "regular",
                     )
                     n_action_steps = action_chunk.shape[0]
-                    infer_ms = (time.perf_counter() - infer_start) * 1000
-                    policy_ms = inference_result.get("policy_timing", {}).get("infer_ms")
-                    server_ms = inference_result.get("server_timing", {}).get("infer_ms")
-                    print(
-                        f"Got action chunk {action_chunk.shape}: "
-                        f"client_roundtrip={infer_ms:.1f}ms, policy={policy_ms}, server={server_ms}",
-                        flush=True,
-                    )
                     current_action_step += 1
                 except Exception as exc:
                     print(f"Inference failed; holding current pose: {exc}", flush=True)
@@ -756,6 +900,47 @@ def main() -> int:
                 chunk_idx = 0
 
             query_count += 1
+            if (
+                args.trex_slow_fast
+                and action_chunk is not None
+                and 0 <= chunk_idx < n_action_steps
+                and chunk_idx in trex_fast_offsets
+                and chunk_idx not in fast_offsets_sent
+            ):
+                fast_offsets_sent.add(chunk_idx)
+                fast_observation = build_pi0_observation(
+                    obs=obs,
+                    env_state=env_state,
+                    state_names=state_names,
+                    camera_names=camera_names,
+                    args=args,
+                    current_action_step=current_action_step,
+                    policy_input_mode=policy_input_mode,
+                    state_history=state_history,
+                    frame_idx=frame_idx,
+                    trex_mode="fast",
+                    trex_chunk_offset=chunk_idx,
+                    trex_chunk_id=active_trex_chunk_id,
+                )
+                try:
+                    fast_chunk, _, _ = request_action_chunk(
+                        client=client,
+                        observation=fast_observation,
+                        action_names=action_names,
+                        max_action_chunk_size=args.max_action_chunk_size,
+                        label=f"fast@{chunk_idx}",
+                    )
+                    action_chunk, chunk_idx = merge_fast_action_chunk(
+                        action_chunk,
+                        fast_chunk,
+                        chunk_idx=chunk_idx,
+                        update_mode=args.trex_fast_update,
+                    )
+                    n_action_steps = action_chunk.shape[0]
+                    current_action_step += 1
+                except Exception as exc:
+                    print(f"Fast tactile inference failed at offset {chunk_idx}; keeping current chunk: {exc}", flush=True)
+
             raw_action = action_chunk[chunk_idx].copy()
             chunk_idx += 1
 
