@@ -244,6 +244,7 @@ class Pi0LatentFlow(_model.BaseModel):
         )
         self.trex_tactile_tau_split = 1.0 - float(self.trex_tactile_split_steps) / float(self.trex_tactile_total_steps)
         self.trex_tactile_hand_only_loss = bool(getattr(config, "trex_tactile_hand_only_loss", False))
+        self.trex_tactile_dropout = float(getattr(config, "trex_tactile_dropout", 0.0))
         self.uses_train_progress = True
         self._debug_lengths_logged = False
 
@@ -1085,7 +1086,7 @@ class Pi0LatentFlow(_model.BaseModel):
             timestep,
             train=False,
             noise_rng=None,
-            query_noise_scale=0.0,
+            query_noise_scale=None,
         )
         student_attn_mask = make_attn_mask(student_mask, student_ar_mask)
         prefix_to_student = einops.repeat(prefix_mask, "b p -> b s p", s=student_tokens.shape[1])
@@ -1179,6 +1180,7 @@ class Pi0LatentFlow(_model.BaseModel):
         target_velocity: _model.Actions,
         timestep: at.Array,
         offset: at.Array,
+        dropout_rng: at.KeyArrayLike,
     ) -> tuple[at.Array, dict[str, at.Array]]:
         if not self.trex_tactile_expert_enabled:
             zeros = jnp.zeros(noisy_actions.shape[0], dtype=noisy_actions.dtype)
@@ -1189,9 +1191,20 @@ class Pi0LatentFlow(_model.BaseModel):
                 "velocity_abs_mean": zeros,
                 "offset": jnp.asarray(offset, dtype=jnp.float32),
                 "timestep": zeros,
+                "dropout_rate": zeros,
             }
 
         fresh_tactile_tokens = self._fresh_tactile_tokens_for_async_refiner(history_effort, future_effort, offset)
+        if self.trex_tactile_dropout > 0.0:
+            keep = jax.random.bernoulli(
+                dropout_rng,
+                p=1.0 - self.trex_tactile_dropout,
+                shape=(fresh_tactile_tokens.shape[0], 1, 1),
+            )
+            fresh_tactile_tokens = fresh_tactile_tokens * keep.astype(fresh_tactile_tokens.dtype)
+            dropout_rate = 1.0 - jnp.mean(keep.astype(jnp.float32), axis=(1, 2))
+        else:
+            dropout_rate = jnp.zeros((fresh_tactile_tokens.shape[0],), dtype=jnp.float32)
         tactile_tokens, tactile_mask, tactile_ar_mask, tactile_adarms = self._embed_trex_tactile_suffix(
             fresh_tactile_tokens=fresh_tactile_tokens,
             noisy_actions=noisy_actions,
@@ -1222,6 +1235,7 @@ class Pi0LatentFlow(_model.BaseModel):
             "velocity_abs_mean": jnp.mean(jnp.abs(tactile_v), axis=(-2, -1)),
             "offset": jnp.asarray(offset, dtype=jnp.float32),
             "timestep": timestep,
+            "dropout_rate": dropout_rate,
         }
 
     def _async_refine_hand_action(
@@ -1764,7 +1778,8 @@ class Pi0LatentFlow(_model.BaseModel):
             trex_flow_noise_rng,
             trex_time_rng,
             trex_offset_rng,
-        ) = jax.random.split(rng, 10)
+            trex_dropout_rng,
+        ) = jax.random.split(rng, 11)
         original_flow_img = observation.flow_img
         original_wrist_flow_img = observation.wrist_flow_img
         original_future_rgb_img = observation.future_rgb_img
@@ -1928,6 +1943,7 @@ class Pi0LatentFlow(_model.BaseModel):
                 target_velocity=trex_target_velocity,
                 timestep=trex_time,
                 offset=trex_offset,
+                dropout_rng=trex_dropout_rng,
             )
         else:
             trex_tactile_loss = jnp.zeros_like(student_action_loss)
@@ -1938,6 +1954,7 @@ class Pi0LatentFlow(_model.BaseModel):
                 "velocity_abs_mean": trex_tactile_loss,
                 "offset": jnp.asarray(0.0, dtype=actions.dtype),
                 "timestep": trex_tactile_loss,
+                "dropout_rate": trex_tactile_loss,
             }
 
         for student_hidden, teacher_hidden in zip(student_layer_hiddens, teacher_layer_hiddens, strict=True):
@@ -2018,6 +2035,7 @@ class Pi0LatentFlow(_model.BaseModel):
                 trex_tactile_stats["offset"], student_action_loss.shape
             ),
             "trex_tactile_expert/timestep": trex_tactile_stats["timestep"],
+            "trex_tactile_expert/dropout_rate": trex_tactile_stats["dropout_rate"],
             "tactile_refiner/gate_mean": (
                 jnp.mean(tactile_refiner_stats["gate"], axis=(-2, -1))
                 if self.tactile_refiner_enabled

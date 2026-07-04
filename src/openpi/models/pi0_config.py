@@ -302,6 +302,7 @@ class Pi0LatentFlowConfig(Pi0Config):
     trex_tactile_split_steps: int = 6
     trex_tactile_delay_offsets: tuple[int, ...] = (0, 4, 8, 12)
     trex_tactile_hand_only_loss: bool = False
+    trex_tactile_dropout: float = 0.0
 
     @override
     def __post_init__(self):
@@ -426,6 +427,8 @@ class Pi0LatentFlowConfig(Pi0Config):
                 )
             if self.trex_tactile_loss_weight < 0:
                 raise ValueError("trex_tactile_loss_weight must be non-negative.")
+            if not 0.0 <= self.trex_tactile_dropout <= 1.0:
+                raise ValueError("trex_tactile_dropout must be in [0, 1].")
         if not 0 <= self.future_rgb_step <= self.action_horizon:
             raise ValueError(
                 f"future_rgb_step must satisfy 0 <= future_rgb_step <= action_horizon={self.action_horizon}, "

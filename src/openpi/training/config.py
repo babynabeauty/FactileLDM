@@ -1880,20 +1880,28 @@ _CONFIGS.extend(
 )
 
 
-def _trex_tactile_expert_config(source_name: str, new_name: str) -> TrainConfig:
+def _trex_tactile_expert_config(source_name: str, new_name: str, *, hand_only: bool = False) -> TrainConfig:
     source = next(config for config in _CONFIGS if config.name == source_name)
     return dataclasses.replace(
         source,
         name=new_name,
         model=dataclasses.replace(
             source.model,
+            action_horizon=16,
+            future_tactile_segments=1,
+            future_steps_per_segment=16,
             trex_tactile_expert_enabled=True,
             trex_tactile_expert_variant=source.model.action_expert_variant,
             trex_tactile_loss_weight=1.0,
             trex_tactile_total_steps=10,
             trex_tactile_split_steps=6,
             trex_tactile_delay_offsets=(0, 4, 8, 12),
-            trex_tactile_hand_only_loss=False,
+            trex_tactile_hand_only_loss=hand_only,
+            trex_tactile_dropout=0.0,
+        ),
+        data=dataclasses.replace(
+            source.data,
+            state_delta_timestamps=tuple(list(range(-9, 1)) + list(range(1, 17))),
         ),
     )
 
@@ -1903,6 +1911,11 @@ _CONFIGS.extend(
         _trex_tactile_expert_config(
             "pi0_xhand_tactile_structured_raw_dual_ae_history_future_pool",
             "pi0_xhand_tactile_structured_raw_dual_ae_history_future_pool_trex_tactile_expert",
+        ),
+        _trex_tactile_expert_config(
+            "pi0_xhand_tactile_structured_raw_dual_ae_history_future_pool",
+            "pi0_xhand_tactile_structured_raw_dual_ae_history_future_pool_trex_hand_tactile_expert",
+            hand_only=True,
         ),
         _trex_tactile_expert_config(
             "pi0_xhand_tactile_structured_adaptive_patch_raw_dual_ae_history_future_pool",
