@@ -132,22 +132,19 @@ class Policy(BasePolicy):
     def _cache_trex_inputs(self, chunk_id: int, inputs: dict[str, Any]) -> None:
         if chunk_id < 0:
             return
-        # Keep the chunk-start visual/language context. Fast requests will
-        # overwrite only state/effort with the latest robot feedback.
+        # Keep the chunk-start context. Fast requests reuse this slow context
+        # and pass fresh tactile separately, matching the T-Rex-style training
+        # path where the tactile expert refines a cached slow trajectory.
         self._trex_input_cache[chunk_id] = jax.tree.map(lambda x: np.asarray(x).copy(), inputs)
         for old_chunk_id in list(self._trex_input_cache):
             if old_chunk_id < chunk_id - 2:
                 self._trex_input_cache.pop(old_chunk_id, None)
                 self._trex_noise_cache.pop(old_chunk_id, None)
 
-    def _merge_fast_trex_inputs(self, chunk_id: int, inputs: dict[str, Any]) -> dict[str, Any]:
+    def _cached_trex_inputs(self, chunk_id: int, fallback: dict[str, Any]) -> dict[str, Any]:
         if chunk_id < 0 or chunk_id not in self._trex_input_cache:
-            return inputs
-        merged = jax.tree.map(lambda x: np.asarray(x).copy(), self._trex_input_cache[chunk_id])
-        for key in ("state", "effort"):
-            if key in inputs:
-                merged[key] = inputs[key]
-        return merged
+            return fallback
+        return jax.tree.map(lambda x: np.asarray(x).copy(), self._trex_input_cache[chunk_id])
 
     @override
     def infer(self, obs: dict, *, noise: np.ndarray | None = None) -> dict:  # type: ignore[misc]
@@ -169,18 +166,26 @@ class Policy(BasePolicy):
             _debug_print_tree("SERVER MODEL INPUT AFTER TRANSFORM", inputs, infer_index=debug_index)
         self._debug_infer_count += 1
         trex_chunk_id_int = self._trex_chunk_id_int(trex_chunk_id)
+        model_inputs = inputs
+        output_inputs = inputs
+        trex_fresh_inputs = None
         if trex_requested and not self._is_pytorch_model:
             if trex_mode in {"slow", "slow_and_fast"}:
                 self._cache_trex_inputs(trex_chunk_id_int, inputs)
             elif trex_mode == "fast":
-                inputs = self._merge_fast_trex_inputs(trex_chunk_id_int, inputs)
+                trex_fresh_inputs = inputs
+                model_inputs = self._cached_trex_inputs(trex_chunk_id_int, inputs)
+                # Output transforms should still see the latest robot state.
+                output_inputs = trex_fresh_inputs
         if not self._is_pytorch_model:
             # Make a batch and convert to jax.Array.
-            inputs = jax.tree.map(lambda x: jnp.asarray(x)[np.newaxis, ...], inputs)
+            inputs = jax.tree.map(lambda x: jnp.asarray(x)[np.newaxis, ...], model_inputs)
+            output_inputs = jax.tree.map(lambda x: jnp.asarray(x)[np.newaxis, ...], output_inputs)
             self._rng, sample_rng_or_pytorch_device = jax.random.split(self._rng)
         else:
             # Convert inputs to PyTorch tensors and move to correct device
-            inputs = jax.tree.map(lambda x: torch.from_numpy(np.array(x)).to(self._pytorch_device)[None, ...], inputs)
+            inputs = jax.tree.map(lambda x: torch.from_numpy(np.array(x)).to(self._pytorch_device)[None, ...], model_inputs)
+            output_inputs = inputs
             sample_rng_or_pytorch_device = self._pytorch_device
 
         # Prepare kwargs for sample_actions
@@ -215,6 +220,8 @@ class Policy(BasePolicy):
                     sample_kwargs["noise"] = action_noise
                 elif trex_mode == "fast" and trex_chunk_id_int in self._trex_noise_cache:
                     sample_kwargs["noise"] = self._trex_noise_cache[trex_chunk_id_int]
+                if trex_mode == "fast" and trex_fresh_inputs is not None and "effort" in trex_fresh_inputs:
+                    sample_kwargs["trex_fresh_effort"] = output_inputs["effort"]
         # sample_kwargs.update(debug_query_noise_scale=0.3)
         if noise is not None:
             noise = torch.from_numpy(noise).to(self._pytorch_device) if self._is_pytorch_model else jnp.asarray(noise)
@@ -229,11 +236,11 @@ class Policy(BasePolicy):
             observation = _model.Observation.from_dict(inputs)
         start_time = time.monotonic()
         outputs = {
-            "state": inputs["state"],
+            "state": output_inputs["state"],
             "actions": sample_fn(sample_rng_or_pytorch_device, observation, **sample_kwargs),
         }
         if "effort" in inputs.keys():
-            outputs["effort"] = inputs['effort']
+            outputs["effort"] = output_inputs["effort"]
         model_time = time.monotonic() - start_time
         if self._is_pytorch_model:
             outputs = jax.tree.map(lambda x: np.asarray(x[0, ...].detach().cpu()), outputs)

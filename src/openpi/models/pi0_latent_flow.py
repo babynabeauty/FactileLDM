@@ -2187,6 +2187,7 @@ class Pi0LatentFlow(_model.BaseModel):
         trex_mode: str = "slow_and_fast",
         trex_chunk_offset: at.Int[at.Array, ""] | int = 0,
         trex_chunk_id: at.Int[at.Array, ""] | int = -1,
+        trex_fresh_effort: at.Array | None = None,
         noise: at.Float[at.Array, "b ah ad"] | None = None,
         debug_query_noise_scale: float | None = None,
     ) -> _model.Actions:
@@ -2237,7 +2238,15 @@ class Pi0LatentFlow(_model.BaseModel):
             initial_noise=noise,
         )
 
-        fresh_tactile_tokens = self._trex_fresh_tactile_tokens_from_history(history_effort)
+        fresh_history_effort = history_effort
+        if trex_mode == "fast" and trex_fresh_effort is not None:
+            fresh_history_effort = jnp.asarray(trex_fresh_effort, dtype=jnp.float32)
+            fresh_history_effort = self._pad_or_crop_effort(
+                fresh_history_effort,
+                self.force_input_frames,
+                from_end=True,
+            )
+        fresh_tactile_tokens = self._trex_fresh_tactile_tokens_from_history(fresh_history_effort)
         remaining_steps = max(self.trex_tactile_total_steps - self.trex_tactile_split_steps, 1)
         dt = jnp.asarray(-self.trex_tactile_tau_split / float(remaining_steps), dtype=x_t.dtype)
         initial_time = jnp.asarray(self.trex_tactile_tau_split, dtype=x_t.dtype)

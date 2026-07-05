@@ -51,6 +51,7 @@ Common --policy-input-mode choices:
 --trex-fast-offsets 4,8,12
 --trex-fast-update suffix
 --max-action-chunk-size 16
+--structured-history-offsets=-9,-8,-7,-6,-5,-4,-3,-2,-1,0
 
 # 9. T-Rex-style slow/fast adaptive patch raw tactile expert
 #    Use this only for adaptive-patch T-Rex checkpoints.
@@ -59,6 +60,7 @@ Common --policy-input-mode choices:
 --trex-fast-offsets 4,8,12
 --trex-fast-update suffix
 --max-action-chunk-size 16
+--structured-history-offsets=-9,-8,-7,-6,-5,-4,-3,-2,-1,0
 
 Useful safety/debug flags:
 
@@ -92,6 +94,7 @@ DEFAULT_DATASET_NAME = "grasp_pipette"
 DEFAULT_TASK = "pick up the pipette"
 DEFAULT_SERVER_PORT = 8990
 STRUCTURED_TACTILE_HISTORY_OFFSETS = (-18, -16, -14, -12, -10, -8, -6, -4, -2, 0)
+TREX_TACTILE_HISTORY_OFFSETS = tuple(range(-9, 1))
 TREX_FAST_OFFSETS = (4, 8, 12)
 TACTILE_SENSOR_COUNT = 5
 TACTILE_BLOCK_SIZE = 384
@@ -817,7 +820,11 @@ def main() -> int:
             f"Dataset expects unsupported cameras {sorted(unsupported_cameras)}; "
             f"available cameras are {sorted(supported_cameras)}"
         )
-    history_offsets = parse_history_offsets(args.structured_history_offsets)
+    default_history_offsets_arg = ",".join(str(x) for x in STRUCTURED_TACTILE_HISTORY_OFFSETS)
+    if args.trex_slow_fast and args.structured_history_offsets == default_history_offsets_arg:
+        history_offsets = TREX_TACTILE_HISTORY_OFFSETS
+    else:
+        history_offsets = parse_history_offsets(args.structured_history_offsets)
     trex_fast_offsets = parse_nonnegative_offsets(args.trex_fast_offsets, name="--trex-fast-offsets")
     preflight_mode = infer_policy_input_mode(args.policy_input_mode, None)
     if preflight_mode in {"obs_ae", *STRUCTURED_POLICY_INPUT_MODES} and not state_schema_has_calc_force(state_names):
