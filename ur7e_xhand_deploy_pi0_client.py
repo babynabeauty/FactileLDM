@@ -6,19 +6,67 @@ This client runs on the robot machine. It reads UR7e + XHand observations,
 sends state/images to a remote PI0 inference server over websocket, receives
 an action chunk, and executes it on the robot.
 
+Common --policy-input-mode choices:
+
 # 1. 不带触觉的 pi0 baseline
+#    config: pi0_xhand_full_finetune
 --policy-input-mode vanilla
 
 # 2. 当前 tactile observation 的 obs-AE
+#    config: pi0_xhand_tactile_obs_ae_full_finetune
 --policy-input-mode obs_ae
 
-# 3. structured single-AE，10帧历史 tactile
+# 3. 5x3 合力 structured single-AE，10帧历史 tactile
+#    config: pi0_xhand_tactile_structured_single_ae
 --policy-input-mode structured_single_ae
 
-# 4. T-Rex-style slow/fast tactile expert deployment
---policy-input-mode structured
+# 4. 5x3 合力 structured dual-AE
+#    configs:
+#      pi0_xhand_tactile_structured_dual_ae
+#      pi0_xhand_tactile_structured_dual_ae_history_future_pool
+--policy-input-mode structured_dual_ae
+
+# 5. 5x120x3 raw tactile structured single-AE
+#    config: pi0_xhand_tactile_structured_raw_single_ae
+--policy-input-mode structured_raw_single_ae
+
+# 6. 5x120x3 raw tactile structured dual-AE
+#    configs:
+#      pi0_xhand_tactile_structured_raw_dual_ae
+#      pi0_xhand_tactile_structured_raw_dual_ae_history_future_pool
+--policy-input-mode structured_raw_dual_ae
+
+# 7. adaptive patch raw tactile dual-AE
+#    configs:
+#      pi0_xhand_tactile_structured_adaptive_patch_raw_dual_ae
+#      pi0_xhand_tactile_structured_adaptive_patch_raw_dual_ae_history_future_pool
+--policy-input-mode adaptive_patch_raw_dual_ae
+
+# 8. T-Rex-style slow/fast raw tactile expert
+#    configs:
+#      pi0_xhand_tactile_structured_raw_dual_ae_history_future_pool_trex_tactile_expert
+#      pi0_xhand_tactile_structured_raw_dual_ae_history_future_pool_trex_hand_tactile_expert
+--policy-input-mode structured_raw_dual_ae
 --trex-slow-fast
 --trex-fast-offsets 4,8,12
+--trex-fast-update suffix
+--max-action-chunk-size 16
+
+# 9. T-Rex-style slow/fast adaptive patch raw tactile expert
+#    Use this only for adaptive-patch T-Rex checkpoints.
+--policy-input-mode adaptive_patch_raw_dual_ae
+--trex-slow-fast
+--trex-fast-offsets 4,8,12
+--trex-fast-update suffix
+--max-action-chunk-size 16
+
+Useful safety/debug flags:
+
+# Only run inference and print action chunks; do not send actions to the robot.
+--dry-run
+
+# Validate dataset/schema wiring and exit before connecting to robot.
+--check-config
 
 """
 
@@ -706,7 +754,11 @@ def merge_fast_action_chunk(
     if remaining <= 0:
         return fast_chunk, 0
     take = min(remaining, fast_chunk.shape[0])
-    merged[chunk_idx : chunk_idx + take] = fast_chunk[:take]
+    if fast_chunk.shape[0] >= merged.shape[0]:
+        source = fast_chunk[chunk_idx : chunk_idx + take]
+    else:
+        source = fast_chunk[:take]
+    merged[chunk_idx : chunk_idx + take] = source
     return merged, chunk_idx
 
 

@@ -106,6 +106,8 @@ class Policy(BasePolicy):
         self._is_pytorch_model = is_pytorch
         self._pytorch_device = pytorch_device
         self._debug_infer_count = 0
+        self._trex_input_cache: dict[int, dict[str, Any]] = {}
+        self._trex_noise_cache: dict[int, jax.Array] = {}
 
         if self._is_pytorch_model:
             self._model = self._model.to(pytorch_device)
@@ -115,11 +117,37 @@ class Policy(BasePolicy):
             # JAX model setup
             self._sample_actions = nnx_utils.module_jit(model.sample_actions)
             self._sample_actions_trex = (
-                nnx_utils.module_jit(model.sample_actions_trex)
+                nnx_utils.module_jit(model.sample_actions_trex, static_argnames=("trex_mode",))
                 if hasattr(model, "sample_actions_trex")
                 else None
             )
             self._rng = rng or jax.random.key(0)
+
+    def _trex_chunk_id_int(self, trex_chunk_id: Any) -> int:
+        try:
+            return int(np.asarray(trex_chunk_id).item())
+        except Exception:
+            return -1
+
+    def _cache_trex_inputs(self, chunk_id: int, inputs: dict[str, Any]) -> None:
+        if chunk_id < 0:
+            return
+        # Keep the chunk-start visual/language context. Fast requests will
+        # overwrite only state/effort with the latest robot feedback.
+        self._trex_input_cache[chunk_id] = jax.tree.map(lambda x: np.asarray(x).copy(), inputs)
+        for old_chunk_id in list(self._trex_input_cache):
+            if old_chunk_id < chunk_id - 2:
+                self._trex_input_cache.pop(old_chunk_id, None)
+                self._trex_noise_cache.pop(old_chunk_id, None)
+
+    def _merge_fast_trex_inputs(self, chunk_id: int, inputs: dict[str, Any]) -> dict[str, Any]:
+        if chunk_id < 0 or chunk_id not in self._trex_input_cache:
+            return inputs
+        merged = jax.tree.map(lambda x: np.asarray(x).copy(), self._trex_input_cache[chunk_id])
+        for key in ("state", "effort"):
+            if key in inputs:
+                merged[key] = inputs[key]
+        return merged
 
     @override
     def infer(self, obs: dict, *, noise: np.ndarray | None = None) -> dict:  # type: ignore[misc]
@@ -140,6 +168,12 @@ class Policy(BasePolicy):
         if debug_index < DEBUG_INFER_PRINT_LIMIT:
             _debug_print_tree("SERVER MODEL INPUT AFTER TRANSFORM", inputs, infer_index=debug_index)
         self._debug_infer_count += 1
+        trex_chunk_id_int = self._trex_chunk_id_int(trex_chunk_id)
+        if trex_requested and not self._is_pytorch_model:
+            if trex_mode in {"slow", "slow_and_fast"}:
+                self._cache_trex_inputs(trex_chunk_id_int, inputs)
+            elif trex_mode == "fast":
+                inputs = self._merge_fast_trex_inputs(trex_chunk_id_int, inputs)
         if not self._is_pytorch_model:
             # Make a batch and convert to jax.Array.
             inputs = jax.tree.map(lambda x: jnp.asarray(x)[np.newaxis, ...], inputs)
@@ -170,6 +204,17 @@ class Policy(BasePolicy):
                     trex_chunk_offset=jnp.asarray(trex_chunk_offset),
                     trex_chunk_id=jnp.asarray(trex_chunk_id),
                 )
+                model_action_horizon = int(getattr(self._model, "action_horizon"))
+                model_action_dim = int(getattr(self._model, "action_dim"))
+                if trex_mode in {"slow", "slow_and_fast"}:
+                    action_noise = jax.random.normal(
+                        sample_rng_or_pytorch_device,
+                        (1, model_action_horizon, model_action_dim),
+                    )
+                    self._trex_noise_cache[trex_chunk_id_int] = action_noise
+                    sample_kwargs["noise"] = action_noise
+                elif trex_mode == "fast" and trex_chunk_id_int in self._trex_noise_cache:
+                    sample_kwargs["noise"] = self._trex_noise_cache[trex_chunk_id_int]
         # sample_kwargs.update(debug_query_noise_scale=0.3)
         if noise is not None:
             noise = torch.from_numpy(noise).to(self._pytorch_device) if self._is_pytorch_model else jnp.asarray(noise)

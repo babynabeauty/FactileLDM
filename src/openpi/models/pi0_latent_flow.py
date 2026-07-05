@@ -1238,6 +1238,45 @@ class Pi0LatentFlow(_model.BaseModel):
             "dropout_rate": dropout_rate,
         }
 
+    def _trex_fresh_tactile_tokens_from_history(self, history_effort: at.Array) -> at.Array:
+        if not self.structured_tactile:
+            raise ValueError("T-Rex tactile expert inference requires structured tactile effort.")
+        fresh_times = (
+            jnp.arange(self.force_input_frames, dtype=jnp.float32)
+            - float(self.force_input_frames - 1)
+        ) / float(self.tactile_sample_hz)
+        return self.student_force_tokenizer.encode_history(history_effort, fresh_times)
+
+    def _trex_tactile_velocity_from_cache(
+        self,
+        *,
+        slow_kv_cache: object,
+        cache_mask: at.Array,
+        fresh_tactile_tokens: at.Array,
+        noisy_actions: _model.Actions,
+        timestep: at.Array,
+    ) -> _model.Actions:
+        tactile_tokens, tactile_mask, tactile_ar_mask, tactile_adarms = self._embed_trex_tactile_suffix(
+            fresh_tactile_tokens=fresh_tactile_tokens,
+            noisy_actions=noisy_actions,
+            timestep=timestep,
+        )
+        tactile_attn_mask = make_attn_mask(tactile_mask, tactile_ar_mask)
+        tactile_to_cache = einops.repeat(cache_mask, "b c -> b t c", t=tactile_tokens.shape[1])
+        tactile_to_cache = jnp.logical_and(tactile_to_cache, tactile_mask[:, :, None])
+        full_attn_mask = jnp.concatenate([tactile_to_cache, tactile_attn_mask], axis=-1)
+        positions = jnp.sum(cache_mask, axis=-1)[:, None] + jnp.cumsum(tactile_mask, axis=-1) - 1
+
+        outputs, _ = self.PaliGemma.llm(
+            self._llm_streams(None, None, None, tactile_tokens),
+            mask=full_attn_mask,
+            positions=positions,
+            kv_cache=slow_kv_cache,
+            adarms_cond=self._llm_adarms(None, None, tactile_adarms),
+        )
+        tactile_out = outputs[3]
+        return self._decode_action_velocity(tactile_out[:, -self.action_horizon :], expert="tactile")
+
     def _async_refine_hand_action(
         self,
         *,
@@ -2138,4 +2177,112 @@ class Pi0LatentFlow(_model.BaseModel):
             return time >= -dt / 2
 
         x_0, _, _ = jax.lax.while_loop(cond, step, (noise, 1.0, query_noise_rng))
+        return x_0
+
+    def sample_actions_trex(
+        self,
+        rng: at.KeyArrayLike,
+        observation: _model.Observation,
+        *,
+        trex_mode: str = "slow_and_fast",
+        trex_chunk_offset: at.Int[at.Array, ""] | int = 0,
+        trex_chunk_id: at.Int[at.Array, ""] | int = -1,
+        noise: at.Float[at.Array, "b ah ad"] | None = None,
+        debug_query_noise_scale: float | None = None,
+    ) -> _model.Actions:
+        del trex_chunk_id, debug_query_noise_scale  # Routed/cached by the policy wrapper.
+        if not self.trex_tactile_expert_enabled:
+            if trex_mode == "fast":
+                raise ValueError("sample_actions_trex(mode='fast') requires trex_tactile_expert_enabled=True.")
+            return self.sample_actions(rng, observation, noise=noise)
+        if trex_mode not in {"slow", "fast", "slow_and_fast"}:
+            raise ValueError(f"Unsupported trex_mode={trex_mode!r}.")
+        if trex_mode == "slow":
+            return self.sample_actions(
+                rng,
+                observation,
+                num_steps=self.trex_tactile_total_steps,
+                noise=noise,
+            )
+
+        original_flow_img = observation.flow_img
+        original_wrist_flow_img = observation.wrist_flow_img
+        original_future_rgb_img = observation.future_rgb_img
+        original_future_wrist_rgb_img = observation.future_wrist_rgb_img
+        original_scene_flow = observation.scene_flow
+        observation = _model.preprocess_observation(None, observation, train=False, effort_type=self.effort_type)
+        observation = self._restore_aux_images(
+            observation,
+            original_flow_img,
+            original_wrist_flow_img,
+            original_future_rgb_img,
+            original_future_wrist_rgb_img,
+            original_scene_flow,
+        )
+        history_effort, _ = self._split_effort(observation, require_future=False, dtype=jnp.float32)
+
+        batch_size = observation.state.shape[0]
+        action_noise_rng, _ = jax.random.split(rng)
+        if noise is None:
+            noise = jax.random.normal(action_noise_rng, (batch_size, self.action_horizon, self.action_dim))
+
+        prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(observation)
+        prefix_kv_cache, _ = self._prefix_kv_cache(prefix_tokens, prefix_mask, prefix_ar_mask)
+        slow_kv_cache, cache_mask, x_t, _ = self._trex_partial_student_cache(
+            observation=observation,
+            history_effort=history_effort,
+            prefix_tokens=prefix_tokens,
+            prefix_mask=prefix_mask,
+            prefix_ar_mask=prefix_ar_mask,
+            initial_noise=noise,
+        )
+
+        fresh_tactile_tokens = self._trex_fresh_tactile_tokens_from_history(history_effort)
+        remaining_steps = max(self.trex_tactile_total_steps - self.trex_tactile_split_steps, 1)
+        dt = jnp.asarray(-self.trex_tactile_tau_split / float(remaining_steps), dtype=x_t.dtype)
+        initial_time = jnp.asarray(self.trex_tactile_tau_split, dtype=x_t.dtype)
+        hand_slice = slice(self.hand_action_start, self.hand_action_start + self.hand_action_dim)
+        padding_start = self.hand_action_start + self.hand_action_dim
+
+        def step(carry):
+            x_cur, time = carry
+            timestep = jnp.broadcast_to(time, (batch_size,))
+            tactile_v = self._trex_tactile_velocity_from_cache(
+                slow_kv_cache=slow_kv_cache,
+                cache_mask=cache_mask,
+                fresh_tactile_tokens=fresh_tactile_tokens,
+                noisy_actions=x_cur,
+                timestep=timestep,
+            )
+            if self.trex_tactile_hand_only_loss:
+                student_out, _, _, _ = self._student_suffix_with_prefix_cache(
+                    observation=observation,
+                    history_effort=history_effort,
+                    prefix_mask=prefix_mask,
+                    prefix_kv_cache=prefix_kv_cache,
+                    noisy_actions=x_cur,
+                    timestep=timestep,
+                )
+                student_v = self._decode_action_velocity(student_out, expert="student")
+                velocity = student_v.at[..., hand_slice].set(tactile_v[..., hand_slice])
+                if padding_start < self.action_dim:
+                    velocity = velocity.at[..., padding_start:].set(student_v[..., padding_start:])
+            else:
+                velocity = tactile_v
+            return x_cur + dt * velocity, time + dt
+
+        def cond(carry):
+            _, time = carry
+            return time >= -dt / 2
+
+        x_0, _ = jax.lax.while_loop(cond, step, (x_t, initial_time))
+
+        offset = jnp.asarray(trex_chunk_offset, dtype=jnp.int32)
+        step_mask = (
+            jnp.arange(self.action_horizon, dtype=jnp.int32)[None, :, None] >= offset
+        ).astype(x_0.dtype)
+        # For fast requests, preserve the already-executed prefix from the slow
+        # student trajectory and let the client splice only the suffix.
+        if trex_mode == "fast":
+            x_0 = noise * (1.0 - step_mask) + x_0 * step_mask
         return x_0
