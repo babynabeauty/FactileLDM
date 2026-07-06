@@ -1,3 +1,10 @@
+{"task_index":0,"task":"pick up the orange cob"}
+{"task_index":1,"task":"pick up the pipette and press the pipette button"}
+{"task_index":2,"task":"pick up the transparent water bottle"}
+{"task_index":3,"task":"press the red button"}
+{"task_index":4,"task":"wipe the black marks off the white surface with the sponge"}
+
+
 # ForceWAM / FactileLDM 实验命令
 
 ## 每次运行前先设置
@@ -11,7 +18,7 @@ export HF_LEROBOT_HOME="$PROJECT_ROOT"
 export HF_HUB_OFFLINE=1
 export HF_DATASETS_CACHE=.hf_datasets_cache
 
-DATA_REPO="data/grasp_pipette_and_press_button_106ep"
+DATA_REPO="data/task12345"
 ASSET_ID="$(basename "$DATA_REPO")"
 mkdir -p logs
 ```

@@ -303,6 +303,15 @@ class Pi0LatentFlowConfig(Pi0Config):
     trex_tactile_delay_offsets: tuple[int, ...] = (0, 4, 8, 12)
     trex_tactile_hand_only_loss: bool = False
     trex_tactile_dropout: float = 0.0
+    cached_vlm_async_ae_enabled: bool = False
+    cached_vlm_async_offsets: tuple[int, ...] = (0, 4, 8, 12)
+    cached_vlm_async_loss_weight: float = 1.0
+    cached_vlm_async_future_align_loss_weight: float = 0.1
+    cached_vlm_async_prefix_consistency_weight: float = 0.0
+    cached_vlm_async_use_predicted_prefix_queries: bool = True
+    cached_vlm_async_prefix_query_source: Literal["predicted", "ground_truth"] = "predicted"
+    cached_vlm_async_loss_mask: Literal["full", "suffix"] = "full"
+    cached_vlm_async_history_mode: Literal["pooled", "pooled_current"] = "pooled"
 
     @override
     def __post_init__(self):
@@ -429,6 +438,36 @@ class Pi0LatentFlowConfig(Pi0Config):
                 raise ValueError("trex_tactile_loss_weight must be non-negative.")
             if not 0.0 <= self.trex_tactile_dropout <= 1.0:
                 raise ValueError("trex_tactile_dropout must be in [0, 1].")
+        if self.cached_vlm_async_ae_enabled:
+            if not self.structured_tactile:
+                raise ValueError("cached_vlm_async_ae_enabled requires structured_tactile=True.")
+            if not self.pool_tactile_history:
+                raise ValueError("cached_vlm_async_ae_enabled expects pool_tactile_history=True.")
+            if not self.cached_vlm_async_offsets:
+                raise ValueError("cached_vlm_async_offsets must be non-empty.")
+            if any(offset < 0 or offset >= self.action_horizon for offset in self.cached_vlm_async_offsets):
+                raise ValueError(
+                    "cached_vlm_async_offsets must be inside the predicted action chunk, "
+                    f"got {self.cached_vlm_async_offsets} for action_horizon={self.action_horizon}."
+                )
+            if any(offset % self.future_steps_per_segment != 0 for offset in self.cached_vlm_async_offsets):
+                raise ValueError(
+                    "cached_vlm_async_offsets must align with future tactile segments of size "
+                    f"{self.future_steps_per_segment}, got {self.cached_vlm_async_offsets}."
+                )
+            if self.cached_vlm_async_loss_weight < 0 or self.cached_vlm_async_future_align_loss_weight < 0:
+                raise ValueError("cached VLM async loss weights must be non-negative.")
+            if self.cached_vlm_async_prefix_consistency_weight < 0:
+                raise ValueError("cached_vlm_async_prefix_consistency_weight must be non-negative.")
+            if self.cached_vlm_async_loss_mask not in ("full", "suffix"):
+                raise ValueError(f"Unsupported cached_vlm_async_loss_mask={self.cached_vlm_async_loss_mask!r}.")
+            if self.cached_vlm_async_history_mode not in ("pooled", "pooled_current"):
+                raise ValueError(f"Unsupported cached_vlm_async_history_mode={self.cached_vlm_async_history_mode!r}.")
+            if self.cached_vlm_async_prefix_query_source not in ("predicted", "ground_truth"):
+                raise ValueError(
+                    "cached_vlm_async_prefix_query_source must be 'predicted' or 'ground_truth', "
+                    f"got {self.cached_vlm_async_prefix_query_source!r}."
+                )
         if not 0 <= self.future_rgb_step <= self.action_horizon:
             raise ValueError(
                 f"future_rgb_step must satisfy 0 <= future_rgb_step <= action_horizon={self.action_horizon}, "

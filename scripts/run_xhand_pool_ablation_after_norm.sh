@@ -1,4 +1,20 @@
 #!/usr/bin/env bash
+
+
+# setsid nohup env \
+#   HF_LEROBOT_HOME="$PWD" \
+#   HF_DATASETS_CACHE=.hf_datasets_cache \
+#   HF_HUB_OFFLINE=1 \
+#   RUN_TAG=task123_pool_ablation_$(date +%m%d_%H%M) \
+#   TRAIN_STEPS=30000 \
+#   GLOBAL_BATCH_SIZE=8 \
+#   FSDP_DEVICES=1 \
+#   NUM_WORKERS=2 \
+#   bash scripts/run_xhand_pool_ablation_after_norm.sh \
+#     data/task12345 \
+#   > logs/pool_ablation_scheduler_$(date +%m%d_%H%M).log 2>&1 &
+
+
 set -Eeuo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
@@ -37,27 +53,26 @@ NORM_CONFIGS="pi0_xhand_tactile_structured_dual_ae pi0_xhand_tactile_structured_
 
 log "Stage 2/2: queued training for history/future pooled ablations"
 log "No-tactile assets: ${NO_TACTILE_ASSETS_DIR}"
-log "Calc tactile assets: ${CALC_TACTILE_ASSETS_DIR}"
 log "Raw tactile assets: ${RAW_TACTILE_ASSETS_DIR}"
 log "Patch raw tactile assets: ${PATCH_RAW_TACTILE_ASSETS_DIR}"
 
 JOB_LABELS=(
-  "A_pi0_full"
-  "B_calc_dual_ae_history_future_pool"
-  "C_raw_dual_ae_history_future_pool"
-  "D_adaptive_patch_raw_dual_ae_history_future_pool"
+  "A_pi0_full_h16"
+  "C_raw_dual_ae_async_aligned"
+  "D_adaptive_patch_raw_dual_ae_async_aligned"
+  "E_cached_vlm_async_ae"
 )
 JOB_CONFIGS=(
-  "pi0_xhand_full_finetune"
-  "pi0_xhand_tactile_structured_dual_ae_history_future_pool"
-  "pi0_xhand_tactile_structured_raw_dual_ae_history_future_pool"
-  "pi0_xhand_tactile_structured_adaptive_patch_raw_dual_ae_history_future_pool"
+  "pi0_xhand_full_finetune_h16"
+  "pi0_xhand_tactile_structured_raw_dual_ae_history_future_pool_async_aligned"
+  "pi0_xhand_tactile_structured_adaptive_patch_raw_dual_ae_history_future_pool_async_aligned"
+  "pi0_xhand_tactile_structured_raw_dual_ae_cached_vlm_async_ae"
 )
 JOB_ASSET_DIRS=(
   "$NO_TACTILE_ASSETS_DIR"
-  "$CALC_TACTILE_ASSETS_DIR"
   "$RAW_TACTILE_ASSETS_DIR"
   "$PATCH_RAW_TACTILE_ASSETS_DIR"
+  "$RAW_TACTILE_ASSETS_DIR"
 )
 
 source scripts/four_gpu_training_queue.sh

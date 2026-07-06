@@ -1880,6 +1880,98 @@ _CONFIGS.extend(
 )
 
 
+def _xhand_pi0_h16_config(source_name: str, new_name: str) -> TrainConfig:
+    source = next(config for config in _CONFIGS if config.name == source_name)
+    return dataclasses.replace(
+        source,
+        name=new_name,
+        model=dataclasses.replace(
+            source.model,
+            action_horizon=16,
+        ),
+    )
+
+
+def _cached_async_aligned_pool_config(source_name: str, new_name: str) -> TrainConfig:
+    source = next(config for config in _CONFIGS if config.name == source_name)
+    return dataclasses.replace(
+        source,
+        name=new_name,
+        model=dataclasses.replace(
+            source.model,
+            action_horizon=16,
+            pool_tactile_history=True,
+            future_tactile_segments=4,
+            future_steps_per_segment=4,
+            cached_vlm_async_ae_enabled=False,
+            cached_vlm_async_history_mode="pooled_current",
+            trex_tactile_expert_enabled=False,
+            use_future_flow=False,
+        ),
+        data=dataclasses.replace(
+            source.data,
+            state_delta_timestamps=tuple(list(range(-9, 1)) + list(range(1, 17))),
+        ),
+    )
+
+
+_CONFIGS.extend(
+    [
+        _xhand_pi0_h16_config(
+            "pi0_xhand_full_finetune",
+            "pi0_xhand_full_finetune_h16",
+        ),
+        _cached_async_aligned_pool_config(
+            "pi0_xhand_tactile_structured_raw_dual_ae",
+            "pi0_xhand_tactile_structured_raw_dual_ae_history_future_pool_async_aligned",
+        ),
+        _cached_async_aligned_pool_config(
+            "pi0_xhand_tactile_structured_adaptive_patch_raw_dual_ae",
+            "pi0_xhand_tactile_structured_adaptive_patch_raw_dual_ae_history_future_pool_async_aligned",
+        ),
+    ]
+)
+
+
+def _cached_vlm_async_ae_config(source_name: str, new_name: str) -> TrainConfig:
+    source = next(config for config in _CONFIGS if config.name == source_name)
+    return dataclasses.replace(
+        source,
+        name=new_name,
+        model=dataclasses.replace(
+            source.model,
+            action_horizon=16,
+            pool_tactile_history=True,
+            future_tactile_segments=4,
+            future_steps_per_segment=4,
+            cached_vlm_async_ae_enabled=True,
+            cached_vlm_async_offsets=(0, 4, 8, 12),
+            cached_vlm_async_loss_weight=1.0,
+            cached_vlm_async_future_align_loss_weight=0.1,
+            cached_vlm_async_prefix_consistency_weight=0.0,
+            cached_vlm_async_use_predicted_prefix_queries=True,
+            cached_vlm_async_loss_mask="full",
+            cached_vlm_async_history_mode="pooled_current",
+            trex_tactile_expert_enabled=False,
+            use_future_flow=False,
+        ),
+        data=dataclasses.replace(
+            source.data,
+            state_delta_timestamps=tuple(list(range(-9, 1)) + list(range(1, 17))),
+        ),
+    )
+
+
+_CONFIGS.extend(
+    [
+        _cached_vlm_async_ae_config(
+            "pi0_xhand_tactile_structured_raw_dual_ae",
+            "pi0_xhand_tactile_structured_raw_dual_ae_cached_vlm_async_ae",
+        ),
+    ]
+)
+
+
 def _trex_tactile_expert_config(source_name: str, new_name: str, *, hand_only: bool = False) -> TrainConfig:
     source = next(config for config in _CONFIGS if config.name == source_name)
     return dataclasses.replace(

@@ -157,6 +157,25 @@ class Pi0LatentFlow(_model.BaseModel):
         self.future_tactile_segments = int(config.future_tactile_segments)
         self.future_steps_per_segment = int(config.future_steps_per_segment)
         self.pool_tactile_history = bool(getattr(config, "pool_tactile_history", False))
+        self.cached_vlm_async_ae_enabled = bool(getattr(config, "cached_vlm_async_ae_enabled", False))
+        self.cached_vlm_async_offsets = tuple(
+            int(offset) for offset in getattr(config, "cached_vlm_async_offsets", (0, 4, 8, 12))
+        )
+        self.cached_vlm_async_loss_weight = float(getattr(config, "cached_vlm_async_loss_weight", 1.0))
+        self.cached_vlm_async_future_align_loss_weight = float(
+            getattr(config, "cached_vlm_async_future_align_loss_weight", 0.1)
+        )
+        self.cached_vlm_async_prefix_consistency_weight = float(
+            getattr(config, "cached_vlm_async_prefix_consistency_weight", 0.0)
+        )
+        self.cached_vlm_async_use_predicted_prefix_queries = bool(
+            getattr(config, "cached_vlm_async_use_predicted_prefix_queries", True)
+        )
+        self.cached_vlm_async_prefix_query_source = getattr(
+            config, "cached_vlm_async_prefix_query_source", "predicted"
+        )
+        self.cached_vlm_async_loss_mask = getattr(config, "cached_vlm_async_loss_mask", "full")
+        self.cached_vlm_async_history_mode = getattr(config, "cached_vlm_async_history_mode", "pooled")
         self.tactile_patch_tokenizer = bool(getattr(config, "tactile_patch_tokenizer", False))
         self.tactile_patch_fingers = tuple(int(finger) for finger in getattr(config, "tactile_patch_fingers", (0, 1, 2)))
         self.tactile_num_patches = int(getattr(config, "tactile_num_patches", 5))
@@ -168,7 +187,9 @@ class Pi0LatentFlow(_model.BaseModel):
         )
         self.history_force_token_count = (
             (
-                self.tactile_tokens_per_step
+                2 * self.tactile_tokens_per_step
+                if self.pool_tactile_history and self.cached_vlm_async_history_mode == "pooled_current"
+                else self.tactile_tokens_per_step
                 if self.pool_tactile_history
                 else self.force_input_frames * self.tactile_tokens_per_step
             )
@@ -385,6 +406,19 @@ class Pi0LatentFlow(_model.BaseModel):
                 self.teacher_history_pool_logits = nnx.Param(
                     jnp.zeros((self.force_input_frames,), dtype=jnp.float32)
                 )
+                if self.cached_vlm_async_history_mode == "pooled_current":
+                    self.student_history_type_embedding = nnx.Param(
+                        0.02
+                        * jax.random.normal(
+                            rngs.params(), (2, student_config.width), dtype=jnp.float32
+                        )
+                    )
+                    self.teacher_history_type_embedding = nnx.Param(
+                        0.02
+                        * jax.random.normal(
+                            rngs.params(), (2, teacher_config.width), dtype=jnp.float32
+                        )
+                    )
         else:
             history_dim = self.force_input_frames * self.effort_dim_in
             future_dim = config.action_horizon * self.effort_dim_in
@@ -550,6 +584,14 @@ class Pi0LatentFlow(_model.BaseModel):
                 self.async_flow_refiner_width, self.hand_action_dim, rngs=rngs
             )
 
+        if self.cached_vlm_async_ae_enabled:
+            self.cached_async_offset_embedding = nnx.Param(
+                0.02
+                * jax.random.normal(
+                    rngs.params(), (self.action_horizon + 1, self.student_width), dtype=jnp.float32
+                )
+            )
+
         self.deterministic = True
 
     def _llm_streams(
@@ -634,6 +676,30 @@ class Pi0LatentFlow(_model.BaseModel):
         weights = jax.nn.softmax(jnp.asarray(logits, dtype=jnp.float32)).astype(tokens.dtype)
         return jnp.einsum("h,bhkd->bkd", weights, tokens)
 
+    def _pool_history_current_tokens(
+        self,
+        tokens: at.Array,
+        logits: at.Array,
+        type_embedding: at.Array,
+    ) -> at.Array:
+        tokens = einops.rearrange(
+            tokens,
+            "b (h k) d -> b h k d",
+            h=self.force_input_frames,
+            k=self.tactile_tokens_per_step,
+        )
+        if self.force_input_frames < 2:
+            raise ValueError("pooled_current history mode requires at least two history frames.")
+        past_tokens = tokens[:, :-1, :, :]
+        current_tokens = tokens[:, -1, :, :]
+        past_logits = jnp.asarray(logits[:-1], dtype=jnp.float32)
+        past_weights = jax.nn.softmax(past_logits).astype(tokens.dtype)
+        past_summary = jnp.einsum("h,bhkd->bkd", past_weights, past_tokens)
+        type_embedding = jnp.asarray(type_embedding, dtype=tokens.dtype)
+        past_summary = past_summary + type_embedding[0][None, None, :]
+        current_tokens = current_tokens + type_embedding[1][None, None, :]
+        return jnp.concatenate([past_summary, current_tokens], axis=1)
+
     def _project_history_force_student(
         self, history_effort: at.Array
     ) -> at.Array:
@@ -641,6 +707,12 @@ class Pi0LatentFlow(_model.BaseModel):
             tokens = self.student_force_tokenizer.encode_history(
                 history_effort, jnp.asarray(self.history_times, dtype=jnp.float32)
             )
+            if self.pool_tactile_history and self.cached_vlm_async_history_mode == "pooled_current":
+                return self._pool_history_current_tokens(
+                    tokens,
+                    self.student_history_pool_logits.value,
+                    self.student_history_type_embedding.value,
+                )
             logits = self.student_history_pool_logits.value if self.pool_tactile_history else None
             return self._pool_history_tokens(tokens, logits)
         hidden = self.history_force_proj_student(einops.rearrange(history_effort, "b h e -> b (h e)"))
@@ -653,6 +725,12 @@ class Pi0LatentFlow(_model.BaseModel):
             tokens = self.teacher_force_tokenizer.encode_history(
                 history_effort, jnp.asarray(self.history_times, dtype=jnp.float32)
             )
+            if self.pool_tactile_history and self.cached_vlm_async_history_mode == "pooled_current":
+                return self._pool_history_current_tokens(
+                    tokens,
+                    self.teacher_history_pool_logits.value,
+                    self.teacher_history_type_embedding.value,
+                )
             logits = self.teacher_history_pool_logits.value if self.pool_tactile_history else None
             return self._pool_history_tokens(tokens, logits)
         hidden = self.history_force_proj_teacher(einops.rearrange(history_effort, "b h e -> b (h e)"))
@@ -667,6 +745,15 @@ class Pi0LatentFlow(_model.BaseModel):
             )
         hidden = self.future_force_proj_teacher(einops.rearrange(future_effort, "b h e -> b (h e)"))
         return hidden[:, None, :]
+
+    def _project_future_force_student(
+        self, future_effort: at.Array
+    ) -> at.Array:
+        if self.structured_tactile:
+            return self.student_force_tokenizer.encode_future(
+                future_effort, jnp.asarray(self.future_times, dtype=jnp.float32)
+            )
+        raise ValueError("Student future-force GT prefix encoding requires structured tactile tokens.")
 
     def _student_query_token(self, batch_size: int, dtype: jnp.dtype) -> at.Float[at.Array, "b 1 d"]:
         if self.structured_tactile:
@@ -1032,6 +1119,75 @@ class Pi0LatentFlow(_model.BaseModel):
         total_loss = jnp.mean(jnp.square(physical_prediction - physical_target), axis=(-2, -1))
         return total_loss, arm_loss, hand_loss
 
+    def _action_loss_with_offset_mask(
+        self,
+        prediction: _model.Actions,
+        target: _model.Actions,
+        offset: at.Array,
+    ) -> at.Array:
+        hand_slice = slice(self.hand_action_start, self.hand_action_start + self.hand_action_dim)
+        physical_prediction = jnp.concatenate(
+            [prediction[..., : self.arm_action_dim], prediction[..., hand_slice]], axis=-1
+        )
+        physical_target = jnp.concatenate([target[..., : self.arm_action_dim], target[..., hand_slice]], axis=-1)
+        if self.cached_vlm_async_loss_mask == "full":
+            return jnp.mean(jnp.square(physical_prediction - physical_target), axis=(-2, -1))
+        mask = (
+            jnp.arange(self.action_horizon, dtype=jnp.int32)[None, :, None]
+            >= jnp.asarray(offset, dtype=jnp.int32)
+        ).astype(physical_prediction.dtype)
+        denom = jnp.maximum(jnp.sum(mask), 1.0) * float(self.arm_action_dim + self.hand_action_dim)
+        return jnp.sum(jnp.square((physical_prediction - physical_target) * mask), axis=(-2, -1)) / denom
+
+    def _history_effort_for_offset(
+        self,
+        history_effort: at.Array,
+        future_effort: at.Array,
+        offset: at.Array,
+    ) -> at.Array:
+        effort = jnp.concatenate([history_effort, future_effort], axis=1)
+        return jax.lax.dynamic_slice_in_dim(
+            effort,
+            jnp.asarray(offset, dtype=jnp.int32),
+            self.force_input_frames,
+            axis=1,
+        )
+
+    def _cached_async_token_mask(self, batch_size: int, offset: at.Array) -> at.Array:
+        if self.cached_vlm_async_loss_mask == "full":
+            token_mask = jnp.ones((self.future_force_token_count,), dtype=jnp.bool_)
+        else:
+            segment_ids = jnp.repeat(
+                jnp.arange(self.future_tactile_segments, dtype=jnp.int32),
+                self.tactile_tokens_per_step,
+            )
+            segment_start = segment_ids * self.future_steps_per_segment
+            token_mask = segment_start >= jnp.asarray(offset, dtype=jnp.int32)
+        return jnp.broadcast_to(token_mask[None, :], (batch_size, token_mask.shape[0]))
+
+    def _cached_async_future_query_override(
+        self,
+        base_future_hidden: at.Array,
+        offset: at.Array,
+        dtype: jnp.dtype,
+        ground_truth_future_tokens: at.Array | None = None,
+    ) -> at.Array:
+        query = self._student_query_token(base_future_hidden.shape[0], dtype)
+        if not self.cached_vlm_async_use_predicted_prefix_queries:
+            return query
+        prefix_segments = jnp.asarray(offset, dtype=jnp.int32) // int(self.future_steps_per_segment)
+        token_ids = jnp.arange(self.future_force_token_count, dtype=jnp.int32)
+        prefix_token_count = prefix_segments * int(self.tactile_tokens_per_step)
+        prefix_mask = (token_ids < prefix_token_count)[None, :, None]
+        prefix_source = base_future_hidden
+        if (
+            self.cached_vlm_async_prefix_query_source == "ground_truth"
+            and ground_truth_future_tokens is not None
+        ):
+            prefix_source = ground_truth_future_tokens
+        prefix = jax.lax.stop_gradient(prefix_source).astype(dtype)
+        return jnp.where(prefix_mask, prefix, query)
+
     def _fresh_tactile_tokens_for_async_refiner(
         self,
         history_effort: at.Array,
@@ -1102,6 +1258,44 @@ class Pi0LatentFlow(_model.BaseModel):
         )
         _, student_out, _ = outputs[:3]
         return student_out, kv_cache, student_mask, student_adarms
+
+    def _student_suffix_with_prefix_cache_multilayer(
+        self,
+        *,
+        observation: _model.Observation,
+        history_effort: at.Array,
+        prefix_mask: at.Array,
+        prefix_kv_cache: object,
+        noisy_actions: _model.Actions,
+        timestep: at.Array,
+        future_force_query_override: at.Array | None = None,
+        async_offset: at.Array | None = None,
+    ) -> tuple[at.Array, tuple[at.Array, ...]]:
+        student_tokens, student_mask, student_ar_mask, student_adarms, *_ = self.embed_student_suffix(
+            observation,
+            history_effort,
+            noisy_actions,
+            timestep,
+            train=False,
+            noise_rng=None,
+            query_noise_scale=None,
+            future_force_query_override=future_force_query_override,
+            async_offset=async_offset,
+        )
+        student_attn_mask = make_attn_mask(student_mask, student_ar_mask)
+        prefix_to_student = einops.repeat(prefix_mask, "b p -> b s p", s=student_tokens.shape[1])
+        prefix_to_student = jnp.logical_and(prefix_to_student, student_mask[:, :, None])
+        full_attn_mask = jnp.concatenate([prefix_to_student, student_attn_mask], axis=-1)
+        positions = jnp.sum(prefix_mask, axis=-1)[:, None] + jnp.cumsum(student_mask, axis=-1) - 1
+        (outputs, selected_layers), _ = self.PaliGemma.llm(
+            self._llm_streams(None, student_tokens, None),
+            mask=full_attn_mask,
+            positions=positions,
+            kv_cache=prefix_kv_cache,
+            adarms_cond=self._llm_adarms(student_adarms, None),
+            return_layer_indices=self.distill_layer_indices,
+        )
+        return outputs[1], tuple(layer[1] for layer in selected_layers)
 
     def _trex_partial_student_cache(
         self,
@@ -1627,6 +1821,8 @@ class Pi0LatentFlow(_model.BaseModel):
         noise_rng: at.KeyArrayLike | None = None,
         train_progress: at.Float[at.Array, ""] | float | None = None,
         query_noise_scale: at.Float[at.Array, ""] | float | None = None,
+        future_force_query_override: at.Array | None = None,
+        async_offset: at.Array | None = None,
     ) -> tuple[
         at.Float[at.Array, "b s emb"],
         at.Bool[at.Array, "b s"],
@@ -1645,6 +1841,14 @@ class Pi0LatentFlow(_model.BaseModel):
             train_progress=train_progress,
             query_noise_scale=query_noise_scale,
         )
+        if future_force_query_override is not None:
+            future_force_query = jnp.asarray(future_force_query_override, dtype=history_token.dtype)
+        if async_offset is not None and self.cached_vlm_async_ae_enabled:
+            offset_embedding = jnp.asarray(self.cached_async_offset_embedding.value, dtype=history_token.dtype)[
+                jnp.asarray(async_offset, dtype=jnp.int32)
+            ]
+            history_token = history_token + offset_embedding[None, None, :]
+            future_force_query = future_force_query + offset_embedding[None, None, :]
         state_token = self.state_proj_student(obs.state)[:, None, :]
         if self.arm_hand_mask_attention:
             arm_actions, hand_actions = self._split_action_inputs(noisy_actions)
@@ -1797,6 +2001,52 @@ class Pi0LatentFlow(_model.BaseModel):
         teacher_layer_hiddens = tuple(layer[2] for layer in selected_layers)
         return student_out, teacher_out, student_layer_hiddens, teacher_layer_hiddens
 
+    def _forward_student_multilayer(
+        self,
+        *,
+        prefix_tokens: at.Float[at.Array, "b p d"],
+        prefix_mask: at.Bool[at.Array, "b p"],
+        prefix_ar_mask: at.Bool[at.Array, " p"],
+        student_suffix_tokens: at.Float[at.Array, "b s d"],
+        student_suffix_mask: at.Bool[at.Array, "b s"],
+        student_suffix_ar_mask: at.Bool[at.Array, " s"],
+        student_adarms: at.Float[at.Array, "b d"] | None,
+    ) -> tuple[at.Float[at.Array, "b s d"], tuple[at.Float[at.Array, "b s d"], ...]]:
+        bsz = prefix_mask.shape[0]
+        p_len = prefix_mask.shape[1]
+        s_len = student_suffix_mask.shape[1]
+
+        prefix_attn = make_attn_mask(prefix_mask, prefix_ar_mask)
+        student_attn = make_attn_mask(student_suffix_mask, student_suffix_ar_mask)
+        student_to_prefix = einops.repeat(prefix_mask, "b p -> b s p", s=s_len)
+        student_to_prefix = jnp.logical_and(student_to_prefix, student_suffix_mask[:, :, None])
+
+        prefix_row = jnp.concatenate(
+            [
+                prefix_attn,
+                jnp.zeros((bsz, p_len, s_len), dtype=jnp.bool_),
+            ],
+            axis=-1,
+        )
+        student_row = jnp.concatenate([student_to_prefix, student_attn], axis=-1)
+        full_attn = jnp.concatenate([prefix_row, student_row], axis=1)
+
+        prefix_positions = jnp.cumsum(prefix_mask, axis=1) - 1
+        prefix_len = jnp.sum(prefix_mask, axis=-1)[:, None]
+        student_positions = prefix_len + jnp.cumsum(student_suffix_mask, axis=-1) - 1
+        positions = jnp.concatenate([prefix_positions, student_positions], axis=1)
+
+        (outputs, selected_layers), _ = self.PaliGemma.llm(
+            self._llm_streams(prefix_tokens, student_suffix_tokens, None),
+            mask=full_attn,
+            positions=positions,
+            adarms_cond=self._llm_adarms(student_adarms, None),
+            return_layer_indices=self.distill_layer_indices,
+        )
+        student_out = outputs[1]
+        student_layer_hiddens = tuple(layer[1] for layer in selected_layers)
+        return student_out, student_layer_hiddens
+
     def compute_loss_with_stats(
         self,
         rng: at.KeyArrayLike,
@@ -1813,12 +2063,13 @@ class Pi0LatentFlow(_model.BaseModel):
             query_noise_rng,
             async_offset_rng,
             async_flow_time_rng,
+            cached_async_offset_rng,
             trex_cache_noise_rng,
             trex_flow_noise_rng,
             trex_time_rng,
             trex_offset_rng,
             trex_dropout_rng,
-        ) = jax.random.split(rng, 11)
+        ) = jax.random.split(rng, 12)
         original_flow_img = observation.flow_img
         original_wrist_flow_img = observation.wrist_flow_img
         original_future_rgb_img = observation.future_rgb_img
@@ -1996,6 +2247,90 @@ class Pi0LatentFlow(_model.BaseModel):
                 "dropout_rate": trex_tactile_loss,
             }
 
+        if self.cached_vlm_async_ae_enabled:
+            cached_offsets = jnp.asarray(self.cached_vlm_async_offsets, dtype=jnp.int32)
+            cached_async_offset = cached_offsets[
+                jax.random.randint(cached_async_offset_rng, (), minval=0, maxval=cached_offsets.shape[0])
+            ]
+            cached_history_effort = self._history_effort_for_offset(
+                history_effort,
+                future_effort,
+                cached_async_offset,
+            )
+            cached_ground_truth_future_tokens = (
+                self._project_future_force_student(future_effort)
+                if self.cached_vlm_async_prefix_query_source == "ground_truth"
+                else None
+            )
+            cached_future_override = self._cached_async_future_query_override(
+                student_layer_hiddens[-1][:, future_force_slice, :],
+                cached_async_offset,
+                x_t_action.dtype,
+                ground_truth_future_tokens=cached_ground_truth_future_tokens,
+            )
+            (
+                cached_student_tokens,
+                cached_student_mask,
+                cached_student_ar_mask,
+                cached_student_adarms,
+                *_,
+            ) = self.embed_student_suffix(
+                observation,
+                cached_history_effort,
+                x_t_action,
+                time,
+                train=False,
+                noise_rng=None,
+                future_force_query_override=cached_future_override,
+                async_offset=cached_async_offset,
+            )
+            cached_student_out, cached_student_layer_hiddens = self._forward_student_multilayer(
+                prefix_tokens=prefix_tokens,
+                prefix_mask=prefix_mask,
+                prefix_ar_mask=prefix_ar_mask,
+                student_suffix_tokens=cached_student_tokens,
+                student_suffix_mask=cached_student_mask,
+                student_suffix_ar_mask=cached_student_ar_mask,
+                student_adarms=cached_student_adarms,
+            )
+            cached_student_v = self._decode_action_velocity(cached_student_out, expert="student")
+            cached_async_action_loss = self._action_loss_with_offset_mask(
+                cached_student_v,
+                u_t_action,
+                cached_async_offset,
+            )
+            cached_token_mask = self._cached_async_token_mask(actions.shape[0], cached_async_offset)
+            cached_force_losses = []
+            for cached_student_hidden, teacher_hidden in zip(
+                cached_student_layer_hiddens, teacher_layer_hiddens, strict=True
+            ):
+                cached_student_force_hidden = self._project_prompt_distill(
+                    cached_student_hidden[:, future_force_slice, :]
+                )
+                teacher_force_hidden = jax.lax.stop_gradient(teacher_hidden[:, future_force_slice, :])
+                cached_force_losses.append(
+                    self._cosine_distance_masked(
+                        cached_student_force_hidden,
+                        teacher_force_hidden,
+                        cached_token_mask,
+                    )
+                )
+            cached_async_future_align_loss = jnp.mean(jnp.stack(cached_force_losses, axis=0), axis=0)
+            prefix_segments = jnp.asarray(cached_async_offset, dtype=jnp.float32) / float(
+                self.future_steps_per_segment
+            )
+            cached_prefix_consistency_loss = self._cosine_distance_masked(
+                cached_future_override.astype(student_layer_hiddens[-1].dtype),
+                jax.lax.stop_gradient(student_layer_hiddens[-1][:, future_force_slice, :]),
+                jnp.logical_not(cached_token_mask),
+            )
+        else:
+            cached_async_offset = jnp.asarray(0, dtype=jnp.int32)
+            prefix_segments = jnp.asarray(0.0, dtype=actions.dtype)
+            cached_async_action_loss = jnp.zeros_like(student_action_loss)
+            cached_async_future_align_loss = jnp.zeros_like(student_action_loss)
+            cached_prefix_consistency_loss = jnp.zeros_like(student_action_loss)
+
         for student_hidden, teacher_hidden in zip(student_layer_hiddens, teacher_layer_hiddens, strict=True):
             student_force_hidden = self._project_prompt_distill(student_hidden[:, future_force_slice, :])
             teacher_force_hidden = jax.lax.stop_gradient(teacher_hidden[:, future_force_slice, :])
@@ -2038,6 +2373,9 @@ class Pi0LatentFlow(_model.BaseModel):
             + self.async_refiner_gate_loss_weight * async_refiner_stats["gate_reg"]
             + self.async_flow_refiner_loss_weight * async_flow_refiner_loss
             + self.trex_tactile_loss_weight * trex_tactile_loss
+            + self.cached_vlm_async_loss_weight * cached_async_action_loss
+            + self.cached_vlm_async_future_align_loss_weight * cached_async_future_align_loss
+            + self.cached_vlm_async_prefix_consistency_weight * cached_prefix_consistency_loss
         )
         stats = {
             "loss/student_action": student_action_loss,
@@ -2075,6 +2413,15 @@ class Pi0LatentFlow(_model.BaseModel):
             ),
             "trex_tactile_expert/timestep": trex_tactile_stats["timestep"],
             "trex_tactile_expert/dropout_rate": trex_tactile_stats["dropout_rate"],
+            "loss/cached_async_action": cached_async_action_loss,
+            "loss/cached_async_future_align": cached_async_future_align_loss,
+            "loss/cached_async_prefix_consistency": cached_prefix_consistency_loss,
+            "cached_async/offset": jnp.broadcast_to(
+                jnp.asarray(cached_async_offset, dtype=jnp.float32), student_action_loss.shape
+            ),
+            "cached_async/prefix_segments": jnp.broadcast_to(
+                jnp.asarray(prefix_segments, dtype=jnp.float32), student_action_loss.shape
+            ),
             "tactile_refiner/gate_mean": (
                 jnp.mean(tactile_refiner_stats["gate"], axis=(-2, -1))
                 if self.tactile_refiner_enabled
@@ -2179,6 +2526,99 @@ class Pi0LatentFlow(_model.BaseModel):
         x_0, _, _ = jax.lax.while_loop(cond, step, (noise, 1.0, query_noise_rng))
         return x_0
 
+    def sample_actions_cached_vlm_async_ae(
+        self,
+        rng: at.KeyArrayLike,
+        observation: _model.Observation,
+        *,
+        trex_mode: str = "slow_and_fast",
+        trex_chunk_offset: at.Int[at.Array, ""] | int = 0,
+        trex_fresh_effort: at.Array | None = None,
+        noise: at.Float[at.Array, "b ah ad"] | None = None,
+        num_steps: int | at.Int[at.Array, ""] = 10,
+    ) -> _model.Actions:
+        if not self.cached_vlm_async_ae_enabled:
+            return self.sample_actions(rng, observation, num_steps=num_steps, noise=noise)
+        if trex_mode not in {"slow", "fast", "slow_and_fast"}:
+            raise ValueError(f"Unsupported cached async AE mode={trex_mode!r}.")
+
+        original_flow_img = observation.flow_img
+        original_wrist_flow_img = observation.wrist_flow_img
+        original_future_rgb_img = observation.future_rgb_img
+        original_future_wrist_rgb_img = observation.future_wrist_rgb_img
+        original_scene_flow = observation.scene_flow
+        observation = _model.preprocess_observation(None, observation, train=False, effort_type=self.effort_type)
+        observation = self._restore_aux_images(
+            observation,
+            original_flow_img,
+            original_wrist_flow_img,
+            original_future_rgb_img,
+            original_future_wrist_rgb_img,
+            original_scene_flow,
+        )
+        history_effort, _ = self._split_effort(observation, require_future=False, dtype=jnp.float32)
+        fresh_history_effort = history_effort
+        if trex_mode == "fast" and trex_fresh_effort is not None:
+            fresh_history_effort = jnp.asarray(trex_fresh_effort, dtype=jnp.float32)
+            fresh_history_effort = self._pad_or_crop_effort(
+                fresh_history_effort,
+                self.force_input_frames,
+                from_end=True,
+            )
+
+        batch_size = observation.state.shape[0]
+        action_noise_rng, _ = jax.random.split(rng)
+        if noise is None:
+            noise = jax.random.normal(action_noise_rng, (batch_size, self.action_horizon, self.action_dim))
+
+        prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(observation)
+        prefix_kv_cache, _ = self._prefix_kv_cache(prefix_tokens, prefix_mask, prefix_ar_mask)
+        dt = -1.0 / num_steps
+        offset = jnp.asarray(trex_chunk_offset, dtype=jnp.int32)
+
+        def step(carry):
+            x_t, time = carry
+            timestep = jnp.broadcast_to(time, (batch_size,))
+            _, base_hiddens = self._student_suffix_with_prefix_cache_multilayer(
+                observation=observation,
+                history_effort=history_effort,
+                prefix_mask=prefix_mask,
+                prefix_kv_cache=prefix_kv_cache,
+                noisy_actions=x_t,
+                timestep=timestep,
+            )
+            suffix_slices = self._suffix_slices(self.action_horizon)
+            future_force_slice = suffix_slices["future_force"]
+            future_query_override = self._cached_async_future_query_override(
+                base_hiddens[-1][:, future_force_slice, :],
+                offset,
+                x_t.dtype,
+            )
+            async_out, _ = self._student_suffix_with_prefix_cache_multilayer(
+                observation=observation,
+                history_effort=fresh_history_effort,
+                prefix_mask=prefix_mask,
+                prefix_kv_cache=prefix_kv_cache,
+                noisy_actions=x_t,
+                timestep=timestep,
+                future_force_query_override=future_query_override,
+                async_offset=offset,
+            )
+            v_t = self._decode_action_velocity(async_out, expert="student")
+            return x_t + dt * v_t, time + dt
+
+        def cond(carry):
+            _, time = carry
+            return time >= -dt / 2
+
+        x_0, _ = jax.lax.while_loop(cond, step, (noise, 1.0))
+        if trex_mode == "fast":
+            step_mask = (
+                jnp.arange(self.action_horizon, dtype=jnp.int32)[None, :, None] >= offset
+            ).astype(x_0.dtype)
+            x_0 = noise * (1.0 - step_mask) + x_0 * step_mask
+        return x_0
+
     def sample_actions_trex(
         self,
         rng: at.KeyArrayLike,
@@ -2193,6 +2633,16 @@ class Pi0LatentFlow(_model.BaseModel):
     ) -> _model.Actions:
         del trex_chunk_id, debug_query_noise_scale  # Routed/cached by the policy wrapper.
         if not self.trex_tactile_expert_enabled:
+            if self.cached_vlm_async_ae_enabled:
+                return self.sample_actions_cached_vlm_async_ae(
+                    rng,
+                    observation,
+                    trex_mode=trex_mode,
+                    trex_chunk_offset=trex_chunk_offset,
+                    trex_fresh_effort=trex_fresh_effort,
+                    noise=noise,
+                    num_steps=self.trex_tactile_total_steps,
+                )
             if trex_mode == "fast":
                 raise ValueError("sample_actions_trex(mode='fast') requires trex_tactile_expert_enabled=True.")
             return self.sample_actions(rng, observation, noise=noise)
