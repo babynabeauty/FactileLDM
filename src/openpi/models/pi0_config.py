@@ -311,6 +311,7 @@ class Pi0LatentFlowConfig(Pi0Config):
     cached_vlm_async_use_predicted_prefix_queries: bool = True
     cached_vlm_async_prefix_query_source: Literal["predicted", "ground_truth"] = "predicted"
     cached_vlm_async_loss_mask: Literal["full", "suffix"] = "full"
+    cached_vlm_async_distill_loss_mask: Literal["full", "suffix"] = "full"
     cached_vlm_async_history_mode: Literal["pooled", "pooled_current"] = "pooled"
 
     @override
@@ -461,6 +462,10 @@ class Pi0LatentFlowConfig(Pi0Config):
                 raise ValueError("cached_vlm_async_prefix_consistency_weight must be non-negative.")
             if self.cached_vlm_async_loss_mask not in ("full", "suffix"):
                 raise ValueError(f"Unsupported cached_vlm_async_loss_mask={self.cached_vlm_async_loss_mask!r}.")
+            if self.cached_vlm_async_distill_loss_mask not in ("full", "suffix"):
+                raise ValueError(
+                    f"Unsupported cached_vlm_async_distill_loss_mask={self.cached_vlm_async_distill_loss_mask!r}."
+                )
             if self.cached_vlm_async_history_mode not in ("pooled", "pooled_current"):
                 raise ValueError(f"Unsupported cached_vlm_async_history_mode={self.cached_vlm_async_history_mode!r}.")
             if self.cached_vlm_async_prefix_query_source not in ("predicted", "ground_truth"):

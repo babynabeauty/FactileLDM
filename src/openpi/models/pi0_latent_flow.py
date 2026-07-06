@@ -175,6 +175,9 @@ class Pi0LatentFlow(_model.BaseModel):
             config, "cached_vlm_async_prefix_query_source", "predicted"
         )
         self.cached_vlm_async_loss_mask = getattr(config, "cached_vlm_async_loss_mask", "full")
+        self.cached_vlm_async_distill_loss_mask = getattr(
+            config, "cached_vlm_async_distill_loss_mask", self.cached_vlm_async_loss_mask
+        )
         self.cached_vlm_async_history_mode = getattr(config, "cached_vlm_async_history_mode", "pooled")
         self.tactile_patch_tokenizer = bool(getattr(config, "tactile_patch_tokenizer", False))
         self.tactile_patch_fingers = tuple(int(finger) for finger in getattr(config, "tactile_patch_fingers", (0, 1, 2)))
@@ -1154,7 +1157,7 @@ class Pi0LatentFlow(_model.BaseModel):
         )
 
     def _cached_async_token_mask(self, batch_size: int, offset: at.Array) -> at.Array:
-        if self.cached_vlm_async_loss_mask == "full":
+        if self.cached_vlm_async_distill_loss_mask == "full":
             token_mask = jnp.ones((self.future_force_token_count,), dtype=jnp.bool_)
         else:
             segment_ids = jnp.repeat(

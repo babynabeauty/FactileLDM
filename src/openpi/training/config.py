@@ -1933,7 +1933,13 @@ _CONFIGS.extend(
 )
 
 
-def _cached_vlm_async_ae_config(source_name: str, new_name: str) -> TrainConfig:
+def _cached_vlm_async_ae_config(
+    source_name: str,
+    new_name: str,
+    *,
+    prefix_query_source: str = "predicted",
+    distill_loss_mask: str = "full",
+) -> TrainConfig:
     source = next(config for config in _CONFIGS if config.name == source_name)
     return dataclasses.replace(
         source,
@@ -1950,7 +1956,9 @@ def _cached_vlm_async_ae_config(source_name: str, new_name: str) -> TrainConfig:
             cached_vlm_async_future_align_loss_weight=0.1,
             cached_vlm_async_prefix_consistency_weight=0.0,
             cached_vlm_async_use_predicted_prefix_queries=True,
+            cached_vlm_async_prefix_query_source=prefix_query_source,
             cached_vlm_async_loss_mask="full",
+            cached_vlm_async_distill_loss_mask=distill_loss_mask,
             cached_vlm_async_history_mode="pooled_current",
             trex_tactile_expert_enabled=False,
             use_future_flow=False,
@@ -1967,6 +1975,12 @@ _CONFIGS.extend(
         _cached_vlm_async_ae_config(
             "pi0_xhand_tactile_structured_raw_dual_ae",
             "pi0_xhand_tactile_structured_raw_dual_ae_cached_vlm_async_ae",
+        ),
+        _cached_vlm_async_ae_config(
+            "pi0_xhand_tactile_structured_raw_dual_ae",
+            "pi0_xhand_tactile_structured_raw_dual_ae_cached_vlm_async_gt_prefix_ae",
+            prefix_query_source="ground_truth",
+            distill_loss_mask="suffix",
         ),
     ]
 )

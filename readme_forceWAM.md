@@ -87,24 +87,24 @@ setsid nohup env \
   HF_LEROBOT_HOME="$PROJECT_ROOT" \
   HF_DATASETS_CACHE=.hf_datasets_cache \
   HF_HUB_OFFLINE=1 \
-  CUDA_VISIBLE_DEVICES=0,1,2,3 \
+  CUDA_VISIBLE_DEVICES=4,5,6,7 \
   XLA_PYTHON_CLIENT_PREALLOCATE=false \
   env/.venv/bin/python scripts/train.py \
-    pi0_xhand_full_finetune \
-    --exp-name pi0_xhand_full_finetune_106ep_20k \
+    pi0_xhand_full_finetune_h16 \
+    --exp-name pi0_xhand_full_finetune_h16_task12345_0706 \
     --data.repo-id "$DATA_REPO" \
     --data.assets.asset-id "$ASSET_ID" \
     --data.assets.assets-dir assets/pi0_xhand_tactile_structured_dual_ae \
-    --num-train-steps 20000 \
+    --num-train-steps 50000 \
     --batch-size 8 \
-    --fsdp-devices 4 \
+    --fsdp-devices 1 \
     --num-workers 2 \
     --save-interval 5000 \
     --keep-period 5000 \
     --no-wandb-enabled \
     --overwrite \
     --weight-loader.params-path checkpoints/pi0_base/params \
-  > logs/pi0_xhand_full_finetune_106ep_20k.log 2>&1 &
+  > logs/pi0_xhand_full_finetune_h16_task12345_0706.log 2>&1 &
 ```
 
 ### B. current 5x3 tactile observation tokens
@@ -258,21 +258,21 @@ setsid nohup env \
   CUDA_VISIBLE_DEVICES=0,1,2,3 \
   XLA_PYTHON_CLIENT_PREALLOCATE=false \
   env/.venv/bin/python scripts/train.py \
-    pi0_xhand_tactile_structured_raw_dual_ae_arm_future_hand_mask \
-    --exp-name pi0_xhand_tactile_structured_raw_dual_ae_arm_future_hand_mask_106ep_20k \
+    pi0_xhand_tactile_structured_raw_dual_ae_cached_vlm_async_ae \
+    --exp-name pi0_xhand_tactile_structured_raw_dual_ae_cached_vlm_async_ae_task12345_0706 \
     --data.repo-id "$DATA_REPO" \
     --data.assets.asset-id "$ASSET_ID" \
     --data.assets.assets-dir assets/pi0_xhand_tactile_structured_dual_ae \
-    --num-train-steps 20000 \
-    --batch-size 4 \
-    --fsdp-devices 4 \
-    --num-workers 0 \
-    --save-interval 5000 \
+    --num-train-steps 50000 \
+    --batch-size 8 \
+    --fsdp-devices 1 \
+    --num-workers 2 \
+    --save-interval 10000 \
     --keep-period 10000 \
     --no-wandb-enabled \
     --overwrite \
     --weight-loader.params-path checkpoints/pi0_base/params \
-  > logs/pi0_xhand_tactile_structured_raw_dual_ae_arm_future_hand_mask_106ep_20k.log 2>&1 &
+  > logs/pi0_xhand_tactile_structured_raw_dual_ae_cached_vlm_async_ae_task12345_0706.log 2>&1 &
 ```
 
 # config总结：
@@ -333,7 +333,12 @@ python scripts/merge_lerobot_v21_datasets.py \
     /workspace/mnt/sqzhang26/FactileLDM/data/grasp_pipette_and_press_button_0616_59ep \
   --output /workspace/mnt/sqzhang26/FactileLDM/data/grasp_pipette_and_press_button_106ep \
   --overwrite
-
+python scripts/merge_lerobot_v21_datasets.py \
+  --sources \
+    /workspace/mnt/sqzhang26/FactileLDM/data/task12345 \
+    /workspace/mnt/sqzhang26/FactileLDM/data/0706_grasp_bottle \
+  --output /workspace/mnt/sqzhang26/FactileLDM/data/task12345-2 \
+  --overwrite
 
 # 计算光流图像
 
