@@ -259,6 +259,7 @@ class Pi0LatentFlowConfig(Pi0Config):
     tactile_raw_contact_threshold: float = 1.0
     tactile_raw_contact_temperature: float = 0.5
     tactile_patch_tokenizer: bool = False
+    tactile_patch_informed_tokenizer: bool = False
     tactile_patch_fingers: tuple[int, ...] = (0, 1, 2)
     tactile_num_patches: int = 5
     future_tactile_align_layer: int = 12
@@ -331,6 +332,13 @@ class Pi0LatentFlowConfig(Pi0Config):
                 raise ValueError("tactile_raw_contact_top_k must be non-negative.")
             if self.tactile_raw_contact_temperature <= 0:
                 raise ValueError("tactile_raw_contact_temperature must be positive.")
+            if self.tactile_patch_tokenizer and self.tactile_patch_informed_tokenizer:
+                raise ValueError("Use only one patch raw tactile tokenizer variant at a time.")
+            if self.tactile_patch_informed_tokenizer:
+                if self.tactile_points_per_finger <= 1:
+                    raise ValueError("tactile_patch_informed_tokenizer requires raw tactile points.")
+                if self.tactile_num_patches <= 0:
+                    raise ValueError("tactile_num_patches must be positive.")
             if self.tactile_patch_tokenizer:
                 if self.tactile_points_per_finger <= 1:
                     raise ValueError("tactile_patch_tokenizer requires raw tactile points.")

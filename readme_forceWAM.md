@@ -94,7 +94,7 @@ setsid nohup env \
     --exp-name pi0_xhand_full_finetune_h16_task12345_0706 \
     --data.repo-id "$DATA_REPO" \
     --data.assets.asset-id "$ASSET_ID" \
-    --data.assets.assets-dir assets/pi0_xhand_tactile_structured_dual_ae \
+    --data.assets.assets-dir assets/pi0_xhand_tactile_structured_raw_dual_ae \
     --num-train-steps 50000 \
     --batch-size 8 \
     --fsdp-devices 1 \
@@ -258,11 +258,11 @@ setsid nohup env \
   CUDA_VISIBLE_DEVICES=0,1,2,3 \
   XLA_PYTHON_CLIENT_PREALLOCATE=false \
   env/.venv/bin/python scripts/train.py \
-    pi0_xhand_tactile_structured_raw_dual_ae_cached_vlm_async_ae \
-    --exp-name pi0_xhand_tactile_structured_raw_dual_ae_cached_vlm_async_ae_task12345_0706 \
+    pi0_xhand_dual_raw_f4_h16_async \
+    --exp-name pi0_xhand_dual_raw_f4_h16_async_task12345 \
     --data.repo-id "$DATA_REPO" \
     --data.assets.asset-id "$ASSET_ID" \
-    --data.assets.assets-dir assets/pi0_xhand_tactile_structured_dual_ae \
+    --data.assets.assets-dir assets/pi0_xhand_tactile_structured_raw_dual_ae \
     --num-train-steps 50000 \
     --batch-size 8 \
     --fsdp-devices 1 \
@@ -272,39 +272,95 @@ setsid nohup env \
     --no-wandb-enabled \
     --overwrite \
     --weight-loader.params-path checkpoints/pi0_base/params \
-  > logs/pi0_xhand_tactile_structured_raw_dual_ae_cached_vlm_async_ae_task12345_0706.log 2>&1 &
+  > logs/pi0_xhand_dual_raw_f4_h16_async_task12345.log 2>&1 &
+```
+
+### H. Patch-informed raw dual AE
+
+保持每根手指 1 个外部 token，但在每根手指内部先按 5 个 patch 聚合点阵力，再融合成 finger token。复用 raw tactile 的 assets。
+
+```bash
+setsid nohup env \
+  HF_LEROBOT_HOME="$PROJECT_ROOT" \
+  HF_DATASETS_CACHE=.hf_datasets_cache \
+  HF_HUB_OFFLINE=1 \
+  CUDA_VISIBLE_DEVICES=0,1,2,3 \
+  XLA_PYTHON_CLIENT_PREALLOCATE=false \
+  env/.venv/bin/python scripts/train.py \
+    pi0_xhand_dual_patch_f4_h16 \
+    --exp-name pi0_xhand_dual_patch_f4_h16 \
+    --data.repo-id "$DATA_REPO" \
+    --data.assets.asset-id "$ASSET_ID" \
+    --data.assets.assets-dir assets/pi0_xhand_tactile_structured_raw_dual_ae \
+    --num-train-steps 30000 \
+    --batch-size 8 \
+    --fsdp-devices 1 \
+    --num-workers 2 \
+    --save-interval 5000 \
+    --keep-period 5000 \
+    --no-wandb-enabled \
+    --overwrite \
+    --weight-loader.params-path checkpoints/pi0_base/params \
+  > logs/pi0_xhand_dual_patch_f4_h16.log 2>&1 &
+```
+
+### I. Patch-informed cached VLM async AE
+
+异步训练版本：action horizon=16，history tactile=10 tokens，future tactile=4 segments，对应部署里 cached VLM + fresh tactile 更新 AE 的主线。
+
+```bash
+setsid nohup env \
+  HF_LEROBOT_HOME="$PROJECT_ROOT" \
+  HF_DATASETS_CACHE=.hf_datasets_cache \
+  HF_HUB_OFFLINE=1 \
+  CUDA_VISIBLE_DEVICES=0,1,2,3 \
+  XLA_PYTHON_CLIENT_PREALLOCATE=false \
+  env/.venv/bin/python scripts/train.py \
+    pi0_xhand_dual_patch_f4_h16_async \
+    --exp-name pi0_xhand_dual_patch_f4_h16_async \
+    --data.repo-id "$DATA_REPO" \
+    --data.assets.asset-id "$ASSET_ID" \
+    --data.assets.assets-dir assets/pi0_xhand_tactile_structured_raw_dual_ae \
+    --num-train-steps 50000 \
+    --batch-size 8 \
+    --fsdp-devices 1 \
+    --num-workers 2 \
+    --save-interval 10000 \
+    --keep-period 10000 \
+    --no-wandb-enabled \
+    --overwrite \
+    --weight-loader.params-path checkpoints/pi0_base/params \
+  > logs/pi0_xhand_dual_patch_f4_h16_async.log 2>&1 &
 ```
 
 # config总结：
-+ pi0_xhand_tactile_structured_dual_ae：5*3 per-finger token；双AE结构
-+ pi0_xhand_tactile_structured_single_ae：5*3 per-finger token；单AE结构
-+ pi0_xhand_tactile_structured_dual_ae_arm_future_hand_mask：5*3 per-finger token；单AE结构
+当前主线只看 dual-AE。single-AE / flow / mask / refiner 旧配置先放到历史归档，不作为当前实验主线。
 
-+ pi0_xhand_tactile_structured_raw_dual_ae：5*120*3 per-finger token；双AE结构
-+ pi0_xhand_tactile_structured_raw_single_ae：5*120*3 per-finger token；单AE结构
-+ pi0_xhand_tactile_structured_raw_dual_ae_arm_future_hand_mask：5*120*3 per-finger token；单AE结构
+## Canonical dual-AE configs
 
-+ pi0_xhand_tactile_structured_adaptive_patch_raw_dual_ae
+共同设置：
 
-+ pi0_xhand_tactile_flow: 5*3压成一个token，加未来flow
-+ pi0_xhand_tactile_forceonly_full_finetune： 5*3压成一个token
-+ pi0_xhand_tactile_3dflow_full_finetune： 5*3压成一个token，加3D场景流
+- action horizon = 16
+- history tactile = 10 tokens，即 5 个历史摘要 finger tokens + 5 个当前帧 finger tokens
+- tokenizer 外部输出都是每个 tactile step 5 个 finger tokens
+- raw / patch-informed 都复用 `assets/pi0_xhand_tactile_structured_raw_dual_ae`
 
-+ pi0_xhand_full_finetune：原始pi0
+| config | tokenizer | future segments | future tokens | async training | fast offsets |
+|---|---|---:|---:|---|---|
+| `pi0_xhand_dual_raw_f4_h16` | raw spatial | 4 | 20 | 否 | - |
+| `pi0_xhand_dual_raw_f4_h16_async` | raw spatial | 4 | 20 | 是 | 4,8,12 |
+| `pi0_xhand_dual_raw_f8_h16` | raw spatial | 8 | 40 | 否 | - |
+| `pi0_xhand_dual_raw_f8_h16_async` | raw spatial | 8 | 40 | 是 | 2,4,6,8,10 |
+| `pi0_xhand_dual_patch_f4_h16` | patch-informed | 4 | 20 | 否 | - |
+| `pi0_xhand_dual_patch_f4_h16_async` | patch-informed | 4 | 20 | 是 | 4,8,12 |
+| `pi0_xhand_dual_patch_f8_h16` | patch-informed | 8 | 40 | 否 | - |
+| `pi0_xhand_dual_patch_f8_h16_async` | patch-informed | 8 | 40 | 是 | 2,4,6,8,10 |
 
-+ pi0_xhand_tactile_obs_ae_full_finetune：tactile输入为当前观测
+baseline:
 
-+ 仿FLARE setting
-scripts/run_action_aware_stage1_stage2.sh
-future_tactile_encoder_pretrain_flare_dit
-pi0_xhand_tactile_action_aware_flare_single_ae
+- `pi0_xhand_full_finetune_h16`：原始 pi0，action horizon = 16，不输入 tactile。
 
-+ 
-pi0_xhand_tactile_structured_dual_ae_history_future_pool
-pi0_xhand_tactile_structured_single_ae_history_future_pool
-pi0_xhand_tactile_structured_raw_dual_ae_history_future_pool
-pi0_xhand_tactile_structured_raw_single_ae_history_future_pool
-pi0_xhand_tactile_structured_adaptive_patch_raw_dual_ae_history_future_pool
+旧配置仍保留在代码中，主要用于复现实验和读取旧 checkpoint，不建议新实验继续优先使用。
 
 
 ## 历史内容归档
@@ -400,15 +456,15 @@ done 2>&1 | tee "$OUT/batch.log"
 ```bash
 CUDA_VISIBLE_DEVICES=0 env/.venv/bin/python scripts/serve_policy.py --port=8990 policy:checkpoint \
 --policy.config=pi0_xhand_tactile_flow_full_finetune \
---policy.dir=checkpoints/pi0_xhand_tactile_flow_full_finetune/pi0_xhand_tactile_flow_full_finetune/29999
+--policy.dir=checkpoints/pi0_xhand_tactile_flow_full_finetune/pi0_xhand_tactile_flow_full_finetune/49999
 
 CUDA_VISIBLE_DEVICES=0 env/.venv/bin/python scripts/serve_policy.py --port=8990 policy:checkpoint \
 --policy.config=pi0_xhand_tactile_3dflow_full_finetune \
---policy.dir=FactileLDM/checkpoints/pi0_xhand_tactile_3dflow_full_finetune/pi0_xhand_tactile_3dflow_full_finetune/29999
+--policy.dir=FactileLDM/checkpoints/pi0_xhand_tactile_3dflow_full_finetune/pi0_xhand_tactile_3dflow_full_finetune/49999
 
 CUDA_VISIBLE_DEVICES=0 env/.venv/bin/python scripts/serve_policy.py --port=8990 policy:checkpoint \
 --policy.config=pi0_xhand_full_finetune \
---policy.dir=checkpoints/pi0_xhand_full_finetune/pi0_xhand_full_finetune_30k_2gpu/29999
+--policy.dir=checkpoints/pi0_xhand_full_finetune/pi0_xhand_full_finetune_30k_2gpu/49999
 
 ```
 

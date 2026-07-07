@@ -1833,6 +1833,30 @@ _CONFIGS = [
 ]
 
 
+def _patch_informed_raw_dual_config(source_name: str, new_name: str) -> TrainConfig:
+    source = next(config for config in _CONFIGS if config.name == source_name)
+    return dataclasses.replace(
+        source,
+        name=new_name,
+        model=dataclasses.replace(
+            source.model,
+            tactile_patch_informed_tokenizer=True,
+            tactile_patch_tokenizer=False,
+            tactile_num_patches=5,
+        ),
+    )
+
+
+_CONFIGS.extend(
+    [
+        _patch_informed_raw_dual_config(
+            "pi0_xhand_tactile_structured_raw_dual_ae",
+            "pi0_xhand_tactile_structured_patch_informed_raw_dual_ae",
+        ),
+    ]
+)
+
+
 def _history_future_tactile_pooled_config(source_name: str, new_name: str) -> TrainConfig:
     """Pool both tactile history and all 32 future steps along time.
 
@@ -1875,6 +1899,10 @@ _CONFIGS.extend(
         _history_future_tactile_pooled_config(
             "pi0_xhand_tactile_structured_adaptive_patch_raw_dual_ae",
             "pi0_xhand_tactile_structured_adaptive_patch_raw_dual_ae_history_future_pool",
+        ),
+        _history_future_tactile_pooled_config(
+            "pi0_xhand_tactile_structured_patch_informed_raw_dual_ae",
+            "pi0_xhand_tactile_structured_patch_informed_raw_dual_ae_history_future_pool",
         ),
     ]
 )
@@ -1928,6 +1956,10 @@ _CONFIGS.extend(
             "pi0_xhand_tactile_structured_adaptive_patch_raw_dual_ae",
             "pi0_xhand_tactile_structured_adaptive_patch_raw_dual_ae_history_future_pool_async_aligned",
         ),
+        _cached_async_aligned_pool_config(
+            "pi0_xhand_tactile_structured_patch_informed_raw_dual_ae",
+            "pi0_xhand_tactile_structured_patch_informed_raw_dual_ae_history_future_pool_async_aligned",
+        ),
     ]
 )
 
@@ -1965,6 +1997,121 @@ _CONFIGS.extend(
         _cached_vlm_async_ae_config(
             "pi0_xhand_tactile_structured_raw_dual_ae",
             "pi0_xhand_tactile_structured_raw_dual_ae_cached_vlm_async_ae",
+        ),
+        _cached_vlm_async_ae_config(
+            "pi0_xhand_tactile_structured_patch_informed_raw_dual_ae",
+            "pi0_xhand_tactile_structured_patch_informed_raw_dual_ae_cached_vlm_async_ae",
+        ),
+    ]
+)
+
+
+def _canonical_dual_ae_h16_config(
+    source_name: str,
+    new_name: str,
+    *,
+    future_tactile_segments: int,
+    async_enabled: bool,
+    async_fast_offsets: tuple[int, ...],
+) -> TrainConfig:
+    """Canonical XHand dual-AE tactile configs.
+
+    These are the cleaned-up experiment configs:
+    - action chunk is always 16 steps;
+    - tactile history is always pooled into 10 tokens
+      (5 pooled-history finger tokens + 5 current-frame finger tokens);
+    - future tactile is either 4 or 8 temporal segments;
+    - optional cached-VLM async training uses the same token layout.
+    """
+
+    if 16 % future_tactile_segments != 0:
+        raise ValueError("future_tactile_segments must divide action_horizon=16.")
+
+    source = next(config for config in _CONFIGS if config.name == source_name)
+    async_offsets = (0, *async_fast_offsets)
+    return dataclasses.replace(
+        source,
+        name=new_name,
+        model=dataclasses.replace(
+            source.model,
+            action_horizon=16,
+            pool_tactile_history=True,
+            future_tactile_segments=future_tactile_segments,
+            future_steps_per_segment=16 // future_tactile_segments,
+            cached_vlm_async_ae_enabled=async_enabled,
+            cached_vlm_async_offsets=async_offsets,
+            cached_vlm_async_loss_weight=1.0,
+            cached_vlm_async_future_align_loss_weight=0.1,
+            cached_vlm_async_prefix_consistency_weight=0.0,
+            cached_vlm_async_use_predicted_prefix_queries=True,
+            cached_vlm_async_loss_mask="full",
+            cached_vlm_async_history_mode="pooled_current",
+            use_future_flow=False,
+        ),
+        data=dataclasses.replace(
+            source.data,
+            state_delta_timestamps=tuple(list(range(-9, 1)) + list(range(1, 17))),
+        ),
+    )
+
+
+_CONFIGS.extend(
+    [
+        _canonical_dual_ae_h16_config(
+            "pi0_xhand_tactile_structured_raw_dual_ae",
+            "pi0_xhand_dual_raw_f4_h16",
+            future_tactile_segments=4,
+            async_enabled=False,
+            async_fast_offsets=(4, 8, 12),
+        ),
+        _canonical_dual_ae_h16_config(
+            "pi0_xhand_tactile_structured_raw_dual_ae",
+            "pi0_xhand_dual_raw_f4_h16_async",
+            future_tactile_segments=4,
+            async_enabled=True,
+            async_fast_offsets=(4, 8, 12),
+        ),
+        _canonical_dual_ae_h16_config(
+            "pi0_xhand_tactile_structured_raw_dual_ae",
+            "pi0_xhand_dual_raw_f8_h16",
+            future_tactile_segments=8,
+            async_enabled=False,
+            async_fast_offsets=(2, 4, 6, 8, 10),
+        ),
+        _canonical_dual_ae_h16_config(
+            "pi0_xhand_tactile_structured_raw_dual_ae",
+            "pi0_xhand_dual_raw_f8_h16_async",
+            future_tactile_segments=8,
+            async_enabled=True,
+            async_fast_offsets=(2, 4, 6, 8, 10),
+        ),
+        _canonical_dual_ae_h16_config(
+            "pi0_xhand_tactile_structured_patch_informed_raw_dual_ae",
+            "pi0_xhand_dual_patch_f4_h16",
+            future_tactile_segments=4,
+            async_enabled=False,
+            async_fast_offsets=(4, 8, 12),
+        ),
+        _canonical_dual_ae_h16_config(
+            "pi0_xhand_tactile_structured_patch_informed_raw_dual_ae",
+            "pi0_xhand_dual_patch_f4_h16_async",
+            future_tactile_segments=4,
+            async_enabled=True,
+            async_fast_offsets=(4, 8, 12),
+        ),
+        _canonical_dual_ae_h16_config(
+            "pi0_xhand_tactile_structured_patch_informed_raw_dual_ae",
+            "pi0_xhand_dual_patch_f8_h16",
+            future_tactile_segments=8,
+            async_enabled=False,
+            async_fast_offsets=(2, 4, 6, 8, 10),
+        ),
+        _canonical_dual_ae_h16_config(
+            "pi0_xhand_tactile_structured_patch_informed_raw_dual_ae",
+            "pi0_xhand_dual_patch_f8_h16_async",
+            future_tactile_segments=8,
+            async_enabled=True,
+            async_fast_offsets=(2, 4, 6, 8, 10),
         ),
     ]
 )

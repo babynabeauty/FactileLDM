@@ -459,6 +459,139 @@ class AdaptiveFingertipPatchTokenizer(RawTactileSpatialTokenizer):
         return self.norm(tokens)
 
 
+class PatchInformedFingerTokenizer(RawTactileSpatialTokenizer):
+    """Patch-aware raw tactile tokenizer that preserves one token per finger.
+
+    The tokenizer first aggregates each finger's 120 taxels into five local
+    patch features with patch identity embeddings, then attention-pools the
+    five patch features back into one finger token. The external token budget is
+    therefore identical to RawTactileSpatialTokenizer: [B, T, F, D].
+    """
+
+    def __init__(
+        self,
+        *,
+        output_dim: int,
+        hidden_dim: int,
+        num_fingers: int,
+        num_points: int,
+        dim_per_point: int,
+        future_segments: int,
+        future_steps_per_segment: int,
+        contact_top_k: int,
+        contact_threshold: float,
+        contact_temperature: float,
+        num_patches: int,
+        rngs: nnx.Rngs,
+    ):
+        super().__init__(
+            output_dim=output_dim,
+            hidden_dim=hidden_dim,
+            num_fingers=num_fingers,
+            num_points=num_points,
+            dim_per_point=dim_per_point,
+            future_segments=future_segments,
+            future_steps_per_segment=future_steps_per_segment,
+            contact_top_k=contact_top_k,
+            contact_threshold=contact_threshold,
+            contact_temperature=contact_temperature,
+            rngs=rngs,
+        )
+        self.num_patches = int(num_patches)
+        self.tokens_per_tactile_step = self.num_fingers
+        if self.num_patches != 5:
+            raise ValueError("PatchInformedFingerTokenizer currently expects num_patches=5.")
+        if self.dim_per_point != 3:
+            raise ValueError("PatchInformedFingerTokenizer currently expects 3D taxel forces.")
+
+        self.patch_stat_dim = 2 * self.dim_per_point + 2
+        self.patch_stat_proj_in = nnx.Linear(self.patch_stat_dim, self.hidden_dim, rngs=rngs)
+        self.patch_stat_proj_out = nnx.Linear(self.hidden_dim, self.output_dim, rngs=rngs)
+        self.patch_score = nnx.Linear(self.output_dim, 1, rngs=rngs)
+        self.patch_norm = nnx.LayerNorm(num_features=self.output_dim, rngs=rngs)
+        self.patch_embedding = nnx.Param(
+            0.02 * jax.random.normal(rngs.params(), (self.num_patches, self.output_dim), dtype=jnp.float32)
+        )
+        self.point_patch_ids = AdaptiveFingertipPatchTokenizer._official_xhand_patch_ids(
+            self.num_fingers, self.num_points
+        )
+
+    def _encode_steps(self, forces: jax.Array, times_seconds: jax.Array, *, future: bool) -> jax.Array:
+        if forces.ndim != 5:
+            raise ValueError(f"Expected raw tactile force [B,T,F,P,C], got {forces.shape}.")
+        if forces.shape[2:] != (self.num_fingers, self.num_points, self.dim_per_point):
+            raise ValueError(
+                "Expected raw tactile finger/point shape "
+                f"{(self.num_fingers, self.num_points, self.dim_per_point)}, got {forces.shape[2:]}."
+            )
+        if times_seconds.shape != (forces.shape[1],):
+            raise ValueError(f"Expected {forces.shape[1]} time offsets, got {times_seconds.shape}.")
+
+        batch_size, time_steps = forces.shape[:2]
+        forces_f32 = forces.astype(jnp.float32)
+        magnitude = jnp.linalg.norm(forces_f32, axis=-1)
+        temperature = jnp.asarray(max(self.contact_temperature, 1e-6), dtype=jnp.float32)
+        gate = jax.nn.sigmoid((magnitude - self.contact_threshold) / temperature)
+
+        patch_ids = jnp.asarray(self.point_patch_ids, dtype=jnp.int32)
+        patch_masks = jax.nn.one_hot(patch_ids, self.num_patches, dtype=jnp.float32)
+        patch_masks = einops.rearrange(patch_masks, "f p r -> f r p")
+        patch_counts = jnp.maximum(jnp.sum(patch_masks, axis=-1), 1.0)
+
+        masked_gate = gate[:, :, :, None, :] * patch_masks[None, None, :, :, :]
+        gate_sum = jnp.sum(masked_gate, axis=-1)
+        gate_denom = jnp.maximum(gate_sum, 1e-6)
+        gated_force_mean = jnp.einsum("btfrp,btfpc->btfrc", masked_gate, forces_f32) / gate_denom[..., None]
+
+        abs_forces = jnp.abs(forces_f32)
+        patch_abs_max = jnp.max(
+            jnp.where(patch_masks[None, None, :, :, :, None] > 0, abs_forces[:, :, :, None, :, :], 0.0),
+            axis=-2,
+        )
+        contact_area = gate_sum / patch_counts[None, None, :, :]
+        patch_strength = jnp.max(
+            jnp.where(patch_masks[None, None, :, :, :] > 0, magnitude[:, :, :, None, :], 0.0),
+            axis=-1,
+        )
+        patch_stats = jnp.concatenate(
+            [
+                gated_force_mean,
+                patch_abs_max,
+                contact_area[..., None],
+                patch_strength[..., None],
+            ],
+            axis=-1,
+        ).astype(forces.dtype)
+
+        patch_tokens = nnx.swish(self.patch_stat_proj_in(patch_stats))
+        patch_tokens = self.patch_stat_proj_out(patch_tokens)
+
+        finger_feature = jnp.broadcast_to(
+            self.finger_embedding.value[None, None, :, None, :],
+            (batch_size, time_steps, self.num_fingers, self.num_patches, self.output_dim),
+        )
+        patch_feature = jnp.broadcast_to(
+            self.patch_embedding.value[None, None, None, :, :],
+            (batch_size, time_steps, self.num_fingers, self.num_patches, self.output_dim),
+        )
+        time_feature = self.time_proj(_continuous_time_embedding(times_seconds, self.time_embedding_dim))
+        time_feature = jnp.broadcast_to(
+            time_feature[None, :, None, None, :],
+            (batch_size, time_steps, self.num_fingers, self.num_patches, self.output_dim),
+        )
+        type_feature = jnp.broadcast_to(
+            self.type_embedding.value[int(future)][None, None, None, None, :],
+            (batch_size, time_steps, self.num_fingers, self.num_patches, self.output_dim),
+        )
+        patch_tokens = patch_tokens + finger_feature + patch_feature + time_feature + type_feature
+
+        patch_scores = jnp.squeeze(self.patch_score(nnx.swish(patch_tokens)), axis=-1).astype(jnp.float32)
+        patch_scores = patch_scores + jnp.log(contact_area + 1e-6)
+        patch_weights = jax.nn.softmax(patch_scores, axis=-1).astype(patch_tokens.dtype)
+        finger_tokens = jnp.einsum("btfr,btfrd->btfd", patch_weights, patch_tokens)
+        return self.patch_norm(finger_tokens)
+
+
 class _QFormerBlock(nnx.Module):
     """Small pre-norm query block with self-attention, cross-attention, and FFN."""
 

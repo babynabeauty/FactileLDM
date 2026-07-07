@@ -14,6 +14,7 @@ from openpi.models import siglip as _siglip
 from openpi.models.pi0_tavla import make_attn_mask, posemb_sincos
 from openpi.models.tactile_tokenizer import AdaptiveFingertipPatchTokenizer
 from openpi.models.tactile_tokenizer import DexterousForceTokenizer
+from openpi.models.tactile_tokenizer import PatchInformedFingerTokenizer
 from openpi.models.tactile_tokenizer import RawTactileSpatialTokenizer
 from openpi.shared import array_typing as at
 
@@ -174,6 +175,7 @@ class Pi0LatentFlow(_model.BaseModel):
         self.cached_vlm_async_loss_mask = getattr(config, "cached_vlm_async_loss_mask", "full")
         self.cached_vlm_async_history_mode = getattr(config, "cached_vlm_async_history_mode", "pooled")
         self.tactile_patch_tokenizer = bool(getattr(config, "tactile_patch_tokenizer", False))
+        self.tactile_patch_informed_tokenizer = bool(getattr(config, "tactile_patch_informed_tokenizer", False))
         self.tactile_patch_fingers = tuple(int(finger) for finger in getattr(config, "tactile_patch_fingers", (0, 1, 2)))
         self.tactile_num_patches = int(getattr(config, "tactile_num_patches", 5))
         self.tactile_tokens_per_step = self.tactile_num_fingers
@@ -330,12 +332,17 @@ class Pi0LatentFlow(_model.BaseModel):
                     contact_threshold=config.tactile_raw_contact_threshold,
                     contact_temperature=config.tactile_raw_contact_temperature,
                 )
-                tokenizer_cls = AdaptiveFingertipPatchTokenizer if self.tactile_patch_tokenizer else RawTactileSpatialTokenizer
                 if self.tactile_patch_tokenizer:
+                    tokenizer_cls = AdaptiveFingertipPatchTokenizer
                     tokenizer_kwargs.update(
                         patch_fingers=self.tactile_patch_fingers,
                         num_patches=self.tactile_num_patches,
                     )
+                elif self.tactile_patch_informed_tokenizer:
+                    tokenizer_cls = PatchInformedFingerTokenizer
+                    tokenizer_kwargs.update(num_patches=self.tactile_num_patches)
+                else:
+                    tokenizer_cls = RawTactileSpatialTokenizer
                 self.student_force_tokenizer = tokenizer_cls(output_dim=student_config.width, rngs=rngs, **tokenizer_kwargs)
                 self.teacher_force_tokenizer = tokenizer_cls(output_dim=teacher_config.width, rngs=rngs, **tokenizer_kwargs)
             else:

@@ -111,7 +111,6 @@ class Policy(BasePolicy):
         self._async_prefix_kv_cache: dict[int, Any] = {}
         self._async_prefix_mask_cache: dict[int, jax.Array] = {}
         self._async_future_hidden_cache: dict[int, jax.Array] = {}
-        self._async_debug_cache: dict[int, dict[str, Any]] = {}
 
         if self._is_pytorch_model:
             self._model = self._model.to(pytorch_device)
@@ -151,39 +150,11 @@ class Policy(BasePolicy):
                 self._async_prefix_kv_cache.pop(old_chunk_id, None)
                 self._async_prefix_mask_cache.pop(old_chunk_id, None)
                 self._async_future_hidden_cache.pop(old_chunk_id, None)
-                self._async_debug_cache.pop(old_chunk_id, None)
 
     def _cached_async_inputs(self, chunk_id: int, fallback: dict[str, Any]) -> dict[str, Any]:
         if chunk_id < 0 or chunk_id not in self._async_input_cache:
             return fallback
         return jax.tree.map(lambda x: np.asarray(x).copy(), self._async_input_cache[chunk_id])
-
-    def _debug_array_stats(self, value: Any) -> dict[str, Any]:
-        array = np.asarray(value)
-        stats: dict[str, Any] = {
-            "shape": tuple(int(dim) for dim in array.shape),
-            "dtype": str(array.dtype),
-        }
-        if array.size == 0:
-            return stats
-        numeric = array.astype(np.float32, copy=False)
-        flat = numeric.reshape(-1)
-        stats.update(
-            mean=float(np.mean(flat)),
-            std=float(np.std(flat)),
-            min=float(np.min(flat)),
-            max=float(np.max(flat)),
-            l2=float(np.linalg.norm(flat)),
-            first3=[float(x) for x in flat[:3]],
-        )
-        return stats
-
-    def _future_prefix_token_count(self, offset: Any) -> int:
-        steps_per_segment = int(getattr(self._model, "future_steps_per_segment", 1))
-        tokens_per_step = int(getattr(self._model, "tactile_tokens_per_step", 1))
-        future_force_token_count = int(getattr(self._model, "future_force_token_count", 0))
-        prefix_segments = int(np.asarray(offset).item()) // max(steps_per_segment, 1)
-        return min(prefix_segments * tokens_per_step, future_force_token_count)
 
     @override
     def infer(self, obs: dict, *, noise: np.ndarray | None = None) -> dict:  # type: ignore[misc]
@@ -238,8 +209,6 @@ class Policy(BasePolicy):
         sample_kwargs = dict(self._sample_kwargs)
         sample_fn = self._sample_actions
         cached_async_kind = None
-        async_debug: dict[str, Any] | None = None
-        fast_cached_future_hidden = None
         if async_requested:
             if self._is_pytorch_model:
                 raise RuntimeError("Cached async AE websocket mode is only wired for JAX policies in this server.")
@@ -278,8 +247,7 @@ class Policy(BasePolicy):
                     sample_kwargs["noise"] = self._async_noise_cache[async_chunk_id_int]
                     sample_kwargs["prefix_kv_cache"] = self._async_prefix_kv_cache[async_chunk_id_int]
                     sample_kwargs["prefix_mask"] = self._async_prefix_mask_cache[async_chunk_id_int]
-                    fast_cached_future_hidden = self._async_future_hidden_cache[async_chunk_id_int]
-                    sample_kwargs["prefix_future_hidden"] = fast_cached_future_hidden
+                    sample_kwargs["prefix_future_hidden"] = self._async_future_hidden_cache[async_chunk_id_int]
                     sample_kwargs["async_chunk_offset"] = jnp.asarray(async_chunk_offset)
                     if async_fresh_inputs is not None and "effort" in async_fresh_inputs:
                         sample_kwargs["async_fresh_effort"] = output_inputs["effort"]
@@ -305,22 +273,6 @@ class Policy(BasePolicy):
             self._async_prefix_kv_cache[async_chunk_id_int] = prefix_kv_cache
             self._async_prefix_mask_cache[async_chunk_id_int] = prefix_mask
             self._async_future_hidden_cache[async_chunk_id_int] = future_hidden
-            async_debug = {
-                "mode": "slow",
-                "chunk_id": async_chunk_id_int,
-                "offset": int(np.asarray(async_chunk_offset).item()),
-                "fast_minimal": bool(fast_minimal),
-                "cached_input_hit": True,
-                "used_t0_state": True,
-                "model_state": self._debug_array_stats(model_inputs.get("state")),
-                "model_effort": self._debug_array_stats(model_inputs.get("effort"))
-                if isinstance(model_inputs, dict) and "effort" in model_inputs
-                else None,
-                "prefix_mask_tokens": int(np.asarray(prefix_mask).sum()),
-                "future_prefix_token_count": 0,
-                "future_hidden_after": self._debug_array_stats(future_hidden),
-            }
-            self._async_debug_cache[async_chunk_id_int] = async_debug
         elif cached_async_kind == "fast":
             actions, future_hidden = self._sample_actions_cached_async_fast(
                 sample_rng_or_pytorch_device,
@@ -328,26 +280,6 @@ class Policy(BasePolicy):
                 **sample_kwargs,
             )
             self._async_future_hidden_cache[async_chunk_id_int] = future_hidden
-            slow_debug = self._async_debug_cache.get(async_chunk_id_int, {})
-            async_debug = {
-                "mode": "fast",
-                "chunk_id": async_chunk_id_int,
-                "offset": int(np.asarray(async_chunk_offset).item()),
-                "fast_minimal": bool(fast_minimal),
-                "cached_input_hit": async_chunk_id_int in self._async_input_cache,
-                "cache_has_prefix_kv": async_chunk_id_int in self._async_prefix_kv_cache,
-                "cache_has_future_hidden": fast_cached_future_hidden is not None,
-                "used_t0_state": True,
-                "t0_state": slow_debug.get("model_state"),
-                "model_state": self._debug_array_stats(model_inputs.get("state")),
-                "fresh_state": self._debug_array_stats(output_inputs.get("state")),
-                "fresh_effort": self._debug_array_stats(output_inputs.get("effort"))
-                if isinstance(output_inputs, dict) and "effort" in output_inputs
-                else None,
-                "future_prefix_token_count": self._future_prefix_token_count(async_chunk_offset),
-                "future_hidden_before": self._debug_array_stats(fast_cached_future_hidden),
-                "future_hidden_after": self._debug_array_stats(future_hidden),
-            }
         else:
             actions = sample_fn(sample_rng_or_pytorch_device, observation, **sample_kwargs)
         outputs = {
@@ -370,8 +302,6 @@ class Policy(BasePolicy):
             outputs["async_mode"] = async_mode
             outputs["async_chunk_offset"] = np.asarray(async_chunk_offset)
             outputs["async_chunk_id"] = np.asarray(async_chunk_id)
-            if async_debug is not None:
-                outputs["async_debug"] = async_debug
         return outputs
 
     @property

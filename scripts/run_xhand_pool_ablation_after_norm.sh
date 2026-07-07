@@ -33,7 +33,7 @@ ASSET_ID="${ASSET_ID:-$(basename "$DATA_REPO")}"
 export DATA_ASSET_ID="${DATA_ASSET_ID:-$ASSET_ID}"
 CALC_TACTILE_ASSETS_DIR="${CALC_TACTILE_ASSETS_DIR:-assets/pi0_xhand_tactile_structured_dual_ae}"
 RAW_TACTILE_ASSETS_DIR="${RAW_TACTILE_ASSETS_DIR:-assets/pi0_xhand_tactile_structured_raw_dual_ae}"
-NO_TACTILE_ASSETS_DIR="${NO_TACTILE_ASSETS_DIR:-$CALC_TACTILE_ASSETS_DIR}"
+NO_TACTILE_ASSETS_DIR="${NO_TACTILE_ASSETS_DIR:-$RAW_TACTILE_ASSETS_DIR}"
 PATCH_RAW_TACTILE_ASSETS_DIR="${PATCH_RAW_TACTILE_ASSETS_DIR:-$RAW_TACTILE_ASSETS_DIR}"
 
 export HF_LEROBOT_HOME="${HF_LEROBOT_HOME:-$PWD}"
@@ -58,16 +58,22 @@ log "Patch raw tactile assets: ${PATCH_RAW_TACTILE_ASSETS_DIR}"
 
 JOB_LABELS=(
   "A_pi0_full_h16"
-  "B_raw_dual_ae_async_aligned"
-  "C_cached_vlm_async_pred_prefix"
+  "B_raw_f4_h16"
+  "C_raw_f4_h16_async"
+  "D_patch_f4_h16"
+  "E_patch_f4_h16_async"
 )
 JOB_CONFIGS=(
   "pi0_xhand_full_finetune_h16"
-  "pi0_xhand_tactile_structured_raw_dual_ae_history_future_pool_async_aligned"
-  "pi0_xhand_tactile_structured_raw_dual_ae_cached_vlm_async_ae"
+  "pi0_xhand_dual_raw_f4_h16"
+  "pi0_xhand_dual_raw_f4_h16_async"
+  "pi0_xhand_dual_patch_f4_h16"
+  "pi0_xhand_dual_patch_f4_h16_async"
 )
 JOB_ASSET_DIRS=(
   "$NO_TACTILE_ASSETS_DIR"
+  "$RAW_TACTILE_ASSETS_DIR"
+  "$RAW_TACTILE_ASSETS_DIR"
   "$RAW_TACTILE_ASSETS_DIR"
   "$RAW_TACTILE_ASSETS_DIR"
 )
