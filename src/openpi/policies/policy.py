@@ -168,10 +168,17 @@ class Policy(BasePolicy):
         async_chunk_offset = obs.get("async_chunk_offset", 0)
         async_chunk_id = obs.get("async_chunk_id", -1)
         async_requested = async_mode in {"slow", "fast", "slow_and_fast"}
+        fast_minimal = async_mode == "fast" and bool(np.asarray(obs.get("fast_minimal", False)).item())
         inputs = jax.tree.map(lambda x: x, obs)
         if debug_index < DEBUG_INFER_PRINT_LIMIT:
             _debug_print_tree("SERVER RAW OBS FROM CLIENT", inputs, infer_index=debug_index)
-        inputs = self._input_transform(inputs)
+        if fast_minimal:
+            inputs = {
+                "state": np.asarray(inputs["state"], dtype=np.float32),
+                "effort": np.asarray(inputs["effort"], dtype=np.float32),
+            }
+        else:
+            inputs = self._input_transform(inputs)
         if debug_index < DEBUG_INFER_PRINT_LIMIT:
             _debug_print_tree("SERVER MODEL INPUT AFTER TRANSFORM", inputs, infer_index=debug_index)
         self._debug_infer_count += 1

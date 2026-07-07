@@ -117,7 +117,11 @@ TACTILE_SENSOR_COUNT = 5
 TACTILE_BLOCK_SIZE = 384
 TACTILE_BLOCK_START = 52
 TACTILE_CALC_FORCE_OFFSET = 0
+TACTILE_RAW_FORCE_OFFSET = 24
+TACTILE_RAW_FORCE_POINTS = 120
 TACTILE_AXES = ("x", "y", "z")
+MODEL_ACTION_DIM = 32
+XHAND_JOINT_COUNT = 12
 DEBUG_INFER_PRINT_LIMIT = 3
 
 STRUCTURED_POLICY_INPUT_MODES = {
@@ -632,6 +636,44 @@ def state_schema_has_calc_force(state_names: list[str]) -> bool:
     return has_named_calc_force or len(state_names) >= required_dim
 
 
+def extract_model_proprio(state: np.ndarray) -> np.ndarray:
+    state = np.asarray(state, dtype=np.float32)
+    if state.shape[-1] == 18:
+        proprio = state
+    else:
+        hand_joint_pos_indices = 28 + 2 * np.arange(XHAND_JOINT_COUNT)
+        proprio = np.concatenate([state[:6], state[hand_joint_pos_indices]], axis=0).astype(np.float32)
+        proprio = proprio[:18]
+    if proprio.shape[-1] < MODEL_ACTION_DIM:
+        proprio = np.pad(proprio, (0, MODEL_ACTION_DIM - proprio.shape[-1]))
+    return proprio.astype(np.float32)
+
+
+def extract_current_raw_force(state: np.ndarray) -> np.ndarray:
+    state = np.asarray(state, dtype=np.float32)
+    required_dim = TACTILE_BLOCK_START + TACTILE_SENSOR_COUNT * TACTILE_BLOCK_SIZE
+    if state.shape[-1] < required_dim:
+        raise ValueError(
+            "XHand raw-force tactile extraction requires the full raw observation.state "
+            f"with at least {required_dim} values, got {state.shape[-1]}."
+        )
+    raw = np.stack(
+        [
+            state[
+                TACTILE_BLOCK_START
+                + sensor_id * TACTILE_BLOCK_SIZE
+                + TACTILE_RAW_FORCE_OFFSET : TACTILE_BLOCK_START
+                + sensor_id * TACTILE_BLOCK_SIZE
+                + TACTILE_RAW_FORCE_OFFSET
+                + TACTILE_RAW_FORCE_POINTS * 3
+            ].reshape(TACTILE_RAW_FORCE_POINTS, 3)
+            for sensor_id in range(TACTILE_SENSOR_COUNT)
+        ],
+        axis=0,
+    )
+    return raw.astype(np.float32)
+
+
 def infer_policy_input_mode(requested_mode: str, metadata: dict | None = None) -> str:
     if requested_mode != "auto":
         return requested_mode
@@ -714,6 +756,33 @@ def build_pi0_observation(
         observation[f"observation/{camera_name}_image"] = image
 
     return observation
+
+
+def build_fast_minimal_observation(
+    *,
+    env_state: np.ndarray,
+    state_history: StateHistoryBuffer,
+    frame_idx: int,
+    async_chunk_offset: int,
+    async_chunk_id: int,
+) -> dict:
+    """Builds a compact fast-tick request.
+
+    Slow requests must send images/prompt so the server can compute and cache the
+    VLM prefix. Fast requests reuse that cached prefix and only need the newest
+    tactile history plus current state for output de-normalization.
+    """
+    state_seq = state_history.sample(frame_idx)
+    effort = np.stack([extract_current_raw_force(state) for state in state_seq], axis=0)
+    return {
+        "state": extract_model_proprio(env_state),
+        "effort": effort.astype(np.float32),
+        "mode": "fast",
+        "async_mode": "fast",
+        "async_chunk_offset": np.asarray(async_chunk_offset, dtype=np.int32),
+        "async_chunk_id": np.asarray(async_chunk_id, dtype=np.int32),
+        "fast_minimal": np.asarray(True),
+    }
 
 
 def normalize_action_chunk(actions, expected_dim: int, max_action_chunk_size: int) -> np.ndarray:
@@ -1051,17 +1120,10 @@ def main() -> int:
                 and chunk_idx not in fast_offsets_sent
             ):
                 fast_offsets_sent.add(chunk_idx)
-                fast_observation = build_pi0_observation(
-                    obs=obs,
+                fast_observation = build_fast_minimal_observation(
                     env_state=env_state,
-                    state_names=state_names,
-                    camera_names=camera_names,
-                    args=args,
-                    current_action_step=current_action_step,
-                    policy_input_mode=policy_input_mode,
                     state_history=state_history,
                     frame_idx=frame_idx,
-                    async_mode="fast",
                     async_chunk_offset=chunk_idx,
                     async_chunk_id=active_async_chunk_id,
                 )
