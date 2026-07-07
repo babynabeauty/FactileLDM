@@ -108,6 +108,9 @@ class Policy(BasePolicy):
         self._debug_infer_count = 0
         self._async_input_cache: dict[int, dict[str, Any]] = {}
         self._async_noise_cache: dict[int, jax.Array] = {}
+        self._async_prefix_kv_cache: dict[int, Any] = {}
+        self._async_prefix_mask_cache: dict[int, jax.Array] = {}
+        self._async_future_hidden_cache: dict[int, jax.Array] = {}
 
         if self._is_pytorch_model:
             self._model = self._model.to(pytorch_device)
@@ -116,9 +119,14 @@ class Policy(BasePolicy):
         else:
             # JAX model setup
             self._sample_actions = nnx_utils.module_jit(model.sample_actions)
-            self._sample_actions_cached_async = (
-                nnx_utils.module_jit(model.sample_actions_cached_vlm_async_ae, static_argnames=("async_mode",))
-                if hasattr(model, "sample_actions_cached_vlm_async_ae")
+            self._sample_actions_cached_async_slow = (
+                nnx_utils.module_jit(model.sample_actions_cached_vlm_async_ae_slow)
+                if hasattr(model, "sample_actions_cached_vlm_async_ae_slow")
+                else None
+            )
+            self._sample_actions_cached_async_fast = (
+                nnx_utils.module_jit(model.sample_actions_cached_vlm_async_ae_fast)
+                if hasattr(model, "sample_actions_cached_vlm_async_ae_fast")
                 else None
             )
             self._rng = rng or jax.random.key(0)
@@ -139,6 +147,9 @@ class Policy(BasePolicy):
             if old_chunk_id < chunk_id - 2:
                 self._async_input_cache.pop(old_chunk_id, None)
                 self._async_noise_cache.pop(old_chunk_id, None)
+                self._async_prefix_kv_cache.pop(old_chunk_id, None)
+                self._async_prefix_mask_cache.pop(old_chunk_id, None)
+                self._async_future_hidden_cache.pop(old_chunk_id, None)
 
     def _cached_async_inputs(self, chunk_id: int, fallback: dict[str, Any]) -> dict[str, Any]:
         if chunk_id < 0 or chunk_id not in self._async_input_cache:
@@ -190,37 +201,49 @@ class Policy(BasePolicy):
         # Prepare kwargs for sample_actions
         sample_kwargs = dict(self._sample_kwargs)
         sample_fn = self._sample_actions
+        cached_async_kind = None
         if async_requested:
             if self._is_pytorch_model:
                 raise RuntimeError("Cached async AE websocket mode is only wired for JAX policies in this server.")
-            if self._sample_actions_cached_async is None:
+            if self._sample_actions_cached_async_slow is None or self._sample_actions_cached_async_fast is None:
                 # Old configs should not receive fast requests. For slow_and_fast,
                 # fall back to the normal one-shot sampler so legacy deployment
                 # remains usable if a client accidentally includes the mode field.
                 if async_mode == "fast":
                     raise RuntimeError(
                         "Received mode='fast', but this model/server does not expose "
-                        "sample_actions_cached_vlm_async_ae."
+                        "the cached async slow/fast sampling path."
                     )
             else:
-                sample_fn = self._sample_actions_cached_async
-                sample_kwargs.update(
-                    async_mode=async_mode,
-                    async_chunk_offset=jnp.asarray(async_chunk_offset),
-                )
                 model_action_horizon = int(getattr(self._model, "action_horizon"))
                 model_action_dim = int(getattr(self._model, "action_dim"))
                 if async_mode in {"slow", "slow_and_fast"}:
+                    cached_async_kind = "slow"
                     action_noise = jax.random.normal(
                         sample_rng_or_pytorch_device,
                         (1, model_action_horizon, model_action_dim),
                     )
                     self._async_noise_cache[async_chunk_id_int] = action_noise
                     sample_kwargs["noise"] = action_noise
-                elif async_mode == "fast" and async_chunk_id_int in self._async_noise_cache:
+                elif async_mode == "fast":
+                    cached_async_kind = "fast"
+                    if (
+                        async_chunk_id_int not in self._async_noise_cache
+                        or async_chunk_id_int not in self._async_prefix_kv_cache
+                        or async_chunk_id_int not in self._async_prefix_mask_cache
+                        or async_chunk_id_int not in self._async_future_hidden_cache
+                    ):
+                        raise RuntimeError(
+                            f"Received async fast request for chunk_id={async_chunk_id_int}, but the slow cache "
+                            "is missing. Make sure a slow_and_fast request starts each chunk."
+                        )
                     sample_kwargs["noise"] = self._async_noise_cache[async_chunk_id_int]
-                if async_mode == "fast" and async_fresh_inputs is not None and "effort" in async_fresh_inputs:
-                    sample_kwargs["async_fresh_effort"] = output_inputs["effort"]
+                    sample_kwargs["prefix_kv_cache"] = self._async_prefix_kv_cache[async_chunk_id_int]
+                    sample_kwargs["prefix_mask"] = self._async_prefix_mask_cache[async_chunk_id_int]
+                    sample_kwargs["prefix_future_hidden"] = self._async_future_hidden_cache[async_chunk_id_int]
+                    sample_kwargs["async_chunk_offset"] = jnp.asarray(async_chunk_offset)
+                    if async_fresh_inputs is not None and "effort" in async_fresh_inputs:
+                        sample_kwargs["async_fresh_effort"] = output_inputs["effort"]
         # sample_kwargs.update(debug_query_noise_scale=0.3)
         if noise is not None:
             noise = torch.from_numpy(noise).to(self._pytorch_device) if self._is_pytorch_model else jnp.asarray(noise)
@@ -234,9 +257,27 @@ class Policy(BasePolicy):
         else:
             observation = _model.Observation.from_dict(inputs)
         start_time = time.monotonic()
+        if cached_async_kind == "slow":
+            actions, prefix_kv_cache, prefix_mask, future_hidden = self._sample_actions_cached_async_slow(
+                sample_rng_or_pytorch_device,
+                observation,
+                **sample_kwargs,
+            )
+            self._async_prefix_kv_cache[async_chunk_id_int] = prefix_kv_cache
+            self._async_prefix_mask_cache[async_chunk_id_int] = prefix_mask
+            self._async_future_hidden_cache[async_chunk_id_int] = future_hidden
+        elif cached_async_kind == "fast":
+            actions, future_hidden = self._sample_actions_cached_async_fast(
+                sample_rng_or_pytorch_device,
+                observation,
+                **sample_kwargs,
+            )
+            self._async_future_hidden_cache[async_chunk_id_int] = future_hidden
+        else:
+            actions = sample_fn(sample_rng_or_pytorch_device, observation, **sample_kwargs)
         outputs = {
             "state": output_inputs["state"],
-            "actions": sample_fn(sample_rng_or_pytorch_device, observation, **sample_kwargs),
+            "actions": actions,
         }
         if "effort" in inputs.keys():
             outputs["effort"] = output_inputs["effort"]

@@ -45,6 +45,20 @@ Common --policy-input-mode choices:
 # 8. cached-VLM async AE raw tactile
 #    config:
 #      pi0_xhand_tactile_structured_raw_dual_ae_cached_vlm_async_ae
+#    By default, fast requests run in a background thread so the 15Hz control loop
+#    keeps executing the current action chunk. Use --sync-fast-requests only for
+#    debugging/blocking ablations.
+#    Fast update behavior:
+#      - chunk start: send slow_and_fast, cache VLM prefix KV + future hidden C.
+#      - offset steps: send fast in the background with fresh tactile history.
+#      - if fast returns before the chunk expires, replace only the unexecuted suffix.
+#      - if fast returns too late or for an old chunk, drop it and keep executing.
+#    Practical testing order:
+#      --async-ae-offsets 8
+#      --async-ae-offsets 4,12
+#      --async-ae-offsets 4,8,12
+#       --sync-fast-requests 阻塞式，可用于debug
+
 --policy-input-mode structured_raw_dual_ae
 --cached-vlm-async-ae
 --async-ae-offsets 4,8,12
@@ -54,6 +68,9 @@ Common --policy-input-mode choices:
 
 # 9. cached-VLM async AE adaptive patch raw tactile
 #    Use this only for adaptive-patch cached async checkpoints.
+#    Fast requests are background/non-blocking by default.
+#    Use --sync-fast-requests only when you deliberately want to block the
+#    control loop and compare against the old synchronous behavior.
 --policy-input-mode adaptive_patch_raw_dual_ae
 --cached-vlm-async-ae
 --async-ae-offsets 4,8,12
@@ -73,6 +90,7 @@ Useful safety/debug flags:
 
 import argparse
 import collections
+import concurrent.futures
 import functools
 import importlib
 import json
@@ -354,6 +372,15 @@ def parse_args() -> argparse.Namespace:
         help=(
             "How to apply a fast-tick action chunk. suffix replaces the remaining old chunk; "
             "reset starts executing the returned chunk from index 0."
+        ),
+    )
+    parser.add_argument(
+        "--sync-fast-requests",
+        action="store_true",
+        help=(
+            "Debug/ablation only. By default fast async-AE requests run in a background thread and the 15Hz "
+            "control loop keeps executing the current action chunk. With this flag, the client blocks and waits "
+            "for each fast result before continuing."
         ),
     )
 
@@ -849,6 +876,7 @@ def main() -> int:
     print(f"Cached-VLM async AE: {args.cached_vlm_async_ae}")
     if args.cached_vlm_async_ae:
         print(f"Async AE offsets: {async_ae_offsets}, update={args.async_ae_update}")
+        print(f"Async AE fast requests: {'sync/blocking' if args.sync_fast_requests else 'background/non-blocking'}")
     print(f"Dry run: {args.dry_run}")
 
     if args.check_config:
@@ -862,6 +890,18 @@ def main() -> int:
         proxy=True if args.use_env_proxy else None,
         open_timeout=args.server_open_timeout,
     )
+    fast_client = client
+    fast_executor = None
+    pending_fast_requests: dict[concurrent.futures.Future, dict] = {}
+    if args.cached_vlm_async_ae and not args.sync_fast_requests:
+        fast_client = WebsocketClientPolicy(
+            args.server_ip,
+            args.server_port,
+            api_key=args.api_key,
+            proxy=True if args.use_env_proxy else None,
+            open_timeout=args.server_open_timeout,
+        )
+        fast_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
     metadata = client.get_server_metadata()
     if metadata:
         print(f"Server metadata: {metadata}")
@@ -910,6 +950,53 @@ def main() -> int:
             env_state = build_env_state(obs, state_names)
             if state_history is not None:
                 state_history.append(frame_idx, env_state)
+
+            for future, meta in list(pending_fast_requests.items()):
+                if not future.done():
+                    continue
+                pending_fast_requests.pop(future, None)
+                try:
+                    fast_chunk, _, infer_ms = future.result()
+                except Exception as exc:
+                    print(
+                        f"Background fast tactile inference failed at offset {meta['offset']}: {exc}",
+                        flush=True,
+                    )
+                    continue
+                if meta["chunk_id"] != active_async_chunk_id or action_chunk is None:
+                    print(
+                        f"Dropping stale fast@{meta['offset']} result for chunk {meta['chunk_id']}; "
+                        f"active chunk is {active_async_chunk_id}.",
+                        flush=True,
+                    )
+                    continue
+                if chunk_idx >= n_action_steps:
+                    print(
+                        f"Dropping expired fast@{meta['offset']} result for chunk {meta['chunk_id']}; "
+                        f"chunk_idx={chunk_idx}/{n_action_steps}.",
+                        flush=True,
+                    )
+                    continue
+                merge_start = max(chunk_idx, int(meta["offset"]))
+                if merge_start >= n_action_steps:
+                    print(
+                        f"Dropping late fast@{meta['offset']} result; merge_start={merge_start}, "
+                        f"n_action_steps={n_action_steps}.",
+                        flush=True,
+                    )
+                    continue
+                action_chunk, _ = merge_fast_action_chunk(
+                    action_chunk,
+                    fast_chunk,
+                    chunk_idx=merge_start,
+                    update_mode=args.async_ae_update,
+                )
+                n_action_steps = action_chunk.shape[0]
+                print(
+                    f"Applied background fast@{meta['offset']} result at current chunk_idx={chunk_idx}; "
+                    f"merged from {merge_start}, roundtrip={infer_ms:.1f}ms",
+                    flush=True,
+                )
 
             should_query = (
                 action_chunk is None
@@ -978,24 +1065,57 @@ def main() -> int:
                     async_chunk_offset=chunk_idx,
                     async_chunk_id=active_async_chunk_id,
                 )
-                try:
-                    fast_chunk, _, _ = request_action_chunk(
-                        client=client,
-                        observation=fast_observation,
-                        action_names=action_names,
-                        max_action_chunk_size=args.max_action_chunk_size,
-                        label=f"fast@{chunk_idx}",
-                    )
-                    action_chunk, chunk_idx = merge_fast_action_chunk(
-                        action_chunk,
-                        fast_chunk,
-                        chunk_idx=chunk_idx,
-                        update_mode=args.async_ae_update,
-                    )
-                    n_action_steps = action_chunk.shape[0]
-                    current_action_step += 1
-                except Exception as exc:
-                    print(f"Fast tactile inference failed at offset {chunk_idx}; keeping current chunk: {exc}", flush=True)
+                if args.sync_fast_requests:
+                    try:
+                        fast_chunk, _, _ = request_action_chunk(
+                            client=client,
+                            observation=fast_observation,
+                            action_names=action_names,
+                            max_action_chunk_size=args.max_action_chunk_size,
+                            label=f"fast@{chunk_idx}",
+                        )
+                        action_chunk, _ = merge_fast_action_chunk(
+                            action_chunk,
+                            fast_chunk,
+                            chunk_idx=chunk_idx,
+                            update_mode=args.async_ae_update,
+                        )
+                        n_action_steps = action_chunk.shape[0]
+                        current_action_step += 1
+                    except Exception as exc:
+                        print(
+                            f"Fast tactile inference failed at offset {chunk_idx}; keeping current chunk: {exc}",
+                            flush=True,
+                        )
+                else:
+                    if fast_executor is None:
+                        raise RuntimeError("fast_executor is not initialized for background async-AE requests.")
+                    if pending_fast_requests:
+                        print(
+                            f"Skipping background fast@{chunk_idx}; previous fast request is still running.",
+                            flush=True,
+                        )
+                    else:
+                        request_offset = int(chunk_idx)
+                        request_chunk_id = int(active_async_chunk_id)
+                        future = fast_executor.submit(
+                            request_action_chunk,
+                            client=fast_client,
+                            observation=fast_observation,
+                            action_names=action_names,
+                            max_action_chunk_size=args.max_action_chunk_size,
+                            label=f"fast@{request_offset}",
+                        )
+                        pending_fast_requests[future] = {
+                            "offset": request_offset,
+                            "chunk_id": request_chunk_id,
+                        }
+                        current_action_step += 1
+                        print(
+                            f"Submitted background fast@{request_offset} for chunk {request_chunk_id}; "
+                            "continuing 15Hz control.",
+                            flush=True,
+                        )
 
             raw_action = action_chunk[chunk_idx].copy()
             chunk_idx += 1
@@ -1033,6 +1153,8 @@ def main() -> int:
         traceback.print_exc()
         return 1
     finally:
+        if fast_executor is not None:
+            fast_executor.shutdown(wait=False, cancel_futures=True)
         if robot.is_connected:
             print("Disconnecting robot...")
             try:

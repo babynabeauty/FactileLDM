@@ -2222,6 +2222,168 @@ class Pi0LatentFlow(_model.BaseModel):
         x_0, _, _ = jax.lax.while_loop(cond, step, (noise, 1.0, query_noise_rng))
         return x_0
 
+    def _cached_vlm_async_denoise_with_prefix_cache(
+        self,
+        rng: at.KeyArrayLike,
+        observation: _model.Observation,
+        *,
+        history_effort: at.Array,
+        prefix_mask: at.Array,
+        prefix_kv_cache: object,
+        async_chunk_offset: at.Int[at.Array, ""] | int,
+        prefix_future_hidden: at.Array | None,
+        noise: at.Float[at.Array, "b ah ad"] | None = None,
+        num_steps: int | at.Int[at.Array, ""] = 10,
+    ) -> tuple[_model.Actions, at.Array]:
+        batch_size = observation.state.shape[0]
+        action_noise_rng, _ = jax.random.split(rng)
+        if noise is None:
+            noise = jax.random.normal(action_noise_rng, (batch_size, self.action_horizon, self.action_dim))
+
+        dt = -1.0 / num_steps
+        offset = jnp.asarray(async_chunk_offset, dtype=jnp.int32)
+        suffix_slices = self._suffix_slices(self.action_horizon)
+        future_force_slice = suffix_slices["future_force"]
+        initial_future_hidden = jnp.zeros(
+            (batch_size, self.future_force_token_count, self.student_width),
+            dtype=noise.dtype,
+        )
+
+        def step(carry):
+            x_t, time, final_future_hidden = carry
+            timestep = jnp.broadcast_to(time, (batch_size,))
+            future_query_override = (
+                self._cached_async_future_query_override(
+                    prefix_future_hidden,
+                    offset,
+                    x_t.dtype,
+                )
+                if prefix_future_hidden is not None
+                else None
+            )
+            async_out, async_layer_hiddens = self._student_suffix_with_prefix_cache_multilayer(
+                observation=observation,
+                history_effort=history_effort,
+                prefix_mask=prefix_mask,
+                prefix_kv_cache=prefix_kv_cache,
+                noisy_actions=x_t,
+                timestep=timestep,
+                future_force_query_override=future_query_override,
+                async_offset=offset,
+            )
+            v_t = self._decode_action_velocity(async_out, expert="student")
+            final_future_hidden = async_layer_hiddens[-1][:, future_force_slice, :]
+            return x_t + dt * v_t, time + dt, final_future_hidden
+
+        def cond(carry):
+            _, time, _ = carry
+            return time >= -dt / 2
+
+        x_0, _, final_future_hidden = jax.lax.while_loop(cond, step, (noise, 1.0, initial_future_hidden))
+        return x_0, final_future_hidden
+
+    def _preprocess_cached_vlm_async_observation(
+        self,
+        observation: _model.Observation,
+    ) -> _model.Observation:
+        original_flow_img = observation.flow_img
+        original_wrist_flow_img = observation.wrist_flow_img
+        original_future_rgb_img = observation.future_rgb_img
+        original_future_wrist_rgb_img = observation.future_wrist_rgb_img
+        original_scene_flow = observation.scene_flow
+        observation = _model.preprocess_observation(None, observation, train=False, effort_type=self.effort_type)
+        return self._restore_aux_images(
+            observation,
+            original_flow_img,
+            original_wrist_flow_img,
+            original_future_rgb_img,
+            original_future_wrist_rgb_img,
+            original_scene_flow,
+        )
+
+    def sample_actions_cached_vlm_async_ae_slow(
+        self,
+        rng: at.KeyArrayLike,
+        observation: _model.Observation,
+        *,
+        noise: at.Float[at.Array, "b ah ad"] | None = None,
+        num_steps: int | at.Int[at.Array, ""] = 10,
+    ) -> tuple[_model.Actions, object, at.Array, at.Array]:
+        if not self.cached_vlm_async_ae_enabled:
+            raise ValueError(
+                "Received a cached-VLM async AE inference request, but this checkpoint/config was not "
+                "created with cached_vlm_async_ae_enabled=True. Start the server with "
+                "pi0_xhand_tactile_structured_raw_dual_ae_cached_vlm_async_ae or run the client without "
+                "--cached-vlm-async-ae."
+            )
+        observation = self._preprocess_cached_vlm_async_observation(observation)
+        history_effort, _ = self._split_effort(observation, require_future=False, dtype=jnp.float32)
+        prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(observation)
+        prefix_kv_cache, _ = self._prefix_kv_cache(prefix_tokens, prefix_mask, prefix_ar_mask)
+        actions, final_future_hidden = self._cached_vlm_async_denoise_with_prefix_cache(
+            rng,
+            observation,
+            history_effort=history_effort,
+            prefix_mask=prefix_mask,
+            prefix_kv_cache=prefix_kv_cache,
+            async_chunk_offset=0,
+            prefix_future_hidden=None,
+            noise=noise,
+            num_steps=num_steps,
+        )
+        return actions, prefix_kv_cache, prefix_mask, final_future_hidden
+
+    def sample_actions_cached_vlm_async_ae_fast(
+        self,
+        rng: at.KeyArrayLike,
+        observation: _model.Observation,
+        *,
+        prefix_kv_cache: object,
+        prefix_mask: at.Array,
+        prefix_future_hidden: at.Array,
+        async_chunk_offset: at.Int[at.Array, ""] | int = 0,
+        async_fresh_effort: at.Array | None = None,
+        noise: at.Float[at.Array, "b ah ad"] | None = None,
+        num_steps: int | at.Int[at.Array, ""] = 10,
+    ) -> tuple[_model.Actions, at.Array]:
+        if not self.cached_vlm_async_ae_enabled:
+            raise ValueError(
+                "Received a cached-VLM async AE fast request, but cached_vlm_async_ae_enabled=False."
+            )
+        observation = self._preprocess_cached_vlm_async_observation(observation)
+        history_effort, _ = self._split_effort(observation, require_future=False, dtype=jnp.float32)
+        fresh_history_effort = history_effort
+        if async_fresh_effort is not None:
+            fresh_history_effort = jnp.asarray(async_fresh_effort, dtype=jnp.float32)
+            fresh_history_effort = self._pad_or_crop_effort(
+                fresh_history_effort,
+                self.force_input_frames,
+                from_end=True,
+            )
+        if noise is None:
+            action_noise_rng, _ = jax.random.split(rng)
+            noise = jax.random.normal(
+                action_noise_rng,
+                (observation.state.shape[0], self.action_horizon, self.action_dim),
+            )
+        actions, final_future_hidden = self._cached_vlm_async_denoise_with_prefix_cache(
+            rng,
+            observation,
+            history_effort=fresh_history_effort,
+            prefix_mask=prefix_mask,
+            prefix_kv_cache=prefix_kv_cache,
+            async_chunk_offset=async_chunk_offset,
+            prefix_future_hidden=prefix_future_hidden,
+            noise=noise,
+            num_steps=num_steps,
+        )
+        offset = jnp.asarray(async_chunk_offset, dtype=jnp.int32)
+        step_mask = (
+            jnp.arange(self.action_horizon, dtype=jnp.int32)[None, :, None] >= offset
+        ).astype(actions.dtype)
+        actions = noise * (1.0 - step_mask) + actions * step_mask
+        return actions, final_future_hidden
+
     def sample_actions_cached_vlm_async_ae(
         self,
         rng: at.KeyArrayLike,
@@ -2233,84 +2395,15 @@ class Pi0LatentFlow(_model.BaseModel):
         noise: at.Float[at.Array, "b ah ad"] | None = None,
         num_steps: int | at.Int[at.Array, ""] = 10,
     ) -> _model.Actions:
-        if not self.cached_vlm_async_ae_enabled:
-            return self.sample_actions(rng, observation, num_steps=num_steps, noise=noise)
-        if async_mode not in {"slow", "fast", "slow_and_fast"}:
-            raise ValueError(f"Unsupported cached async AE mode={async_mode!r}.")
-
-        original_flow_img = observation.flow_img
-        original_wrist_flow_img = observation.wrist_flow_img
-        original_future_rgb_img = observation.future_rgb_img
-        original_future_wrist_rgb_img = observation.future_wrist_rgb_img
-        original_scene_flow = observation.scene_flow
-        observation = _model.preprocess_observation(None, observation, train=False, effort_type=self.effort_type)
-        observation = self._restore_aux_images(
+        if async_mode not in {"slow", "slow_and_fast"}:
+            raise ValueError(
+                "sample_actions_cached_vlm_async_ae no longer supports standalone fast requests. "
+                "Use the policy server cache path."
+            )
+        actions, _, _, _ = self.sample_actions_cached_vlm_async_ae_slow(
+            rng,
             observation,
-            original_flow_img,
-            original_wrist_flow_img,
-            original_future_rgb_img,
-            original_future_wrist_rgb_img,
-            original_scene_flow,
+            noise=noise,
+            num_steps=num_steps,
         )
-        history_effort, _ = self._split_effort(observation, require_future=False, dtype=jnp.float32)
-        fresh_history_effort = history_effort
-        if async_mode == "fast" and async_fresh_effort is not None:
-            fresh_history_effort = jnp.asarray(async_fresh_effort, dtype=jnp.float32)
-            fresh_history_effort = self._pad_or_crop_effort(
-                fresh_history_effort,
-                self.force_input_frames,
-                from_end=True,
-            )
-
-        batch_size = observation.state.shape[0]
-        action_noise_rng, _ = jax.random.split(rng)
-        if noise is None:
-            noise = jax.random.normal(action_noise_rng, (batch_size, self.action_horizon, self.action_dim))
-
-        prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(observation)
-        prefix_kv_cache, _ = self._prefix_kv_cache(prefix_tokens, prefix_mask, prefix_ar_mask)
-        dt = -1.0 / num_steps
-        offset = jnp.asarray(async_chunk_offset, dtype=jnp.int32)
-
-        def step(carry):
-            x_t, time = carry
-            timestep = jnp.broadcast_to(time, (batch_size,))
-            _, base_hiddens = self._student_suffix_with_prefix_cache_multilayer(
-                observation=observation,
-                history_effort=history_effort,
-                prefix_mask=prefix_mask,
-                prefix_kv_cache=prefix_kv_cache,
-                noisy_actions=x_t,
-                timestep=timestep,
-            )
-            suffix_slices = self._suffix_slices(self.action_horizon)
-            future_force_slice = suffix_slices["future_force"]
-            future_query_override = self._cached_async_future_query_override(
-                base_hiddens[-1][:, future_force_slice, :],
-                offset,
-                x_t.dtype,
-            )
-            async_out, _ = self._student_suffix_with_prefix_cache_multilayer(
-                observation=observation,
-                history_effort=fresh_history_effort,
-                prefix_mask=prefix_mask,
-                prefix_kv_cache=prefix_kv_cache,
-                noisy_actions=x_t,
-                timestep=timestep,
-                future_force_query_override=future_query_override,
-                async_offset=offset,
-            )
-            v_t = self._decode_action_velocity(async_out, expert="student")
-            return x_t + dt * v_t, time + dt
-
-        def cond(carry):
-            _, time = carry
-            return time >= -dt / 2
-
-        x_0, _ = jax.lax.while_loop(cond, step, (noise, 1.0))
-        if async_mode == "fast":
-            step_mask = (
-                jnp.arange(self.action_horizon, dtype=jnp.int32)[None, :, None] >= offset
-            ).astype(x_0.dtype)
-            x_0 = noise * (1.0 - step_mask) + x_0 * step_mask
-        return x_0
+        return actions
