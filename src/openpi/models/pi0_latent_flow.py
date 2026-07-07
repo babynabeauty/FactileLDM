@@ -2272,7 +2272,7 @@ class Pi0LatentFlow(_model.BaseModel):
                 async_offset=offset,
             )
             v_t = self._decode_action_velocity(async_out, expert="student")
-            final_future_hidden = async_layer_hiddens[-1][:, future_force_slice, :]
+            final_future_hidden = async_layer_hiddens[-1][:, future_force_slice, :].astype(final_future_hidden.dtype)
             return x_t + dt * v_t, time + dt, final_future_hidden
 
         def cond(carry):
