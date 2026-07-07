@@ -830,7 +830,56 @@ def request_action_chunk(
         f"client_roundtrip={infer_ms:.1f}ms, policy={policy_ms}, server={server_ms}",
         flush=True,
     )
+    async_debug = inference_result.get("async_debug")
+    if isinstance(async_debug, dict):
+        print(format_async_debug(async_debug), flush=True)
     return action_chunk, inference_result, infer_ms
+
+
+def _fmt_stats(stats) -> str:
+    if not isinstance(stats, dict):
+        return "None"
+    shape = stats.get("shape")
+    mean = stats.get("mean")
+    std = stats.get("std")
+    l2 = stats.get("l2")
+    first3 = stats.get("first3")
+    return (
+        f"shape={shape}, mean={mean:.4g}, std={std:.4g}, l2={l2:.4g}, first3={first3}"
+        if mean is not None and std is not None and l2 is not None
+        else f"shape={shape}"
+    )
+
+
+def format_async_debug(debug: dict) -> str:
+    mode = debug.get("mode")
+    chunk_id = debug.get("chunk_id")
+    offset = debug.get("offset")
+    prefix_count = debug.get("future_prefix_token_count")
+    fast_minimal = debug.get("fast_minimal")
+    if mode == "slow":
+        return (
+            "[async-debug slow] "
+            f"chunk={chunk_id}, offset={offset}, fast_minimal={fast_minimal}, "
+            f"prefix_mask_tokens={debug.get('prefix_mask_tokens')}, "
+            f"C_prefix_tokens={prefix_count}, "
+            f"state_t0({_fmt_stats(debug.get('model_state'))}), "
+            f"C_after({_fmt_stats(debug.get('future_hidden_after'))})"
+        )
+    return (
+        "[async-debug fast] "
+        f"chunk={chunk_id}, offset={offset}, fast_minimal={fast_minimal}, "
+        f"cache_hit={debug.get('cached_input_hit')}, "
+        f"has_kv={debug.get('cache_has_prefix_kv')}, "
+        f"has_C_prev={debug.get('cache_has_future_hidden')}, "
+        f"used_t0_state={debug.get('used_t0_state')}, "
+        f"C_prefix_tokens={prefix_count}, "
+        f"state_t0({_fmt_stats(debug.get('model_state'))}), "
+        f"state_fresh({_fmt_stats(debug.get('fresh_state'))}), "
+        f"fresh_effort({_fmt_stats(debug.get('fresh_effort'))}), "
+        f"C_before({_fmt_stats(debug.get('future_hidden_before'))}), "
+        f"C_after({_fmt_stats(debug.get('future_hidden_after'))})"
+    )
 
 
 def merge_fast_action_chunk(
