@@ -31,7 +31,13 @@ run_four_gpu_training_queue() {
   local gpu_min_free_mib="${GPU_MIN_FREE_MIB:-70000}"
   local gpu_poll_seconds="${GPU_POLL_SECONDS:-60}"
   local gpu_status_log_seconds="${GPU_STATUS_LOG_SECONDS:-300}"
-  local -a gpu_slots=("0,1,2,3" "4,5,6,7")
+  local gpu_slots_spec="${GPU_SLOTS:-0,1,2,3;4,5,6,7}"
+  local -a gpu_slots=()
+  IFS=';' read -r -a gpu_slots <<< "$gpu_slots_spec"
+  if (( ${#gpu_slots[@]} == 0 )); then
+    echo "ERROR: GPU_SLOTS must define at least one slot, got: $gpu_slots_spec" >&2
+    return 2
+  fi
 
   if [[ ! "$gpu_wait_enabled" =~ ^[01]$ ]]; then
     echo "ERROR: GPU_WAIT_ENABLED must be 0 or 1, got: $gpu_wait_enabled" >&2
@@ -93,8 +99,23 @@ run_four_gpu_training_queue() {
   if command -v nvidia-smi >/dev/null 2>&1; then
     local gpu_count
     gpu_count="$(nvidia-smi -L | wc -l)"
-    if (( gpu_count < 8 )); then
-      echo "ERROR: This scheduler requires 8 visible GPUs, found $gpu_count." >&2
+    local max_gpu_id=-1
+    local slot_spec
+    local gpu_id
+    local -a slot_gpu_ids=()
+    for slot_spec in "${gpu_slots[@]}"; do
+      IFS=',' read -r -a slot_gpu_ids <<< "$slot_spec"
+      for gpu_id in "${slot_gpu_ids[@]}"; do
+        gpu_id="${gpu_id//[[:space:]]/}"
+        if [[ ! "$gpu_id" =~ ^[0-9]+$ ]]; then
+          echo "ERROR: Invalid GPU id in GPU_SLOTS: $gpu_slots_spec" >&2
+          return 2
+        fi
+        (( gpu_id > max_gpu_id )) && max_gpu_id="$gpu_id"
+      done
+    done
+    if (( gpu_count <= max_gpu_id )); then
+      echo "ERROR: GPU_SLOTS references GPU${max_gpu_id}, but only ${gpu_count} visible GPUs were found." >&2
       return 2
     fi
   elif (( gpu_wait_enabled == 1 )); then
@@ -110,7 +131,11 @@ run_four_gpu_training_queue() {
   declare -A pid_to_label=()
   declare -A gpu_free_mib=()
   local -a active_pids=()
-  local -a slot_pid=("" "")
+  local -a slot_pid=()
+  local slot_init_index
+  for slot_init_index in "${!gpu_slots[@]}"; do
+    slot_pid[$slot_init_index]=""
+  done
   local next_job=0
   local failed=0
   local last_gpu_status_log=0
@@ -246,7 +271,7 @@ run_four_gpu_training_queue() {
   else
     log_queue "Checkpoint overwrite is disabled; existing checkpoint dirs will stop the scheduler."
   fi
-  log_queue "Two GPU slots: ${gpu_slots[0]} and ${gpu_slots[1]}"
+  log_queue "GPU slots: ${gpu_slots[*]}"
   if (( gpu_wait_enabled == 1 )); then
     log_queue "GPU gate: every GPU in a slot must have at least ${gpu_min_free_mib} MiB free."
     log_queue "GPU polling interval: ${gpu_poll_seconds}s"
@@ -294,7 +319,7 @@ run_four_gpu_training_queue() {
       fi
 
       local slot_index
-      for slot_index in 0 1; do
+      for slot_index in "${!gpu_slots[@]}"; do
         if (( next_job >= ${#JOB_LABELS[@]} )); then
           break
         fi
@@ -316,7 +341,12 @@ run_four_gpu_training_queue() {
           if (( memory_query_ok == 0 )); then
             log_queue "Waiting: nvidia-smi memory query failed; retrying in ${gpu_poll_seconds}s."
           else
-            log_queue "Waiting for a free four-GPU slot (threshold=${gpu_min_free_mib}MiB): slot0[$(gpu_slot_status 0)] slot1[$(gpu_slot_status 1)]"
+            local -a slot_statuses=()
+            local status_slot_index
+            for status_slot_index in "${!gpu_slots[@]}"; do
+              slot_statuses+=("slot${status_slot_index}[$(gpu_slot_status "$status_slot_index")]")
+            done
+            log_queue "Waiting for a free GPU slot (threshold=${gpu_min_free_mib}MiB): ${slot_statuses[*]}"
           fi
           last_gpu_status_log="$now"
         fi
