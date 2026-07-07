@@ -106,8 +106,8 @@ class Policy(BasePolicy):
         self._is_pytorch_model = is_pytorch
         self._pytorch_device = pytorch_device
         self._debug_infer_count = 0
-        self._trex_input_cache: dict[int, dict[str, Any]] = {}
-        self._trex_noise_cache: dict[int, jax.Array] = {}
+        self._async_input_cache: dict[int, dict[str, Any]] = {}
+        self._async_noise_cache: dict[int, jax.Array] = {}
 
         if self._is_pytorch_model:
             self._model = self._model.to(pytorch_device)
@@ -116,48 +116,47 @@ class Policy(BasePolicy):
         else:
             # JAX model setup
             self._sample_actions = nnx_utils.module_jit(model.sample_actions)
-            self._sample_actions_trex = (
-                nnx_utils.module_jit(model.sample_actions_trex, static_argnames=("trex_mode",))
-                if hasattr(model, "sample_actions_trex")
+            self._sample_actions_cached_async = (
+                nnx_utils.module_jit(model.sample_actions_cached_vlm_async_ae, static_argnames=("async_mode",))
+                if hasattr(model, "sample_actions_cached_vlm_async_ae")
                 else None
             )
             self._rng = rng or jax.random.key(0)
 
-    def _trex_chunk_id_int(self, trex_chunk_id: Any) -> int:
+    def _async_chunk_id_int(self, async_chunk_id: Any) -> int:
         try:
-            return int(np.asarray(trex_chunk_id).item())
+            return int(np.asarray(async_chunk_id).item())
         except Exception:
             return -1
 
-    def _cache_trex_inputs(self, chunk_id: int, inputs: dict[str, Any]) -> None:
+    def _cache_async_inputs(self, chunk_id: int, inputs: dict[str, Any]) -> None:
         if chunk_id < 0:
             return
-        # Keep the chunk-start context. Fast requests reuse this slow context
-        # and pass fresh tactile separately, matching the T-Rex-style training
-        # path where the tactile expert refines a cached slow trajectory.
-        self._trex_input_cache[chunk_id] = jax.tree.map(lambda x: np.asarray(x).copy(), inputs)
-        for old_chunk_id in list(self._trex_input_cache):
+        # Keep the chunk-start context. Fast requests reuse this cached VLM/state
+        # context and pass fresh tactile separately.
+        self._async_input_cache[chunk_id] = jax.tree.map(lambda x: np.asarray(x).copy(), inputs)
+        for old_chunk_id in list(self._async_input_cache):
             if old_chunk_id < chunk_id - 2:
-                self._trex_input_cache.pop(old_chunk_id, None)
-                self._trex_noise_cache.pop(old_chunk_id, None)
+                self._async_input_cache.pop(old_chunk_id, None)
+                self._async_noise_cache.pop(old_chunk_id, None)
 
-    def _cached_trex_inputs(self, chunk_id: int, fallback: dict[str, Any]) -> dict[str, Any]:
-        if chunk_id < 0 or chunk_id not in self._trex_input_cache:
+    def _cached_async_inputs(self, chunk_id: int, fallback: dict[str, Any]) -> dict[str, Any]:
+        if chunk_id < 0 or chunk_id not in self._async_input_cache:
             return fallback
-        return jax.tree.map(lambda x: np.asarray(x).copy(), self._trex_input_cache[chunk_id])
+        return jax.tree.map(lambda x: np.asarray(x).copy(), self._async_input_cache[chunk_id])
 
     @override
     def infer(self, obs: dict, *, noise: np.ndarray | None = None) -> dict:  # type: ignore[misc]
         # Make a copy since transformations may modify the inputs in place.
         debug_index = self._debug_infer_count
-        trex_mode = obs.get("trex_mode", obs.get("mode"))
-        if isinstance(trex_mode, np.ndarray):
-            trex_mode = str(trex_mode.item())
-        elif trex_mode is not None:
-            trex_mode = str(trex_mode)
-        trex_chunk_offset = obs.get("trex_chunk_offset", 0)
-        trex_chunk_id = obs.get("trex_chunk_id", -1)
-        trex_requested = trex_mode in {"slow", "fast", "slow_and_fast"}
+        async_mode = obs.get("async_mode", obs.get("mode"))
+        if isinstance(async_mode, np.ndarray):
+            async_mode = str(async_mode.item())
+        elif async_mode is not None:
+            async_mode = str(async_mode)
+        async_chunk_offset = obs.get("async_chunk_offset", 0)
+        async_chunk_id = obs.get("async_chunk_id", -1)
+        async_requested = async_mode in {"slow", "fast", "slow_and_fast"}
         inputs = jax.tree.map(lambda x: x, obs)
         if debug_index < DEBUG_INFER_PRINT_LIMIT:
             _debug_print_tree("SERVER RAW OBS FROM CLIENT", inputs, infer_index=debug_index)
@@ -165,18 +164,18 @@ class Policy(BasePolicy):
         if debug_index < DEBUG_INFER_PRINT_LIMIT:
             _debug_print_tree("SERVER MODEL INPUT AFTER TRANSFORM", inputs, infer_index=debug_index)
         self._debug_infer_count += 1
-        trex_chunk_id_int = self._trex_chunk_id_int(trex_chunk_id)
+        async_chunk_id_int = self._async_chunk_id_int(async_chunk_id)
         model_inputs = inputs
         output_inputs = inputs
-        trex_fresh_inputs = None
-        if trex_requested and not self._is_pytorch_model:
-            if trex_mode in {"slow", "slow_and_fast"}:
-                self._cache_trex_inputs(trex_chunk_id_int, inputs)
-            elif trex_mode == "fast":
-                trex_fresh_inputs = inputs
-                model_inputs = self._cached_trex_inputs(trex_chunk_id_int, inputs)
+        async_fresh_inputs = None
+        if async_requested and not self._is_pytorch_model:
+            if async_mode in {"slow", "slow_and_fast"}:
+                self._cache_async_inputs(async_chunk_id_int, inputs)
+            elif async_mode == "fast":
+                async_fresh_inputs = inputs
+                model_inputs = self._cached_async_inputs(async_chunk_id_int, inputs)
                 # Output transforms should still see the latest robot state.
-                output_inputs = trex_fresh_inputs
+                output_inputs = async_fresh_inputs
         if not self._is_pytorch_model:
             # Make a batch and convert to jax.Array.
             inputs = jax.tree.map(lambda x: jnp.asarray(x)[np.newaxis, ...], model_inputs)
@@ -191,37 +190,37 @@ class Policy(BasePolicy):
         # Prepare kwargs for sample_actions
         sample_kwargs = dict(self._sample_kwargs)
         sample_fn = self._sample_actions
-        if trex_requested:
+        if async_requested:
             if self._is_pytorch_model:
-                raise RuntimeError("T-Rex slow/fast websocket mode is only wired for JAX policies in this server.")
-            if self._sample_actions_trex is None:
+                raise RuntimeError("Cached async AE websocket mode is only wired for JAX policies in this server.")
+            if self._sample_actions_cached_async is None:
                 # Old configs should not receive fast requests. For slow_and_fast,
                 # fall back to the normal one-shot sampler so legacy deployment
                 # remains usable if a client accidentally includes the mode field.
-                if trex_mode == "fast":
+                if async_mode == "fast":
                     raise RuntimeError(
-                        "Received mode='fast', but this model/server does not expose sample_actions_trex."
+                        "Received mode='fast', but this model/server does not expose "
+                        "sample_actions_cached_vlm_async_ae."
                     )
             else:
-                sample_fn = self._sample_actions_trex
+                sample_fn = self._sample_actions_cached_async
                 sample_kwargs.update(
-                    trex_mode=trex_mode,
-                    trex_chunk_offset=jnp.asarray(trex_chunk_offset),
-                    trex_chunk_id=jnp.asarray(trex_chunk_id),
+                    async_mode=async_mode,
+                    async_chunk_offset=jnp.asarray(async_chunk_offset),
                 )
                 model_action_horizon = int(getattr(self._model, "action_horizon"))
                 model_action_dim = int(getattr(self._model, "action_dim"))
-                if trex_mode in {"slow", "slow_and_fast"}:
+                if async_mode in {"slow", "slow_and_fast"}:
                     action_noise = jax.random.normal(
                         sample_rng_or_pytorch_device,
                         (1, model_action_horizon, model_action_dim),
                     )
-                    self._trex_noise_cache[trex_chunk_id_int] = action_noise
+                    self._async_noise_cache[async_chunk_id_int] = action_noise
                     sample_kwargs["noise"] = action_noise
-                elif trex_mode == "fast" and trex_chunk_id_int in self._trex_noise_cache:
-                    sample_kwargs["noise"] = self._trex_noise_cache[trex_chunk_id_int]
-                if trex_mode == "fast" and trex_fresh_inputs is not None and "effort" in trex_fresh_inputs:
-                    sample_kwargs["trex_fresh_effort"] = output_inputs["effort"]
+                elif async_mode == "fast" and async_chunk_id_int in self._async_noise_cache:
+                    sample_kwargs["noise"] = self._async_noise_cache[async_chunk_id_int]
+                if async_mode == "fast" and async_fresh_inputs is not None and "effort" in async_fresh_inputs:
+                    sample_kwargs["async_fresh_effort"] = output_inputs["effort"]
         # sample_kwargs.update(debug_query_noise_scale=0.3)
         if noise is not None:
             noise = torch.from_numpy(noise).to(self._pytorch_device) if self._is_pytorch_model else jnp.asarray(noise)
@@ -251,10 +250,10 @@ class Policy(BasePolicy):
         outputs["policy_timing"] = {
             "infer_ms": model_time * 1000,
         }
-        if trex_requested:
-            outputs["trex_mode"] = trex_mode
-            outputs["trex_chunk_offset"] = np.asarray(trex_chunk_offset)
-            outputs["trex_chunk_id"] = np.asarray(trex_chunk_id)
+        if async_requested:
+            outputs["async_mode"] = async_mode
+            outputs["async_chunk_offset"] = np.asarray(async_chunk_offset)
+            outputs["async_chunk_id"] = np.asarray(async_chunk_id)
         return outputs
 
     @property

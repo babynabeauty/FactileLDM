@@ -60,17 +60,14 @@ JOB_LABELS=(
   "A_pi0_full_h16"
   "B_raw_dual_ae_async_aligned"
   "C_cached_vlm_async_pred_prefix"
-  "D_cached_vlm_async_gt_prefix"
 )
 JOB_CONFIGS=(
   "pi0_xhand_full_finetune_h16"
   "pi0_xhand_tactile_structured_raw_dual_ae_history_future_pool_async_aligned"
   "pi0_xhand_tactile_structured_raw_dual_ae_cached_vlm_async_ae"
-  "pi0_xhand_tactile_structured_raw_dual_ae_cached_vlm_async_gt_prefix_ae"
 )
 JOB_ASSET_DIRS=(
   "$NO_TACTILE_ASSETS_DIR"
-  "$RAW_TACTILE_ASSETS_DIR"
   "$RAW_TACTILE_ASSETS_DIR"
   "$RAW_TACTILE_ASSETS_DIR"
 )

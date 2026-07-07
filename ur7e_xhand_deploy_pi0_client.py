@@ -42,23 +42,22 @@ Common --policy-input-mode choices:
 #      pi0_xhand_tactile_structured_adaptive_patch_raw_dual_ae_history_future_pool
 --policy-input-mode adaptive_patch_raw_dual_ae
 
-# 8. T-Rex-style slow/fast raw tactile expert
-#    configs:
-#      pi0_xhand_tactile_structured_raw_dual_ae_history_future_pool_trex_tactile_expert
-#      pi0_xhand_tactile_structured_raw_dual_ae_history_future_pool_trex_hand_tactile_expert
+# 8. cached-VLM async AE raw tactile
+#    config:
+#      pi0_xhand_tactile_structured_raw_dual_ae_cached_vlm_async_ae
 --policy-input-mode structured_raw_dual_ae
---trex-slow-fast
---trex-fast-offsets 4,8,12
---trex-fast-update suffix
+--cached-vlm-async-ae
+--async-ae-offsets 4,8,12
+--async-ae-update suffix
 --max-action-chunk-size 16
 --structured-history-offsets=-9,-8,-7,-6,-5,-4,-3,-2,-1,0
 
-# 9. T-Rex-style slow/fast adaptive patch raw tactile expert
-#    Use this only for adaptive-patch T-Rex checkpoints.
+# 9. cached-VLM async AE adaptive patch raw tactile
+#    Use this only for adaptive-patch cached async checkpoints.
 --policy-input-mode adaptive_patch_raw_dual_ae
---trex-slow-fast
---trex-fast-offsets 4,8,12
---trex-fast-update suffix
+--cached-vlm-async-ae
+--async-ae-offsets 4,8,12
+--async-ae-update suffix
 --max-action-chunk-size 16
 --structured-history-offsets=-9,-8,-7,-6,-5,-4,-3,-2,-1,0
 
@@ -94,8 +93,8 @@ DEFAULT_DATASET_NAME = "grasp_pipette"
 DEFAULT_TASK = "pick up the pipette"
 DEFAULT_SERVER_PORT = 8990
 STRUCTURED_TACTILE_HISTORY_OFFSETS = (-18, -16, -14, -12, -10, -8, -6, -4, -2, 0)
-TREX_TACTILE_HISTORY_OFFSETS = tuple(range(-9, 1))
-TREX_FAST_OFFSETS = (4, 8, 12)
+ASYNC_AE_HISTORY_OFFSETS = tuple(range(-9, 1))
+ASYNC_AE_OFFSETS = (4, 8, 12)
 TACTILE_SENSOR_COUNT = 5
 TACTILE_BLOCK_SIZE = 384
 TACTILE_BLOCK_START = 52
@@ -335,21 +334,21 @@ def parse_args() -> argparse.Namespace:
         help="Comma-separated frame offsets for structured_single_ae history, matching training.",
     )
     parser.add_argument(
-        "--trex-slow-fast",
+        "--cached-vlm-async-ae",
         action="store_true",
         help=(
-            "Enable T-Rex-style client cadence. At chunk start send mode=slow_and_fast, "
-            "then send mode=fast at --trex-fast-offsets with fresh tactile/state."
+            "Enable cached-VLM async AE cadence. At chunk start send mode=slow_and_fast, "
+            "then send mode=fast at --async-ae-offsets with fresh tactile/state."
         ),
     )
     parser.add_argument(
-        "--trex-fast-offsets",
+        "--async-ae-offsets",
         type=str,
-        default=",".join(str(x) for x in TREX_FAST_OFFSETS),
-        help="Comma-separated intra-chunk offsets for fast tactile expert requests, e.g. 4,8,12.",
+        default=",".join(str(x) for x in ASYNC_AE_OFFSETS),
+        help="Comma-separated intra-chunk offsets for cached async AE requests, e.g. 4,8,12.",
     )
     parser.add_argument(
-        "--trex-fast-update",
+        "--async-ae-update",
         choices=["suffix", "reset"],
         default="suffix",
         help=(
@@ -648,9 +647,9 @@ def build_pi0_observation(
     policy_input_mode: str,
     state_history: StateHistoryBuffer | None = None,
     frame_idx: int | None = None,
-    trex_mode: str | None = None,
-    trex_chunk_offset: int | None = None,
-    trex_chunk_id: int | None = None,
+    async_mode: str | None = None,
+    async_chunk_offset: int | None = None,
+    async_chunk_id: int | None = None,
 ) -> dict:
     if is_structured_policy_input_mode(policy_input_mode):
         if state_history is None or frame_idx is None:
@@ -664,17 +663,15 @@ def build_pi0_observation(
         "prompt": args.prompt or args.task,
         "current_action_step": current_action_step,
     }
-    if trex_mode is not None:
-        # `mode` mirrors T-Rex's server API; `trex_mode` avoids ambiguity for
-        # servers that reserve `mode` for other routing. New servers should read
-        # this before input transforms, because transforms intentionally drop
-        # non-model fields.
-        observation["mode"] = trex_mode
-        observation["trex_mode"] = trex_mode
-    if trex_chunk_offset is not None:
-        observation["trex_chunk_offset"] = np.asarray(trex_chunk_offset, dtype=np.int32)
-    if trex_chunk_id is not None:
-        observation["trex_chunk_id"] = np.asarray(trex_chunk_id, dtype=np.int32)
+    if async_mode is not None:
+        # Read by the server before input transforms, because transforms
+        # intentionally drop non-model routing fields.
+        observation["mode"] = async_mode
+        observation["async_mode"] = async_mode
+    if async_chunk_offset is not None:
+        observation["async_chunk_offset"] = np.asarray(async_chunk_offset, dtype=np.int32)
+    if async_chunk_id is not None:
+        observation["async_chunk_id"] = np.asarray(async_chunk_id, dtype=np.int32)
 
     if policy_input_mode == "obs_ae":
         tactile = extract_current_calc_force(env_state, state_names)
@@ -821,11 +818,11 @@ def main() -> int:
             f"available cameras are {sorted(supported_cameras)}"
         )
     default_history_offsets_arg = ",".join(str(x) for x in STRUCTURED_TACTILE_HISTORY_OFFSETS)
-    if args.trex_slow_fast and args.structured_history_offsets == default_history_offsets_arg:
-        history_offsets = TREX_TACTILE_HISTORY_OFFSETS
+    if args.cached_vlm_async_ae and args.structured_history_offsets == default_history_offsets_arg:
+        history_offsets = ASYNC_AE_HISTORY_OFFSETS
     else:
         history_offsets = parse_history_offsets(args.structured_history_offsets)
-    trex_fast_offsets = parse_nonnegative_offsets(args.trex_fast_offsets, name="--trex-fast-offsets")
+    async_ae_offsets = parse_nonnegative_offsets(args.async_ae_offsets, name="--async-ae-offsets")
     preflight_mode = infer_policy_input_mode(args.policy_input_mode, None)
     if preflight_mode in {"obs_ae", *STRUCTURED_POLICY_INPUT_MODES} and not state_schema_has_calc_force(state_names):
         raise ValueError(
@@ -834,11 +831,11 @@ def main() -> int:
             "Check --dataset-dir/--dataset-root/--dataset-name."
         )
     if (
-        args.trex_slow_fast
+        args.cached_vlm_async_ae
         and args.policy_input_mode != "auto"
         and preflight_mode not in STRUCTURED_POLICY_INPUT_MODES
     ):
-        raise ValueError("--trex-slow-fast requires a structured policy input mode.")
+        raise ValueError("--cached-vlm-async-ae requires a structured policy input mode.")
 
     print("=== UR7e + XHand PI0 Deployment Client ===")
     print(f"Server: {args.server_ip}:{args.server_port}")
@@ -849,9 +846,9 @@ def main() -> int:
     print(f"Prompt: {args.prompt or args.task}")
     print(f"FPS: {args.fps}, duration: {args.duration}s")
     print(f"Policy input mode: {args.policy_input_mode}")
-    print(f"T-Rex slow/fast: {args.trex_slow_fast}")
-    if args.trex_slow_fast:
-        print(f"T-Rex fast offsets: {trex_fast_offsets}, update={args.trex_fast_update}")
+    print(f"Cached-VLM async AE: {args.cached_vlm_async_ae}")
+    if args.cached_vlm_async_ae:
+        print(f"Async AE offsets: {async_ae_offsets}, update={args.async_ae_update}")
     print(f"Dry run: {args.dry_run}")
 
     if args.check_config:
@@ -869,8 +866,8 @@ def main() -> int:
     if metadata:
         print(f"Server metadata: {metadata}")
     policy_input_mode = infer_policy_input_mode(args.policy_input_mode, metadata)
-    if args.trex_slow_fast and not is_structured_policy_input_mode(policy_input_mode):
-        raise ValueError(f"--trex-slow-fast resolved to non-structured policy_input_mode={policy_input_mode!r}")
+    if args.cached_vlm_async_ae and not is_structured_policy_input_mode(policy_input_mode):
+        raise ValueError(f"--cached-vlm-async-ae resolved to non-structured policy_input_mode={policy_input_mode!r}")
     state_history = StateHistoryBuffer(history_offsets) if is_structured_policy_input_mode(policy_input_mode) else None
     print(f"Resolved policy input mode: {policy_input_mode}")
     if state_history is not None:
@@ -885,7 +882,7 @@ def main() -> int:
     n_action_steps = 1
     query_count = 0
     current_action_step = 0
-    active_trex_chunk_id = -1
+    active_async_chunk_id = -1
     fast_offsets_sent: set[int] = set()
 
     try:
@@ -920,9 +917,9 @@ def main() -> int:
                 or query_count % args.query_frequency == 0
             )
             if should_query:
-                active_trex_chunk_id += 1
+                active_async_chunk_id += 1
                 fast_offsets_sent = set()
-                trex_mode = "slow_and_fast" if args.trex_slow_fast else None
+                async_mode = "slow_and_fast" if args.cached_vlm_async_ae else None
                 observation = build_pi0_observation(
                     obs=obs,
                     env_state=env_state,
@@ -933,9 +930,9 @@ def main() -> int:
                     policy_input_mode=policy_input_mode,
                     state_history=state_history,
                     frame_idx=frame_idx,
-                    trex_mode=trex_mode,
-                    trex_chunk_offset=0 if args.trex_slow_fast else None,
-                    trex_chunk_id=active_trex_chunk_id if args.trex_slow_fast else None,
+                    async_mode=async_mode,
+                    async_chunk_offset=0 if args.cached_vlm_async_ae else None,
+                    async_chunk_id=active_async_chunk_id if args.cached_vlm_async_ae else None,
                 )
                 if current_action_step < DEBUG_INFER_PRINT_LIMIT:
                     debug_print_client_observation(
@@ -949,7 +946,7 @@ def main() -> int:
                         observation=observation,
                         action_names=action_names,
                         max_action_chunk_size=args.max_action_chunk_size,
-                        label=trex_mode or "regular",
+                        label=async_mode or "regular",
                     )
                     n_action_steps = action_chunk.shape[0]
                     current_action_step += 1
@@ -960,10 +957,10 @@ def main() -> int:
 
             query_count += 1
             if (
-                args.trex_slow_fast
+                args.cached_vlm_async_ae
                 and action_chunk is not None
                 and 0 <= chunk_idx < n_action_steps
-                and chunk_idx in trex_fast_offsets
+                and chunk_idx in async_ae_offsets
                 and chunk_idx not in fast_offsets_sent
             ):
                 fast_offsets_sent.add(chunk_idx)
@@ -977,9 +974,9 @@ def main() -> int:
                     policy_input_mode=policy_input_mode,
                     state_history=state_history,
                     frame_idx=frame_idx,
-                    trex_mode="fast",
-                    trex_chunk_offset=chunk_idx,
-                    trex_chunk_id=active_trex_chunk_id,
+                    async_mode="fast",
+                    async_chunk_offset=chunk_idx,
+                    async_chunk_id=active_async_chunk_id,
                 )
                 try:
                     fast_chunk, _, _ = request_action_chunk(
@@ -993,7 +990,7 @@ def main() -> int:
                         action_chunk,
                         fast_chunk,
                         chunk_idx=chunk_idx,
-                        update_mode=args.trex_fast_update,
+                        update_mode=args.async_ae_update,
                     )
                     n_action_steps = action_chunk.shape[0]
                     current_action_step += 1
