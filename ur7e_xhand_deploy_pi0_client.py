@@ -16,10 +16,6 @@ Common --policy-input-mode choices:
 #    config: pi0_xhand_tactile_obs_ae_full_finetune
 --policy-input-mode obs_ae
 
-# 3. 5x3 合力 structured single-AE，10帧历史 tactile
-#    config: pi0_xhand_tactile_structured_single_ae
---policy-input-mode structured_single_ae
-
 # 4. 5x3 合力 structured dual-AE
 #    configs:
 #      pi0_xhand_tactile_structured_dual_ae

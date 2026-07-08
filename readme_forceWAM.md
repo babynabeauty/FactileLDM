@@ -18,7 +18,7 @@ export HF_LEROBOT_HOME="$PROJECT_ROOT"
 export HF_HUB_OFFLINE=1
 export HF_DATASETS_CACHE=.hf_datasets_cache
 
-DATA_REPO="data/task12345"
+DATA_REPO="data/task12345-2"
 ASSET_ID="$(basename "$DATA_REPO")"
 mkdir -p logs
 ```
