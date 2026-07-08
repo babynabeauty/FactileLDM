@@ -1702,6 +1702,53 @@ _CONFIGS = [
         ema_decay=None,
     ),
     TrainConfig(
+        name="xhand_patch_tactile_encoder_pretrain",
+        model=pi0_config.XHandPatchTactileEncoderPretrainConfig(
+            action_horizon=16,
+            action_dim=32,
+            max_token_len=48,
+            effort_type=EffortType.MOT,
+            effort_dim=1800,
+            force_input_frames=10,
+            tactile_history_offsets=tuple(range(-9, 1)),
+            tactile_num_fingers=5,
+            tactile_points_per_finger=120,
+            tactile_dim_per_finger=3,
+            tactile_num_patches=5,
+            future_tactile_segments=4,
+            future_steps_per_segment=4,
+            tactile_sample_hz=15.0,
+            tactile_tokenizer_dim=256,
+            encoder_width=1024,
+            tactile_raw_contact_top_k=16,
+            tactile_raw_contact_threshold=0.5,
+            tactile_raw_contact_temperature=0.5,
+            patch_distribution_loss_weight=1.0,
+            patch_summary_loss_weight=1.0,
+            patch_contact_loss_weight=0.5,
+        ),
+        data=LeRobotXHandTactileFlowDataConfig(
+            repo_id="grasp_pipette_and_press_button",
+            state_delta_timestamps=tuple(list(range(-9, 1)) + list(range(1, 17))),
+            tactile_mode="raw_force",
+            structured_tactile=True,
+            primary_image_key="observation.images.cam_front",
+            wrist_image_key="observation.images.cam_right",
+            extra_image_key="observation.images.cam_left",
+            future_flow_key=None,
+            future_wrist_flow_key=None,
+            scene_flow_root=None,
+            base_config=DataConfig(prompt_from_task=True),
+        ),
+        weight_loader=weight_loaders.NoOpWeightLoader(),
+        num_train_steps=20_000,
+        batch_size=32,
+        num_workers=2,
+        save_interval=5000,
+        keep_period=5000,
+        ema_decay=None,
+    ),
+    TrainConfig(
         name="pi0_xhand_tactile_action_aware_flare_single_ae",
         model=pi0_config.Pi0FutureTactileConfig(
             action_horizon=32,
@@ -2112,6 +2159,52 @@ _CONFIGS.extend(
             future_tactile_segments=8,
             async_enabled=True,
             async_fast_offsets=(2, 4, 6, 8, 10),
+        ),
+    ]
+)
+
+
+def _patch_distribution_aux_config(source_name: str, new_name: str, *, loss_weight: float = 0.03) -> TrainConfig:
+    source = next(config for config in _CONFIGS if config.name == source_name)
+    return dataclasses.replace(
+        source,
+        name=new_name,
+        model=dataclasses.replace(
+            source.model,
+            tactile_patch_aux_loss_weight=loss_weight,
+        ),
+    )
+
+
+def _patch_pretrained_dual_config(source_name: str, new_name: str, *, freeze_encoder: bool) -> TrainConfig:
+    source = next(config for config in _CONFIGS if config.name == source_name)
+    return dataclasses.replace(
+        source,
+        name=new_name,
+        weight_loader=weight_loaders.Pi0WithPatchTactileEncoderWeightLoader(
+            pi0_params_path="checkpoints/pi0_base/params",
+            encoder_params_path=None,
+        ),
+        freeze_filter=(nnx_utils.PathRegex(".*force_tokenizer.*") if freeze_encoder else nnx.Nothing),
+    )
+
+
+_CONFIGS.extend(
+    [
+        _patch_distribution_aux_config(
+            "pi0_xhand_dual_patch_f4_h16_async",
+            "pi0_xhand_dual_patch_aux_f4_h16_async",
+            loss_weight=0.03,
+        ),
+        _patch_pretrained_dual_config(
+            "pi0_xhand_dual_patch_f4_h16_async",
+            "pi0_xhand_dual_patch_pretrained_f4_h16_async_freeze",
+            freeze_encoder=True,
+        ),
+        _patch_pretrained_dual_config(
+            "pi0_xhand_dual_patch_f4_h16_async",
+            "pi0_xhand_dual_patch_pretrained_f4_h16_async",
+            freeze_encoder=False,
         ),
     ]
 )

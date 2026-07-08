@@ -591,6 +591,58 @@ class PatchInformedFingerTokenizer(RawTactileSpatialTokenizer):
         finger_tokens = jnp.einsum("btfr,btfrd->btfd", patch_weights, patch_tokens)
         return self.patch_norm(finger_tokens)
 
+    def patch_reconstruction_targets(self, forces: jax.Array) -> tuple[jax.Array, jax.Array, jax.Array]:
+        """Return patch distribution, force summary, and contact mask targets.
+
+        Shapes:
+          distribution: [B, T, F, R]
+          summary:      [B, T, F, R, 7] = mean_force(3), abs_max_force(3), strength(1)
+          contact_mask: [B, T, F, R]
+        """
+        if forces.ndim != 5:
+            raise ValueError(f"Expected raw tactile force [B,T,F,P,C], got {forces.shape}.")
+        if forces.shape[2:] != (self.num_fingers, self.num_points, self.dim_per_point):
+            raise ValueError(
+                "Expected raw tactile finger/point shape "
+                f"{(self.num_fingers, self.num_points, self.dim_per_point)}, got {forces.shape[2:]}."
+            )
+
+        forces_f32 = forces.astype(jnp.float32)
+        magnitude = jnp.linalg.norm(forces_f32, axis=-1)
+        temperature = jnp.asarray(max(self.contact_temperature, 1e-6), dtype=jnp.float32)
+        gate = jax.nn.sigmoid((magnitude - self.contact_threshold) / temperature)
+
+        patch_ids = jnp.asarray(self.point_patch_ids, dtype=jnp.int32)
+        patch_masks = jax.nn.one_hot(patch_ids, self.num_patches, dtype=jnp.float32)
+        patch_masks = einops.rearrange(patch_masks, "f p r -> f r p")
+
+        masked_gate = gate[:, :, :, None, :] * patch_masks[None, None, :, :, :]
+        gate_sum = jnp.sum(masked_gate, axis=-1)
+        gate_denom = jnp.maximum(gate_sum, 1e-6)
+        gated_force_mean = jnp.einsum("btfrp,btfpc->btfrc", masked_gate, forces_f32) / gate_denom[..., None]
+
+        abs_forces = jnp.abs(forces_f32)
+        patch_abs_max = jnp.max(
+            jnp.where(patch_masks[None, None, :, :, :, None] > 0, abs_forces[:, :, :, None, :, :], 0.0),
+            axis=-2,
+        )
+        patch_strength = jnp.max(
+            jnp.where(patch_masks[None, None, :, :, :] > 0, magnitude[:, :, :, None, :], 0.0),
+            axis=-1,
+        )
+
+        contact_mask = patch_strength > jnp.asarray(self.contact_threshold, dtype=jnp.float32)
+        active_strength = jnp.where(contact_mask, patch_strength, 0.0)
+        strength_sum = jnp.sum(active_strength, axis=-1, keepdims=True)
+        uniform = jnp.full_like(active_strength, 1.0 / float(self.num_patches))
+        distribution = jnp.where(strength_sum > 1e-6, active_strength / jnp.maximum(strength_sum, 1e-6), uniform)
+        summary = jnp.concatenate([gated_force_mean, patch_abs_max, patch_strength[..., None]], axis=-1)
+        return distribution, summary, contact_mask.astype(jnp.float32)
+
+    def patch_contact_distribution(self, forces: jax.Array) -> jax.Array:
+        distribution, _, _ = self.patch_reconstruction_targets(forces)
+        return distribution
+
 
 class _QFormerBlock(nnx.Module):
     """Small pre-norm query block with self-attention, cross-attention, and FFN."""

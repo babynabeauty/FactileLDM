@@ -178,6 +178,7 @@ class Pi0LatentFlow(_model.BaseModel):
         self.tactile_patch_informed_tokenizer = bool(getattr(config, "tactile_patch_informed_tokenizer", False))
         self.tactile_patch_fingers = tuple(int(finger) for finger in getattr(config, "tactile_patch_fingers", (0, 1, 2)))
         self.tactile_num_patches = int(getattr(config, "tactile_num_patches", 5))
+        self.tactile_patch_aux_loss_weight = float(getattr(config, "tactile_patch_aux_loss_weight", 0.0))
         self.tactile_tokens_per_step = self.tactile_num_fingers
         if self.structured_tactile and self.tactile_patch_tokenizer:
             self.tactile_tokens_per_step = self.tactile_num_fingers + len(self.tactile_patch_fingers) * self.tactile_num_patches
@@ -459,6 +460,9 @@ class Pi0LatentFlow(_model.BaseModel):
                 dtype=jnp.float32,
             )
         )
+
+        if self.tactile_patch_aux_loss_weight > 0:
+            self.teacher_patch_dist_head = nnx.Linear(self.teacher_width, self.tactile_num_patches, rngs=rngs)
 
         if self.tactile_refiner_enabled:
             synergy_input_dim = self.student_width * 4
@@ -1129,6 +1133,44 @@ class Pi0LatentFlow(_model.BaseModel):
         prefix_mask = (token_ids < prefix_token_count)[None, :, None]
         prefix = jax.lax.stop_gradient(base_future_hidden).astype(dtype)
         return jnp.where(prefix_mask, prefix, query)
+
+    def _future_patch_distribution_target(self, future_effort: at.Array) -> at.Array:
+        if (
+            self.tactile_patch_aux_loss_weight <= 0
+            or not self.tactile_patch_informed_tokenizer
+            or not hasattr(self.teacher_force_tokenizer, "patch_contact_distribution")
+        ):
+            return jnp.zeros(
+                (future_effort.shape[0], self.future_force_token_count, self.tactile_num_patches),
+                dtype=jnp.float32,
+            )
+
+        patch_dist = self.teacher_force_tokenizer.patch_contact_distribution(future_effort)
+        batch_size = patch_dist.shape[0]
+        patch_dist = patch_dist.reshape(
+            batch_size,
+            self.future_tactile_segments,
+            self.future_steps_per_segment,
+            self.tactile_num_fingers,
+            self.tactile_num_patches,
+        )
+        weights = jax.nn.softmax(self.teacher_force_tokenizer.segment_pool_logits.value.astype(jnp.float32))
+        segment_dist = jnp.einsum("p,bspfr->bsfr", weights, patch_dist)
+        segment_dist = segment_dist / jnp.maximum(jnp.sum(segment_dist, axis=-1, keepdims=True), 1e-6)
+        return segment_dist.reshape(batch_size, self.future_force_token_count, self.tactile_num_patches)
+
+    def _patch_distribution_aux_loss(
+        self,
+        *,
+        teacher_future_tokens: at.Array,
+        future_effort: at.Array,
+    ) -> at.Array:
+        if self.tactile_patch_aux_loss_weight <= 0:
+            return jnp.zeros((teacher_future_tokens.shape[0],), dtype=teacher_future_tokens.dtype)
+        target_dist = self._future_patch_distribution_target(future_effort)
+        logits = self.teacher_patch_dist_head(teacher_future_tokens)
+        log_probs = jax.nn.log_softmax(logits.astype(jnp.float32), axis=-1)
+        return -jnp.mean(jnp.sum(jax.lax.stop_gradient(target_dist) * log_probs, axis=-1), axis=-1)
 
     def _fresh_tactile_tokens_for_async_refiner(
         self,
@@ -2073,12 +2115,18 @@ class Pi0LatentFlow(_model.BaseModel):
         )
         future_force_align_loss = raw_future_force_align_loss
         future_flow_align_loss = raw_future_flow_align_loss
+        teacher_future_tokens_for_patch_aux = self._project_future_force_teacher(future_effort)
+        patch_distribution_aux_loss = self._patch_distribution_aux_loss(
+            teacher_future_tokens=teacher_future_tokens_for_patch_aux,
+            future_effort=future_effort,
+        )
 
         total_loss = (
             self.student_action_loss_weight * student_action_loss
             + self.teacher_action_loss_weight * teacher_action_loss
             + self.future_force_align_loss_weight * future_force_align_loss
             + self.future_flow_align_loss_weight * future_flow_align_loss
+            + self.tactile_patch_aux_loss_weight * patch_distribution_aux_loss
             + self.hand_synergy_loss_weight * synergy_loss
             + self.tactile_refiner_delta_loss_weight * delta_reg_loss
             + self.async_refiner_loss_weight * async_refiner_loss
@@ -2100,6 +2148,7 @@ class Pi0LatentFlow(_model.BaseModel):
             "loss/distill_future_flow": future_flow_align_loss,
             "loss/distill_future_force_mean": jnp.mean(raw_future_force_align_loss),
             "loss/distill_future_flow_mean": jnp.mean(raw_future_flow_align_loss),
+            "loss/patch_distribution_aux": patch_distribution_aux_loss,
             "loss/hand_synergy": synergy_loss,
             "loss/tactile_refiner_delta_reg": delta_reg_loss,
             "loss/async_refiner": async_refiner_loss,

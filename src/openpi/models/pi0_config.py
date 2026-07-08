@@ -262,6 +262,7 @@ class Pi0LatentFlowConfig(Pi0Config):
     tactile_patch_informed_tokenizer: bool = False
     tactile_patch_fingers: tuple[int, ...] = (0, 1, 2)
     tactile_num_patches: int = 5
+    tactile_patch_aux_loss_weight: float = 0.0
     future_tactile_align_layer: int = 12
     tactile_sample_hz: float = 15.0
     arm_hand_mask_attention: bool = False
@@ -339,6 +340,10 @@ class Pi0LatentFlowConfig(Pi0Config):
                     raise ValueError("tactile_patch_informed_tokenizer requires raw tactile points.")
                 if self.tactile_num_patches <= 0:
                     raise ValueError("tactile_num_patches must be positive.")
+            if self.tactile_patch_aux_loss_weight < 0:
+                raise ValueError("tactile_patch_aux_loss_weight must be non-negative.")
+            if self.tactile_patch_aux_loss_weight > 0 and not self.tactile_patch_informed_tokenizer:
+                raise ValueError("tactile_patch_aux_loss_weight requires tactile_patch_informed_tokenizer=True.")
             if self.tactile_patch_tokenizer:
                 if self.tactile_points_per_finger <= 1:
                     raise ValueError("tactile_patch_tokenizer requires raw tactile points.")
@@ -693,6 +698,86 @@ class FutureTactileEncoderPretrainConfig(_model.BaseModelConfig):
                         batch_size,
                         self.force_input_frames + self.action_horizon,
                         self.tactile_num_fingers,
+                        self.tactile_dim_per_finger,
+                    ],
+                    jnp.float32,
+                ),
+                tokenized_prompt=jax.ShapeDtypeStruct([batch_size, self.max_token_len], jnp.int32),
+                tokenized_prompt_mask=jax.ShapeDtypeStruct([batch_size, self.max_token_len], bool),
+            )
+        return observation_spec, jax.ShapeDtypeStruct(
+            [batch_size, self.action_horizon, self.action_dim], jnp.float32
+        )
+
+
+@dataclasses.dataclass(frozen=True)
+class XHandPatchTactileEncoderPretrainConfig(_model.BaseModelConfig):
+    """Stage-1 pretraining for the patch-informed raw XHand tactile encoder."""
+
+    action_horizon: int = 16
+    action_dim: int = 32
+    max_token_len: int = 48
+    effort_type: str | None = EffortType.MOT
+    effort_dim: int | None = 1800
+    force_input_frames: int = 10
+    tactile_history_offsets: tuple[int, ...] = tuple(range(-9, 1))
+    tactile_num_fingers: int = 5
+    tactile_points_per_finger: int = 120
+    tactile_dim_per_finger: int = 3
+    tactile_num_patches: int = 5
+    future_tactile_segments: int = 4
+    future_steps_per_segment: int = 4
+    tactile_sample_hz: float = 15.0
+    tactile_tokenizer_dim: int = 256
+    encoder_width: int = 1024
+    tactile_raw_contact_top_k: int = 16
+    tactile_raw_contact_threshold: float = 0.5
+    tactile_raw_contact_temperature: float = 0.5
+    patch_distribution_loss_weight: float = 1.0
+    patch_summary_loss_weight: float = 1.0
+    patch_contact_loss_weight: float = 0.5
+
+    @property
+    @override
+    def model_type(self) -> _model.ModelType:
+        return _model.ModelType.PI0
+
+    def __post_init__(self):
+        if len(self.tactile_history_offsets) != self.force_input_frames:
+            raise ValueError("tactile_history_offsets length must equal force_input_frames.")
+        if self.future_tactile_segments * self.future_steps_per_segment != self.action_horizon:
+            raise ValueError("Future tactile segments must exactly cover action_horizon.")
+        expected_effort_dim = (
+            self.tactile_num_fingers * self.tactile_points_per_finger * self.tactile_dim_per_finger
+        )
+        if self.effort_dim != expected_effort_dim:
+            raise ValueError(f"Expected effort_dim={expected_effort_dim}, got {self.effort_dim}.")
+        if self.tactile_num_patches != 5:
+            raise ValueError("Patch-informed XHand pretraining currently expects tactile_num_patches=5.")
+        if self.tactile_raw_contact_temperature <= 0:
+            raise ValueError("tactile_raw_contact_temperature must be positive.")
+
+    @override
+    def create(self, rng: at.KeyArrayLike):
+        from openpi.models.patch_tactile_pretrain import XHandPatchTactileEncoderPretrain
+
+        return XHandPatchTactileEncoderPretrain(self, rngs=nnx.Rngs(rng))
+
+    @override
+    def inputs_spec(self, *, batch_size: int = 1):
+        image_spec = jax.ShapeDtypeStruct([batch_size, *_model.IMAGE_RESOLUTION, 3], jnp.float32)
+        image_mask_spec = jax.ShapeDtypeStruct([batch_size], jnp.bool_)
+        with at.disable_typechecking():
+            observation_spec = _model_tavla.Observation(
+                images={key: image_spec for key in _model.IMAGE_KEYS},
+                image_masks={key: image_mask_spec for key in _model.IMAGE_KEYS},
+                state=jax.ShapeDtypeStruct([batch_size, self.action_dim], jnp.float32),
+                effort=jax.ShapeDtypeStruct(
+                    [
+                        batch_size,
+                        self.force_input_frames + self.action_horizon,
+                        self.tactile_num_fingers,
+                        self.tactile_points_per_finger,
                         self.tactile_dim_per_finger,
                     ],
                     jnp.float32,

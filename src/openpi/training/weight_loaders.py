@@ -128,6 +128,63 @@ class Pi0WithFutureTactileEncoderWeightLoader(WeightLoader):
 
 
 @dataclasses.dataclass(frozen=True)
+class Pi0WithPatchTactileEncoderWeightLoader(WeightLoader):
+    """Loads pi0 base weights plus a pretrained patch-informed tactile encoder.
+
+    The stage-1 checkpoint stores the encoder under `patch_encoder`. The dual-AE
+    policy has separate student/teacher tactile encoders, so the same pretrained
+    tensors are copied into both `student_force_tokenizer` and
+    `teacher_force_tokenizer` when shapes match.
+    """
+
+    pi0_params_path: str = "checkpoints/pi0_base/params"
+    encoder_params_path: str | None = None
+
+    def load(self, params: at.Params) -> at.Params:
+        base_params = _model.restore_params(download.maybe_download(self.pi0_params_path), restore_type=np.ndarray)
+        base_params = _augment_with_moe_shared_ffn_weights(base_params, params)
+        base_params = _augment_with_mor_action_expert_weights(base_params, params)
+        merged = _merge_params(base_params, params, missing_regex=r".*")
+
+        if self.encoder_params_path is None:
+            return merged
+
+        encoder_checkpoint = _model.restore_params(
+            download.maybe_download(self.encoder_params_path), restore_type=np.ndarray
+        )
+        flat_ref = _flatten_params(params)
+        flat_merged = _flatten_params(merged)
+        flat_encoder = _flatten_params(encoder_checkpoint)
+
+        copied = 0
+        for key, value in flat_encoder.items():
+            if not key or key[0] != "patch_encoder":
+                continue
+            for target_root in ("student_force_tokenizer", "teacher_force_tokenizer"):
+                mapped_key = (target_root, *key[1:])
+                if mapped_key not in flat_ref:
+                    continue
+                if (
+                    hasattr(value, "shape")
+                    and hasattr(flat_ref[mapped_key], "shape")
+                    and value.shape != flat_ref[mapped_key].shape
+                ):
+                    logger.warning(
+                        "Skipping patch tactile encoder param %s -> %s due to shape mismatch: %s vs %s",
+                        _path_string(key),
+                        _path_string(mapped_key),
+                        value.shape,
+                        flat_ref[mapped_key].shape,
+                    )
+                    continue
+                flat_merged[mapped_key] = value.astype(flat_ref[mapped_key].dtype)
+                copied += 1
+
+        logger.info("Loaded %d patch tactile encoder tensors from %s.", copied, self.encoder_params_path)
+        return _unflatten_params(flat_merged)
+
+
+@dataclasses.dataclass(frozen=True)
 class PaliGemmaWeightLoader(WeightLoader):
     """Loads weights from the official PaliGemma checkpoint.
 
