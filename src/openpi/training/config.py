@@ -134,6 +134,9 @@ class DataConfig:
 
     # If true, will use the LeRobot dataset task to define the prompt.
     prompt_from_task: bool = False
+    # If true, training data is loaded directly from parquet state/action columns
+    # without invoking LeRobot video decoding. Intended for tactile-only pretraining.
+    state_action_only: bool = False
 
     # Only used for RLDS data loader (ie currently only used for DROID).
     rlds_data_dir: str | None = None
@@ -652,6 +655,7 @@ class LeRobotXHandPatchTactilePretrainDataConfig(DataConfigFactory):
             action_sequence_keys=self.action_sequence_keys,
             state_delta_timestamps=self.state_delta_timestamps,
             prompt_from_task=False,
+            state_action_only=True,
             max_episodes=self.max_episodes,
             rcs_sample_enable=self.rcs_sample_enable,
         )

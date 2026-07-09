@@ -64,6 +64,99 @@ class EpisodeSubsetDataset:
         return len(self._indices)
 
 
+def _to_numpy_array(value) -> np.ndarray:
+    if isinstance(value, torch.Tensor):
+        return value.detach().cpu().numpy()
+    return np.asarray(value)
+
+
+def _column_to_numpy(column) -> np.ndarray:
+    return np.asarray([int(np.asarray(item).item()) for item in column], dtype=np.int64)
+
+
+class StateActionOnlyDataset:
+    """Fast LeRobot dataset wrapper that avoids video decoding.
+
+    This wrapper is intentionally narrow: it reads only parquet-backed state,
+    action, and metadata columns from `dataset.hf_dataset`. It is used by
+    tactile-only encoder pretraining where RGB frames are dummy placeholders.
+    """
+
+    def __init__(
+        self,
+        dataset: lerobot_dataset.LeRobotDataset,
+        *,
+        state_delta_timestamps: Sequence[int],
+        action_horizon: int,
+        action_key: str,
+    ):
+        self._dataset = dataset
+        self.hf_dataset = dataset.hf_dataset
+        self._state_offsets = tuple(int(offset) for offset in state_delta_timestamps) or (0,)
+        self._action_offsets = tuple(range(int(action_horizon)))
+        self._action_key = action_key
+
+        column_names = set(getattr(self.hf_dataset, "column_names", []))
+        if "observation.state" not in column_names:
+            raise ValueError("state_action_only requires `observation.state` in the dataset.")
+        if action_key not in column_names:
+            raise ValueError(f"state_action_only requires `{action_key}` in the dataset.")
+        if "episode_index" not in column_names:
+            raise ValueError("state_action_only requires `episode_index` in the dataset.")
+
+        logging.info("Preloading state/action columns for state_action_only dataset.")
+        self._states = np.stack(
+            [_to_numpy_array(value).astype(np.float32) for value in self.hf_dataset["observation.state"]],
+            axis=0,
+        )
+        self._actions = np.stack(
+            [_to_numpy_array(value).astype(np.float32) for value in self.hf_dataset[action_key]],
+            axis=0,
+        )
+        self._episode_index = _column_to_numpy(self.hf_dataset["episode_index"])
+        if "frame_index" in column_names:
+            self._frame_index = _column_to_numpy(self.hf_dataset["frame_index"])
+        else:
+            frame_index = np.zeros_like(self._episode_index)
+            for episode in np.unique(self._episode_index):
+                rows = np.nonzero(self._episode_index == episode)[0]
+                frame_index[rows] = np.arange(len(rows), dtype=np.int64)
+            self._frame_index = frame_index
+
+        self._episode_frame_to_row: dict[tuple[int, int], int] = {}
+        self._episode_min_frame: dict[int, int] = {}
+        self._episode_max_frame: dict[int, int] = {}
+        for row, (episode, frame) in enumerate(zip(self._episode_index, self._frame_index, strict=True)):
+            episode = int(episode)
+            frame = int(frame)
+            self._episode_frame_to_row[(episode, frame)] = row
+            self._episode_min_frame[episode] = min(frame, self._episode_min_frame.get(episode, frame))
+            self._episode_max_frame[episode] = max(frame, self._episode_max_frame.get(episode, frame))
+
+    def _row_for_offset(self, index: int, offset: int) -> int:
+        episode = int(self._episode_index[index])
+        frame = int(self._frame_index[index]) + int(offset)
+        frame = min(max(frame, self._episode_min_frame[episode]), self._episode_max_frame[episode])
+        return self._episode_frame_to_row[(episode, frame)]
+
+    def __getitem__(self, index: SupportsIndex):
+        index = int(index)
+        state_rows = [self._row_for_offset(index, offset) for offset in self._state_offsets]
+        action_rows = [self._row_for_offset(index, offset) for offset in self._action_offsets]
+        sample = {
+            "observation.state": self._states[np.asarray(state_rows, dtype=np.int64)],
+            self._action_key: self._actions[np.asarray(action_rows, dtype=np.int64)],
+        }
+        column_names = set(getattr(self.hf_dataset, "column_names", []))
+        for key in ("episode_index", "frame_index", "task_index", "timestamp"):
+            if key in column_names:
+                sample[key] = self.hf_dataset[index][key]
+        return sample
+
+    def __len__(self) -> int:
+        return len(self.hf_dataset)
+
+
 def _frame_indices_for_episodes(dataset: lerobot_dataset.LeRobotDataset, episodes: Sequence[int]) -> list[int]:
     selected = set(int(episode) for episode in episodes)
     episode_index = torch.stack(dataset.hf_dataset["episode_index"]).numpy()
@@ -302,8 +395,17 @@ def create_torch_dataset(
 
     dataset = lerobot_dataset.LeRobotDataset(
         repo_id,
-        delta_timestamps=delta_timestamps
+        delta_timestamps={} if data_config.state_action_only else delta_timestamps,
     )
+    if data_config.state_action_only:
+        if len(data_config.action_sequence_keys) != 1:
+            raise ValueError("state_action_only currently supports exactly one action sequence key.")
+        dataset = StateActionOnlyDataset(
+            dataset,
+            state_delta_timestamps=data_config.state_delta_timestamps,
+            action_horizon=action_horizon,
+            action_key=data_config.action_sequence_keys[0],
+        )
     if episode_indices is not None:
         frame_indices = _frame_indices_for_episodes(dataset, episode_indices)
         logging.info(
