@@ -595,6 +595,7 @@ class AbsoluteActions(DataTransformFn):
 class TokenizePrompt(DataTransformFn):
     tokenizer: _tokenizer.PaligemmaTokenizer
     discrete_state_input: bool = False
+    discrete_effort_input: bool = False
 
 
     def __call__(self, data: DataDict) -> DataDict:

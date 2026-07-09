@@ -71,6 +71,10 @@ def main(
     repo_id: str | None = None,
     asset_id: str | None = None,
 ):
+    print(
+        f"[compute_norm_stats] start config={config_name} repo_id={repo_id} asset_id={asset_id} max_frames={max_frames}",
+        flush=True,
+    )
     config = _config.get_config(config_name)
     data = config.data
     if repo_id is not None:
@@ -78,16 +82,21 @@ def main(
     if asset_id is not None:
         data = dataclasses.replace(data, assets=dataclasses.replace(data.assets, asset_id=asset_id))
     config = dataclasses.replace(config, data=data)
+    print("[compute_norm_stats] creating data config", flush=True)
     data_config = config.data.create(config.assets_dirs, config.model)
+    print(f"[compute_norm_stats] data_config created: repo_id={data_config.repo_id}", flush=True)
 
     if data_config.rlds_data_dir is not None:
+        print("[compute_norm_stats] creating RLDS dataloader", flush=True)
         data_loader, num_batches = create_rlds_dataloader(
             data_config, config.model.action_horizon, config.batch_size, max_frames
         )
     else:
+        print("[compute_norm_stats] creating torch dataloader", flush=True)
         data_loader, num_batches = create_torch_dataloader(
             data_config, config.model.action_horizon, config.batch_size, config.model, config.num_workers, max_frames
         )
+    print(f"[compute_norm_stats] dataloader ready: num_batches={num_batches}", flush=True)
 
     required_keys = ("state", "actions")
     optional_keys = ("effort", "tactile")

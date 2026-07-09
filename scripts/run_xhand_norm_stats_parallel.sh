@@ -101,12 +101,16 @@ launch_job() {
   local log_file="logs/norm_${config}_${RUN_TAG}.log"
 
   log "Starting ${config} on GPU ${gpu}; log=${log_file}"
-  CUDA_VISIBLE_DEVICES="$gpu" \
-    "$PYTHON" scripts/compute_norm_stats.py \
-      --config-name "$config" \
-      --repo-id "$DATA_REPO" \
-      --asset-id "$ASSET_ID" \
-    > "$log_file" 2>&1 &
+  {
+    printf '[%s] config=%s gpu=%s repo=%s asset=%s\n' "$(date '+%F %T')" "$config" "$gpu" "$DATA_REPO" "$ASSET_ID"
+    printf '[%s] python=%s\n' "$(date '+%F %T')" "$PYTHON"
+    PYTHONUNBUFFERED=1 \
+    CUDA_VISIBLE_DEVICES="$gpu" \
+      "$PYTHON" -u scripts/compute_norm_stats.py \
+        --config-name "$config" \
+        --repo-id "$DATA_REPO" \
+        --asset-id "$ASSET_ID"
+  } > "$log_file" 2>&1 &
 
   local pid=$!
   PID_CONFIG["$pid"]="$config"
