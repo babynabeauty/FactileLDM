@@ -621,6 +621,43 @@ class LeRobotXHandTactileFlowDataConfig(DataConfigFactory):
 
 
 @dataclasses.dataclass(frozen=True)
+class LeRobotXHandPatchTactilePretrainDataConfig(DataConfigFactory):
+    """Data config for patch tactile encoder pretraining without RGB decoding."""
+
+    max_episodes: int | None = None
+    rcs_sample_enable: bool = False
+    state_delta_timestamps: Sequence[int] = ()
+    action_dim: int = 18
+    action_sequence_keys: Sequence[str] = ("action",)
+
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        history_frames = sum(1 for t in self.state_delta_timestamps if t <= 0) or 1
+        data_transforms = _transforms.Group(
+            inputs=[
+                xhand_policy.XHandPatchTactilePretrainInputs(
+                    tactile_history_frames=history_frames,
+                    state_dim=self.action_dim,
+                )
+            ],
+            outputs=[xhand_policy.XHandTactileFlowOutputs(action_dim=self.action_dim)],
+        )
+        model_transforms = _transforms.Group(
+            inputs=[_transforms.PadStatesAndActions(model_config.action_dim)],
+        )
+        return dataclasses.replace(
+            self.create_base_config(assets_dirs, model_config),
+            data_transforms=data_transforms,
+            model_transforms=model_transforms,
+            action_sequence_keys=self.action_sequence_keys,
+            state_delta_timestamps=self.state_delta_timestamps,
+            prompt_from_task=False,
+            max_episodes=self.max_episodes,
+            rcs_sample_enable=self.rcs_sample_enable,
+        )
+
+
+@dataclasses.dataclass(frozen=True)
 class LeRobotXHandPi0DataConfig(DataConfigFactory):
     """Data config for vanilla pi0 xhand baselines without tactile or future-flow inputs."""
 
@@ -1727,17 +1764,9 @@ _CONFIGS = [
             patch_summary_loss_weight=1.0,
             patch_contact_loss_weight=0.5,
         ),
-        data=LeRobotXHandTactileFlowDataConfig(
+        data=LeRobotXHandPatchTactilePretrainDataConfig(
             repo_id="grasp_pipette_and_press_button",
             state_delta_timestamps=tuple(list(range(-9, 1)) + list(range(1, 17))),
-            tactile_mode="raw_force",
-            structured_tactile=True,
-            primary_image_key="observation.images.cam_front",
-            wrist_image_key="observation.images.cam_right",
-            extra_image_key="observation.images.cam_left",
-            future_flow_key=None,
-            future_wrist_flow_key=None,
-            scene_flow_root=None,
             base_config=DataConfig(prompt_from_task=True),
         ),
         weight_loader=weight_loaders.NoOpWeightLoader(),

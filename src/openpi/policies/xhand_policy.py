@@ -449,6 +449,77 @@ class XHandTactileFlowInputs(transforms.DataTransformFn):
 
 
 @dataclasses.dataclass(frozen=True)
+class XHandPatchTactilePretrainInputs(transforms.DataTransformFn):
+    """Lightweight raw-tactile inputs for patch encoder pretraining.
+
+    Stage-1 patch encoder pretraining does not use RGB or language. Returning
+    dummy images keeps the generic Observation path happy while avoiding video
+    decoding in LeRobot.
+    """
+
+    tactile_mode: Literal["raw_force"] = "raw_force"
+    structured_tactile: bool = True
+    tactile_history_frames: int = 10
+    state_dim: int = 18
+
+    def __call__(self, data: dict) -> dict:
+        state_seq = _as_state_sequence(_get_required(data, STATE_KEY_ALIASES, "observation.state"))
+        current_state = state_seq[min(max(self.tactile_history_frames - 1, 0), state_seq.shape[0] - 1)]
+        dummy_image = np.zeros((224, 224, 3), dtype=np.uint8)
+
+        inputs = {
+            "state": self._extract_proprio(current_state),
+            "effort": self._extract_tactile(state_seq),
+            "image": {
+                "base_0_rgb": dummy_image,
+                "left_wrist_0_rgb": dummy_image,
+                "right_wrist_0_rgb": dummy_image,
+            },
+            "image_mask": {
+                "base_0_rgb": np.False_,
+                "left_wrist_0_rgb": np.False_,
+                "right_wrist_0_rgb": np.False_,
+            },
+        }
+
+        action_key = _first_present(data, ACTION_KEY_ALIASES)
+        if action_key is not None:
+            inputs["actions"] = np.asarray(data[action_key], dtype=np.float32)
+
+        return inputs
+
+    def _extract_proprio(self, state: np.ndarray) -> np.ndarray:
+        if state.shape[-1] == self.state_dim:
+            return state.astype(np.float32)
+
+        hand_joint_pos_indices = 28 + 2 * np.arange(XHAND_JOINT_COUNT)
+        proprio = np.concatenate([state[:6], state[hand_joint_pos_indices]], axis=0).astype(np.float32)
+        return proprio[: self.state_dim]
+
+    def _extract_tactile(self, state_seq: np.ndarray) -> np.ndarray:
+        sensor_chunks = [
+            state_seq[
+                :,
+                TACTILE_BLOCK_START
+                + sensor_id * TACTILE_BLOCK_SIZE
+                + TACTILE_RAW_FORCE_OFFSET : TACTILE_BLOCK_START
+                + sensor_id * TACTILE_BLOCK_SIZE
+                + TACTILE_RAW_FORCE_OFFSET
+                + TACTILE_RAW_FORCE_POINTS * 3,
+            ]
+            for sensor_id in range(TACTILE_SENSOR_COUNT)
+        ]
+        tactile = np.stack(
+            [
+                chunk.reshape(state_seq.shape[0], TACTILE_RAW_FORCE_POINTS, 3)
+                for chunk in sensor_chunks
+            ],
+            axis=1,
+        )
+        return tactile.astype(np.float32)
+
+
+@dataclasses.dataclass(frozen=True)
 class XHandTactileFlowOutputs(transforms.DataTransformFn):
     action_dim: int = 18
 

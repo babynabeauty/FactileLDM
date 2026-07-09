@@ -30,6 +30,8 @@ RUN_TAG="${RUN_TAG:-${ASSET_ID}_patch_pretrain_$(date +%m%d_%H%M%S)}"
 
 GPUS="${GPUS:-0,1,2,3,4,5,6,7}"
 GLOBAL_BATCH_SIZE="${GLOBAL_BATCH_SIZE:-8}"
+STAGE1_BATCH_SIZE="${STAGE1_BATCH_SIZE:-$GLOBAL_BATCH_SIZE}"
+STAGE2_BATCH_SIZE="${STAGE2_BATCH_SIZE:-$GLOBAL_BATCH_SIZE}"
 NUM_WORKERS="${NUM_WORKERS:-2}"
 ALLOW_OVERWRITE="${ALLOW_OVERWRITE:-0}"
 RESUME="${RESUME:-0}"
@@ -90,8 +92,9 @@ run_train() {
   local steps="$3"
   local save_interval="$4"
   local fsdp_devices="$5"
-  local log_file="$6"
-  shift 6
+  local batch_size="$6"
+  local log_file="$7"
+  shift 7
 
   local checkpoint_dir="checkpoints/${config}/${exp}"
   local final_params="${checkpoint_dir}/$((steps - 1))/params"
@@ -107,7 +110,7 @@ run_train() {
     run_mode_args=(--resume)
   fi
 
-  log "Starting ${config}: exp=${exp}, steps=${steps}, fsdp=${fsdp_devices}, mode=${run_mode_args[*]:-new}, log=${log_file}"
+  log "Starting ${config}: exp=${exp}, steps=${steps}, batch=${batch_size}, fsdp=${fsdp_devices}, mode=${run_mode_args[*]:-new}, log=${log_file}"
   CUDA_VISIBLE_DEVICES="$GPUS" \
   HF_LEROBOT_HOME="$PROJECT_ROOT" \
   HF_DATASETS_CACHE="${HF_DATASETS_CACHE:-$PROJECT_ROOT/.hf_datasets_cache}" \
@@ -120,7 +123,7 @@ run_train() {
     --data.assets.asset-id "$ASSET_ID" \
     --data.assets.assets-dir "$ASSET_DIR" \
     --num-train-steps "$steps" \
-    --batch-size "$GLOBAL_BATCH_SIZE" \
+    --batch-size "$batch_size" \
     --fsdp-devices "$fsdp_devices" \
     --num-workers "$NUM_WORKERS" \
     --save-interval "$save_interval" \
@@ -166,6 +169,8 @@ log "Asset ID: $ASSET_ID"
 log "Asset dir: $ASSET_DIR"
 log "GPUs: $GPUS"
 log "Global batch size: $GLOBAL_BATCH_SIZE"
+log "Stage1 batch size: $STAGE1_BATCH_SIZE"
+log "Stage2 batch size: $STAGE2_BATCH_SIZE"
 log "Run tag: $RUN_TAG"
 log "Resume: $RESUME"
 log "Stage1 final encoder params will be: $CKPT_STAGE1"
@@ -178,6 +183,7 @@ run_train \
   "$STAGE1_STEPS" \
   "$STAGE1_SAVE_INTERVAL" \
   1 \
+  "$STAGE1_BATCH_SIZE" \
   "logs/${EXP_STAGE1}.log"
 
 require_path "$CKPT_STAGE1" "stage1 encoder checkpoint was not produced"
@@ -188,6 +194,7 @@ run_train \
   "$STAGE2A_STEPS" \
   "$STAGE2A_SAVE_INTERVAL" \
   4 \
+  "$STAGE2_BATCH_SIZE" \
   "logs/${EXP_STAGE2A}.log" \
   --weight-loader.pi0-params-path "$BASE_PARAMS" \
   --weight-loader.encoder-params-path "$CKPT_STAGE1"
@@ -200,6 +207,7 @@ run_train \
   "$STAGE2B_STEPS" \
   "$STAGE2B_SAVE_INTERVAL" \
   4 \
+  "$STAGE2_BATCH_SIZE" \
   "logs/${EXP_STAGE2B}.log" \
   --weight-loader.pi0-params-path "$CKPT_STAGE2A" \
   --weight-loader.encoder-params-path "$CKPT_STAGE1"
