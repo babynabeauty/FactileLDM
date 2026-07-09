@@ -7,6 +7,7 @@ to the config assets directory.
 
 import warnings
 import dataclasses
+import pathlib
 
 import numpy as np
 import tqdm
@@ -81,6 +82,16 @@ def main(
         data = dataclasses.replace(data, repo_id=repo_id)
     if asset_id is not None:
         data = dataclasses.replace(data, assets=dataclasses.replace(data.assets, asset_id=asset_id))
+    if repo_id is not None and (pathlib.Path(repo_id) / "meta" / "info.json").exists():
+        base_config = data.base_config or _config.DataConfig()
+        data = dataclasses.replace(
+            data,
+            base_config=dataclasses.replace(
+                base_config,
+                state_action_only=True,
+                prompt_from_task=False,
+            ),
+        )
     config = dataclasses.replace(config, data=data)
     print("[compute_norm_stats] creating data config", flush=True)
     data_config = config.data.create(config.assets_dirs, config.model)

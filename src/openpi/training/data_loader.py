@@ -104,6 +104,7 @@ class LocalParquetStateActionOnlyDataset:
         self._state_offsets = tuple(int(offset) for offset in state_delta_timestamps) or (0,)
         self._action_offsets = tuple(range(int(action_horizon)))
         self._action_key = action_key
+        self._dummy_image = np.zeros((224, 224, 3), dtype=np.uint8)
 
         info_path = root / "meta" / "info.json"
         with info_path.open() as f:
@@ -178,6 +179,9 @@ class LocalParquetStateActionOnlyDataset:
         sample = {
             "observation.state": self._states[np.asarray(state_rows, dtype=np.int64)],
             self._action_key: self._actions[np.asarray(action_rows, dtype=np.int64)],
+            "observation.images.cam_front": self._dummy_image,
+            "observation.images.cam_right": self._dummy_image,
+            "observation.images.cam_left": self._dummy_image,
             "episode_index": int(self._episode_index[index]),
             "frame_index": int(self._frame_index[index]),
         }
@@ -472,6 +476,27 @@ def create_torch_dataset(
     if (local_repo / "meta" / "info.json").exists():
         repo_id = str(local_repo)
 
+    episode_indices = _load_episode_indices(data_config.filter_dict_path)
+    if data_config.state_action_only and local_repo.is_dir():
+        if len(data_config.action_sequence_keys) != 1:
+            raise ValueError("state_action_only currently supports exactly one action sequence key.")
+        dataset = LocalParquetStateActionOnlyDataset(
+            local_repo,
+            state_delta_timestamps=data_config.state_delta_timestamps,
+            action_horizon=action_horizon,
+            action_key=data_config.action_sequence_keys[0],
+        )
+        if episode_indices is not None:
+            selected = set(int(episode) for episode in episode_indices)
+            frame_indices = np.nonzero(np.isin(dataset._episode_index, list(selected)))[0].astype(np.int64).tolist()
+            logging.info(
+                "Episode filter kept %d frames from %d episodes.",
+                len(frame_indices),
+                len(episode_indices),
+            )
+            dataset = EpisodeSubsetDataset(dataset, frame_indices)
+        return dataset
+
     dataset_meta = lerobot_dataset.LeRobotDatasetMetadata(repo_id)
 
     delta_timestamps = {
@@ -506,29 +531,8 @@ def create_torch_dataset(
             model_config.future_rgb_step / dataset_meta.fps,
         ]
 
-    episode_indices = _load_episode_indices(data_config.filter_dict_path)
     if episode_indices is not None:
         logging.info("Using %d filtered episodes from %s", len(episode_indices), data_config.filter_dict_path)
-
-    if data_config.state_action_only and local_repo.is_dir():
-        if len(data_config.action_sequence_keys) != 1:
-            raise ValueError("state_action_only currently supports exactly one action sequence key.")
-        dataset = LocalParquetStateActionOnlyDataset(
-            local_repo,
-            state_delta_timestamps=data_config.state_delta_timestamps,
-            action_horizon=action_horizon,
-            action_key=data_config.action_sequence_keys[0],
-        )
-        if episode_indices is not None:
-            selected = set(int(episode) for episode in episode_indices)
-            frame_indices = np.nonzero(np.isin(dataset._episode_index, list(selected)))[0].astype(np.int64).tolist()
-            logging.info(
-                "Episode filter kept %d frames from %d episodes.",
-                len(frame_indices),
-                len(episode_indices),
-            )
-            dataset = EpisodeSubsetDataset(dataset, frame_indices)
-        return dataset
 
     dataset = lerobot_dataset.LeRobotDataset(
         repo_id,
