@@ -13,8 +13,14 @@ set -euo pipefail
 #   setsid nohup env RUN_TAG=stage12345_$(date +%m%d_%H%M) \
 #     bash scripts/run_patch_encoder_pretrain_pipeline.sh data/stage12345-2 \
 #     > logs/patch_encoder_pretrain_pipeline.log 2>&1 &
+#
+# Resume an interrupted run:
+#   setsid nohup env RUN_TAG=stage12345_... RESUME=1 \
+#     bash scripts/run_patch_encoder_pretrain_pipeline.sh data/stage12345-2 \
+#     > logs/patch_encoder_pretrain_pipeline_resume.log 2>&1 &
 
-PROJECT_ROOT="${PROJECT_ROOT:-$PWD}"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="${PROJECT_ROOT:-$(cd -- "$SCRIPT_DIR/.." && pwd)}"
 DATA_REPO="${1:-data/stage12345-2}"
 ASSET_ID="${DATA_ASSET_ID:-$(basename "$DATA_REPO")}"
 ASSET_DIR="${ASSET_DIR:-assets/pi0_xhand_tactile_structured_raw_dual_ae}"
@@ -26,6 +32,7 @@ GPUS="${GPUS:-0,1,2,3,4,5,6,7}"
 GLOBAL_BATCH_SIZE="${GLOBAL_BATCH_SIZE:-8}"
 NUM_WORKERS="${NUM_WORKERS:-2}"
 ALLOW_OVERWRITE="${ALLOW_OVERWRITE:-0}"
+RESUME="${RESUME:-0}"
 
 STAGE1_STEPS="${STAGE1_STEPS:-20000}"
 STAGE2A_STEPS="${STAGE2A_STEPS:-5000}"
@@ -48,6 +55,7 @@ FINAL_STAGE2A=$((STAGE2A_STEPS - 1))
 
 CKPT_STAGE1="checkpoints/${CONFIG_STAGE1}/${EXP_STAGE1}/${FINAL_STAGE1}/params"
 CKPT_STAGE2A="checkpoints/${CONFIG_STAGE2A}/${EXP_STAGE2A}/${FINAL_STAGE2A}/params"
+CKPT_STAGE2B="checkpoints/${CONFIG_STAGE2B}/${EXP_STAGE2B}/$((STAGE2B_STEPS - 1))/params"
 
 log() {
   printf '[%s] %s\n' "$(date '+%F %T')" "$*"
@@ -66,6 +74,9 @@ check_output_dir() {
   local config="$1"
   local exp="$2"
   local dir="checkpoints/${config}/${exp}"
+  if [[ "$RESUME" == "1" ]]; then
+    return 0
+  fi
   if [[ -e "$dir" && "$ALLOW_OVERWRITE" != "1" ]]; then
     echo "ERROR: checkpoint dir already exists: $dir" >&2
     echo "Use a new RUN_TAG or set ALLOW_OVERWRITE=1." >&2
@@ -82,12 +93,21 @@ run_train() {
   local log_file="$6"
   shift 6
 
-  local overwrite_args=()
-  if [[ "$ALLOW_OVERWRITE" == "1" ]]; then
-    overwrite_args=(--overwrite)
+  local checkpoint_dir="checkpoints/${config}/${exp}"
+  local final_params="${checkpoint_dir}/$((steps - 1))/params"
+  if [[ -e "$final_params" ]]; then
+    log "Skipping ${config}: final checkpoint already exists at ${final_params}"
+    return 0
   fi
 
-  log "Starting ${config}: exp=${exp}, steps=${steps}, fsdp=${fsdp_devices}, log=${log_file}"
+  local run_mode_args=()
+  if [[ "$ALLOW_OVERWRITE" == "1" ]]; then
+    run_mode_args=(--overwrite)
+  elif [[ "$RESUME" == "1" && -e "$checkpoint_dir" ]]; then
+    run_mode_args=(--resume)
+  fi
+
+  log "Starting ${config}: exp=${exp}, steps=${steps}, fsdp=${fsdp_devices}, mode=${run_mode_args[*]:-new}, log=${log_file}"
   CUDA_VISIBLE_DEVICES="$GPUS" \
   HF_LEROBOT_HOME="$PROJECT_ROOT" \
   HF_DATASETS_CACHE="${HF_DATASETS_CACHE:-$PROJECT_ROOT/.hf_datasets_cache}" \
@@ -106,7 +126,7 @@ run_train() {
     --save-interval "$save_interval" \
     --keep-period "$KEEP_PERIOD" \
     --no-wandb-enabled \
-    "${overwrite_args[@]}" \
+    "${run_mode_args[@]}" \
     "$@" \
     > "$log_file" 2>&1
   log "Finished ${config}: exp=${exp}"
@@ -117,6 +137,14 @@ mkdir -p logs .hf_datasets_cache .cache/huggingface
 
 if [[ "$ALLOW_OVERWRITE" != "0" && "$ALLOW_OVERWRITE" != "1" ]]; then
   echo "ERROR: ALLOW_OVERWRITE must be 0 or 1, got: $ALLOW_OVERWRITE" >&2
+  exit 2
+fi
+if [[ "$RESUME" != "0" && "$RESUME" != "1" ]]; then
+  echo "ERROR: RESUME must be 0 or 1, got: $RESUME" >&2
+  exit 2
+fi
+if [[ "$ALLOW_OVERWRITE" == "1" && "$RESUME" == "1" ]]; then
+  echo "ERROR: ALLOW_OVERWRITE=1 and RESUME=1 cannot be used together." >&2
   exit 2
 fi
 if (( STAGE1_STEPS <= 0 || STAGE2A_STEPS <= 0 || STAGE2B_STEPS <= 0 )); then
@@ -139,8 +167,10 @@ log "Asset dir: $ASSET_DIR"
 log "GPUs: $GPUS"
 log "Global batch size: $GLOBAL_BATCH_SIZE"
 log "Run tag: $RUN_TAG"
+log "Resume: $RESUME"
 log "Stage1 final encoder params will be: $CKPT_STAGE1"
 log "Stage2A final policy params will be: $CKPT_STAGE2A"
+log "Stage2B final policy params will be: $CKPT_STAGE2B"
 
 run_train \
   "$CONFIG_STAGE1" \
