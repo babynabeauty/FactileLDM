@@ -282,6 +282,33 @@ class XHandPi0Inputs(transforms.DataTransformFn):
 
 
 @dataclasses.dataclass(frozen=True)
+class XHandPi0StateTactileInputs(XHandPi0Inputs):
+    """Concatenates the current five-finger resultant force into the pi0/pi0.5 state input."""
+
+    def __call__(self, data: dict) -> dict:
+        inputs = super().__call__(data)
+        tactile_key = _first_present(data, TACTILE_KEY_ALIASES)
+        if tactile_key is not None:
+            tactile = np.asarray(data[tactile_key], dtype=np.float32)
+            if tactile.shape == (TACTILE_SENSOR_COUNT * 3,):
+                tactile = tactile.reshape(TACTILE_SENSOR_COUNT, 3)
+            if tactile.shape != (TACTILE_SENSOR_COUNT, 3):
+                raise ValueError(
+                    "Expected explicit XHand tactile observation with shape "
+                    f"({TACTILE_SENSOR_COUNT}, 3), got {tactile.shape}."
+                )
+        else:
+            state_seq = _as_state_sequence(_get_required(data, STATE_KEY_ALIASES, "observation.state"))
+            tactile = _extract_current_calc_force(state_seq[-1])
+
+        inputs["state"] = np.concatenate(
+            [np.asarray(inputs["state"], dtype=np.float32), tactile.reshape(-1).astype(np.float32)],
+            axis=-1,
+        )
+        return inputs
+
+
+@dataclasses.dataclass(frozen=True)
 class XHandTactileObsInputs(XHandPi0Inputs):
     """Adds the current five-finger resultant force under the shared effort key."""
 

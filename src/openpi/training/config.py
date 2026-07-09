@@ -167,7 +167,10 @@ class ModelTransformFactory(GroupFactory):
                         _transforms.TokenizePrompt(
                             _tokenizer.PaligemmaTokenizer(model_config.max_token_len),
                         ),
-                        _transforms.PadStatesAndActions(model_config.action_dim),
+                        _transforms.PadStatesAndActions(
+                            model_config.action_dim,
+                            getattr(model_config, "state_dim", None),
+                        ),
                     ],
                 )
             case _model.ModelType.PI05:
@@ -180,7 +183,10 @@ class ModelTransformFactory(GroupFactory):
                             _tokenizer.PaligemmaTokenizer(model_config.max_token_len),
                             discrete_state_input=model_config.discrete_state_input, discrete_effort_input=model_config.discrete_effort_input,
                         ),
-                        _transforms.PadStatesAndActions(model_config.action_dim),
+                        _transforms.PadStatesAndActions(
+                            model_config.action_dim,
+                            getattr(model_config, "state_dim", None),
+                        ),
                     ],
                 )
             case _model.ModelType.PI0_FAST:
@@ -677,12 +683,18 @@ class LeRobotXHandPi0DataConfig(DataConfigFactory):
     extra_image_key: str | None = "observation.images.cam_left"
     action_dim: int = 18
     action_sequence_keys: Sequence[str] = ("action",)
+    concat_current_tactile_to_state: bool = False
 
     @override
     def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        input_transform_cls = (
+            xhand_policy.XHandPi0StateTactileInputs
+            if self.concat_current_tactile_to_state
+            else xhand_policy.XHandPi0Inputs
+        )
         data_transforms = _transforms.Group(
             inputs=[
-                xhand_policy.XHandPi0Inputs(
+                input_transform_cls(
                     model_type=model_config.model_type,
                     primary_image_key=self.primary_image_key,
                     wrist_image_key=self.wrist_image_key,
@@ -2002,6 +2014,45 @@ def _xhand_pi0_h16_config(source_name: str, new_name: str) -> TrainConfig:
     )
 
 
+def _xhand_pi05_h16_config(source_name: str, new_name: str) -> TrainConfig:
+    source = next(config for config in _CONFIGS if config.name == source_name)
+    return dataclasses.replace(
+        source,
+        name=new_name,
+        model=dataclasses.replace(
+            source.model,
+            action_horizon=16,
+            pi05=True,
+            max_token_len=200,
+            discrete_state_input=True,
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("checkpoints/pi05_base/params"),
+    )
+
+
+def _xhand_state_tactile_h16_config(source_name: str, new_name: str, *, pi05: bool) -> TrainConfig:
+    source = next(config for config in _CONFIGS if config.name == source_name)
+    return dataclasses.replace(
+        source,
+        name=new_name,
+        model=dataclasses.replace(
+            source.model,
+            action_horizon=16,
+            state_dim=33,
+            pi05=pi05,
+            max_token_len=200 if pi05 else source.model.max_token_len,
+            discrete_state_input=True if pi05 else source.model.discrete_state_input,
+        ),
+        data=dataclasses.replace(
+            source.data,
+            concat_current_tactile_to_state=True,
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "checkpoints/pi05_base/params" if pi05 else "checkpoints/pi0_base/params"
+        ),
+    )
+
+
 def _cached_async_aligned_pool_config(source_name: str, new_name: str) -> TrainConfig:
     source = next(config for config in _CONFIGS if config.name == source_name)
     return dataclasses.replace(
@@ -2029,6 +2080,20 @@ _CONFIGS.extend(
         _xhand_pi0_h16_config(
             "pi0_xhand_full_finetune",
             "pi0_xhand_full_finetune_h16",
+        ),
+        _xhand_pi05_h16_config(
+            "pi0_xhand_full_finetune",
+            "pi05_xhand_full_finetune_h16",
+        ),
+        _xhand_state_tactile_h16_config(
+            "pi0_xhand_full_finetune",
+            "pi0_xhand_state_tactile_finetune_h16",
+            pi05=False,
+        ),
+        _xhand_state_tactile_h16_config(
+            "pi0_xhand_full_finetune",
+            "pi05_xhand_state_tactile_finetune_h16",
+            pi05=True,
         ),
         _cached_async_aligned_pool_config(
             "pi0_xhand_tactile_structured_raw_dual_ae",
