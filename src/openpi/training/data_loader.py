@@ -11,6 +11,8 @@ import jax
 import jax.numpy as jnp
 import lerobot.common.datasets.lerobot_dataset as lerobot_dataset
 import numpy as np
+import pyarrow as pa
+import pyarrow.parquet as pq
 import torch
 
 # import openpi.models.model as _model
@@ -72,6 +74,121 @@ def _to_numpy_array(value) -> np.ndarray:
 
 def _column_to_numpy(column) -> np.ndarray:
     return np.asarray([int(np.asarray(item).item()) for item in column], dtype=np.int64)
+
+
+def _arrow_column_to_numpy(column: pa.ChunkedArray) -> np.ndarray:
+    array = column.combine_chunks()
+    if pa.types.is_fixed_size_list(array.type):
+        values = array.values.to_numpy(zero_copy_only=False)
+        return values.reshape(len(array), array.type.list_size)
+    return array.to_numpy(zero_copy_only=False)
+
+
+class LocalParquetStateActionOnlyDataset:
+    """Fast local LeRobot v2.1 parquet reader for tactile-only pretraining.
+
+    This bypasses `LeRobotDataset`/HuggingFace dataset generation entirely and
+    reads only parquet-backed state/action columns. It is intentionally limited
+    to local datasets used by Stage-1 tactile encoder pretraining.
+    """
+
+    def __init__(
+        self,
+        root: pathlib.Path,
+        *,
+        state_delta_timestamps: Sequence[int],
+        action_horizon: int,
+        action_key: str,
+    ):
+        self.root = root
+        self._state_offsets = tuple(int(offset) for offset in state_delta_timestamps) or (0,)
+        self._action_offsets = tuple(range(int(action_horizon)))
+        self._action_key = action_key
+
+        info_path = root / "meta" / "info.json"
+        with info_path.open() as f:
+            info = json.load(f)
+        data_pattern = info.get("data_path", "data/chunk-{episode_chunk:03d}/episode_{episode_index:06d}.parquet")
+        glob_pattern = data_pattern.replace("{episode_chunk:03d}", "*").replace("{episode_index:06d}", "*")
+        parquet_files = sorted(root.glob(glob_pattern))
+        if not parquet_files:
+            parquet_files = sorted((root / "data").glob("chunk-*/*.parquet"))
+        if not parquet_files:
+            raise FileNotFoundError(f"No parquet files found under local dataset {root}.")
+
+        columns = ["observation.state", action_key, "episode_index"]
+        optional_columns = ["frame_index", "task_index", "timestamp"]
+        logging.info("Loading local state/action parquet columns from %d files.", len(parquet_files))
+
+        states = []
+        actions = []
+        metadata: dict[str, list[np.ndarray]] = {key: [] for key in ["episode_index", *optional_columns]}
+        for parquet_file in parquet_files:
+            schema_names = set(pq.read_schema(parquet_file).names)
+            missing = [column for column in columns if column not in schema_names]
+            if missing:
+                raise ValueError(f"Missing columns {missing} in {parquet_file}.")
+            read_columns = columns + [column for column in optional_columns if column in schema_names]
+            table = pq.read_table(parquet_file, columns=read_columns)
+            states.append(_arrow_column_to_numpy(table["observation.state"]).astype(np.float32))
+            actions.append(_arrow_column_to_numpy(table[action_key]).astype(np.float32))
+            for key in metadata:
+                if key in table.column_names:
+                    metadata[key].append(_arrow_column_to_numpy(table[key]))
+
+        self._states = np.concatenate(states, axis=0)
+        self._actions = np.concatenate(actions, axis=0)
+        self._episode_index = np.concatenate(metadata["episode_index"], axis=0).astype(np.int64)
+        if metadata["frame_index"]:
+            self._frame_index = np.concatenate(metadata["frame_index"], axis=0).astype(np.int64)
+        else:
+            frame_index = np.zeros_like(self._episode_index)
+            for episode in np.unique(self._episode_index):
+                rows = np.nonzero(self._episode_index == episode)[0]
+                frame_index[rows] = np.arange(len(rows), dtype=np.int64)
+            self._frame_index = frame_index
+        self._task_index = (
+            np.concatenate(metadata["task_index"], axis=0).astype(np.int64) if metadata["task_index"] else None
+        )
+        self._timestamp = (
+            np.concatenate(metadata["timestamp"], axis=0).astype(np.float32) if metadata["timestamp"] else None
+        )
+
+        self._episode_frame_to_row: dict[tuple[int, int], int] = {}
+        self._episode_min_frame: dict[int, int] = {}
+        self._episode_max_frame: dict[int, int] = {}
+        for row, (episode, frame) in enumerate(zip(self._episode_index, self._frame_index, strict=True)):
+            episode = int(episode)
+            frame = int(frame)
+            self._episode_frame_to_row[(episode, frame)] = row
+            self._episode_min_frame[episode] = min(frame, self._episode_min_frame.get(episode, frame))
+            self._episode_max_frame[episode] = max(frame, self._episode_max_frame.get(episode, frame))
+        logging.info("Loaded local state/action dataset: %d frames.", len(self))
+
+    def _row_for_offset(self, index: int, offset: int) -> int:
+        episode = int(self._episode_index[index])
+        frame = int(self._frame_index[index]) + int(offset)
+        frame = min(max(frame, self._episode_min_frame[episode]), self._episode_max_frame[episode])
+        return self._episode_frame_to_row[(episode, frame)]
+
+    def __getitem__(self, index: SupportsIndex):
+        index = int(index)
+        state_rows = [self._row_for_offset(index, offset) for offset in self._state_offsets]
+        action_rows = [self._row_for_offset(index, offset) for offset in self._action_offsets]
+        sample = {
+            "observation.state": self._states[np.asarray(state_rows, dtype=np.int64)],
+            self._action_key: self._actions[np.asarray(action_rows, dtype=np.int64)],
+            "episode_index": int(self._episode_index[index]),
+            "frame_index": int(self._frame_index[index]),
+        }
+        if self._task_index is not None:
+            sample["task_index"] = int(self._task_index[index])
+        if self._timestamp is not None:
+            sample["timestamp"] = float(self._timestamp[index])
+        return sample
+
+    def __len__(self) -> int:
+        return self._states.shape[0]
 
 
 class StateActionOnlyDataset:
@@ -392,6 +509,26 @@ def create_torch_dataset(
     episode_indices = _load_episode_indices(data_config.filter_dict_path)
     if episode_indices is not None:
         logging.info("Using %d filtered episodes from %s", len(episode_indices), data_config.filter_dict_path)
+
+    if data_config.state_action_only and local_repo.is_dir():
+        if len(data_config.action_sequence_keys) != 1:
+            raise ValueError("state_action_only currently supports exactly one action sequence key.")
+        dataset = LocalParquetStateActionOnlyDataset(
+            local_repo,
+            state_delta_timestamps=data_config.state_delta_timestamps,
+            action_horizon=action_horizon,
+            action_key=data_config.action_sequence_keys[0],
+        )
+        if episode_indices is not None:
+            selected = set(int(episode) for episode in episode_indices)
+            frame_indices = np.nonzero(np.isin(dataset._episode_index, list(selected)))[0].astype(np.int64).tolist()
+            logging.info(
+                "Episode filter kept %d frames from %d episodes.",
+                len(frame_indices),
+                len(episode_indices),
+            )
+            dataset = EpisodeSubsetDataset(dataset, frame_indices)
+        return dataset
 
     dataset = lerobot_dataset.LeRobotDataset(
         repo_id,
