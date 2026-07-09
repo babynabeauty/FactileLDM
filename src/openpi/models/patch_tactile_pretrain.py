@@ -43,6 +43,8 @@ class XHandPatchTactileEncoderPretrain(nnx.Module):
         self.distribution_loss_weight = float(config.patch_distribution_loss_weight)
         self.summary_loss_weight = float(config.patch_summary_loss_weight)
         self.contact_loss_weight = float(config.patch_contact_loss_weight)
+        self.pretrain_history_time_samples = int(config.pretrain_history_time_samples)
+        self.pretrain_future_time_samples = int(config.pretrain_future_time_samples)
         self.history_times = tuple(
             float(offset) / float(config.tactile_sample_hz) for offset in config.tactile_history_offsets
         )
@@ -84,24 +86,68 @@ class XHandPatchTactileEncoderPretrain(nnx.Module):
             raise ValueError(f"Expected raw tactile effort [B,{expected}], got {effort.shape}.")
         return effort[:, : self.force_input_frames], effort[:, self.force_input_frames :]
 
-    def _encode_all_steps(self, history_effort: jax.Array, future_effort: jax.Array) -> jax.Array:
+    def _sample_time_axis(
+        self,
+        rng: jax.Array,
+        effort: jax.Array,
+        times: jax.Array,
+        sample_count: int,
+        *,
+        train: bool,
+    ) -> tuple[jax.Array, jax.Array]:
+        total_steps = effort.shape[1]
+        if sample_count <= 0 or sample_count >= total_steps:
+            return effort, times
+        if train:
+            indices = jnp.sort(jax.random.permutation(rng, total_steps)[:sample_count])
+        else:
+            indices = jnp.linspace(0, total_steps - 1, sample_count).astype(jnp.int32)
+        return jnp.take(effort, indices, axis=1), jnp.take(times, indices, axis=0)
+
+    def _encode_all_steps(
+        self,
+        history_effort: jax.Array,
+        future_effort: jax.Array,
+        history_times: jax.Array,
+        future_times: jax.Array,
+    ) -> jax.Array:
         history_tokens = self.patch_encoder._encode_steps(
             history_effort,
-            jnp.asarray(self.history_times, dtype=jnp.float32),
+            history_times,
             future=False,
+            include_temporal=False,
         )
         future_tokens = self.patch_encoder._encode_steps(
             future_effort,
-            jnp.asarray(self.future_times, dtype=jnp.float32),
+            future_times,
             future=True,
+            include_temporal=False,
         )
         return jnp.concatenate([history_tokens, future_tokens], axis=1)
 
     def compute_loss_with_stats(self, rng, observation, actions, *, train=False):
-        del rng, train
-        history_effort, future_effort = self._split_effort(observation, dtype=actions.dtype)
+        action_dtype = actions.dtype
+        del actions
+        history_effort, future_effort = self._split_effort(observation, dtype=action_dtype)
+        history_times = jnp.asarray(self.history_times, dtype=jnp.float32)
+        future_times = jnp.asarray(self.future_times, dtype=jnp.float32)
+        history_rng, future_rng = jax.random.split(rng)
+        history_effort, history_times = self._sample_time_axis(
+            history_rng,
+            history_effort,
+            history_times,
+            self.pretrain_history_time_samples,
+            train=train,
+        )
+        future_effort, future_times = self._sample_time_axis(
+            future_rng,
+            future_effort,
+            future_times,
+            self.pretrain_future_time_samples,
+            train=train,
+        )
         effort = jnp.concatenate([history_effort, future_effort], axis=1)
-        tokens = self._encode_all_steps(history_effort, future_effort)
+        tokens = self._encode_all_steps(history_effort, future_effort, history_times, future_times)
 
         target_dist, target_summary, target_contact = self.patch_encoder.patch_reconstruction_targets(effort)
         dist_logits = self.patch_distribution_head(tokens)

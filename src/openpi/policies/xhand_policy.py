@@ -452,9 +452,8 @@ class XHandTactileFlowInputs(transforms.DataTransformFn):
 class XHandPatchTactilePretrainInputs(transforms.DataTransformFn):
     """Lightweight raw-tactile inputs for patch encoder pretraining.
 
-    Stage-1 patch encoder pretraining does not use RGB or language. Returning
-    dummy images keeps the generic Observation path happy while avoiding video
-    decoding in LeRobot.
+    Stage-1 patch encoder pretraining does not use RGB or language, so this
+    transform emits only proprioception, tactile input, and actions.
     """
 
     tactile_mode: Literal["raw_force"] = "raw_force"
@@ -465,21 +464,10 @@ class XHandPatchTactilePretrainInputs(transforms.DataTransformFn):
     def __call__(self, data: dict) -> dict:
         state_seq = _as_state_sequence(_get_required(data, STATE_KEY_ALIASES, "observation.state"))
         current_state = state_seq[min(max(self.tactile_history_frames - 1, 0), state_seq.shape[0] - 1)]
-        dummy_image = np.zeros((224, 224, 3), dtype=np.uint8)
 
         inputs = {
             "state": self._extract_proprio(current_state),
             "effort": self._extract_tactile(state_seq),
-            "image": {
-                "base_0_rgb": dummy_image,
-                "left_wrist_0_rgb": dummy_image,
-                "right_wrist_0_rgb": dummy_image,
-            },
-            "image_mask": {
-                "base_0_rgb": np.False_,
-                "left_wrist_0_rgb": np.False_,
-                "right_wrist_0_rgb": np.False_,
-            },
         }
 
         action_key = _first_present(data, ACTION_KEY_ALIASES)

@@ -201,7 +201,28 @@ class RawTactileSpatialTokenizer(nnx.Module):
         )
         return selected
 
-    def _encode_steps(self, forces: jax.Array, times_seconds: jax.Array, *, future: bool) -> jax.Array:
+    def _add_time_type_embedding(self, tokens: jax.Array, times_seconds: jax.Array, *, future: bool) -> jax.Array:
+        """Add policy-level temporal metadata after spatial tactile encoding."""
+        batch_size, time_steps, token_count = tokens.shape[:3]
+        time_feature = self.time_proj(_continuous_time_embedding(times_seconds, self.time_embedding_dim))
+        time_feature = jnp.broadcast_to(
+            time_feature[None, :, None, :],
+            (batch_size, time_steps, token_count, self.output_dim),
+        )
+        type_feature = jnp.broadcast_to(
+            self.type_embedding.value[int(future)][None, None, None, :],
+            (batch_size, time_steps, token_count, self.output_dim),
+        )
+        return tokens + time_feature.astype(tokens.dtype) + type_feature.astype(tokens.dtype)
+
+    def _encode_steps(
+        self,
+        forces: jax.Array,
+        times_seconds: jax.Array,
+        *,
+        future: bool,
+        include_temporal: bool = True,
+    ) -> jax.Array:
         if forces.ndim != 5:
             raise ValueError(f"Expected raw tactile force [B,T,F,P,C], got {forces.shape}.")
         if forces.shape[2:] != (self.num_fingers, self.num_points, self.dim_per_point):
@@ -224,17 +245,8 @@ class RawTactileSpatialTokenizer(nnx.Module):
             self.point_embedding.value[None, None, None, :, :],
             (batch_size, time_steps, self.num_fingers, self.num_points, self.output_dim),
         )
-        time_feature = self.time_proj(_continuous_time_embedding(times_seconds, self.time_embedding_dim))
-        time_feature = jnp.broadcast_to(
-            time_feature[None, :, None, None, :],
-            (batch_size, time_steps, self.num_fingers, self.num_points, self.output_dim),
-        )
-        type_feature = jnp.broadcast_to(
-            self.type_embedding.value[int(future)][None, None, None, None, :],
-            (batch_size, time_steps, self.num_fingers, self.num_points, self.output_dim),
-        )
 
-        point_tokens = force_feature + finger_feature + point_feature + time_feature + type_feature
+        point_tokens = force_feature + finger_feature + point_feature
         magnitude = jnp.linalg.norm(forces.astype(jnp.float32), axis=-1)
         temperature = jnp.asarray(max(self.contact_temperature, 1e-6), dtype=jnp.float32)
         gate = jax.nn.sigmoid((magnitude - self.contact_threshold) / temperature)
@@ -259,6 +271,8 @@ class RawTactileSpatialTokenizer(nnx.Module):
             axis=-1,
         ).astype(point_tokens.dtype)
         pooled = pooled + self.contact_proj(contact_stats)
+        if include_temporal:
+            pooled = self._add_time_type_embedding(pooled, times_seconds, future=future)
         return self.norm(pooled)
 
     def encode_history(self, forces: jax.Array, times_seconds: jax.Array) -> jax.Array:
@@ -375,7 +389,14 @@ class AdaptiveFingertipPatchTokenizer(RawTactileSpatialTokenizer):
             raise ValueError("num_fingers must be positive.")
         return (t30_thumb,) + tuple(t16_other for _ in range(num_fingers - 1))
 
-    def _encode_steps(self, forces: jax.Array, times_seconds: jax.Array, *, future: bool) -> jax.Array:
+    def _encode_steps(
+        self,
+        forces: jax.Array,
+        times_seconds: jax.Array,
+        *,
+        future: bool,
+        include_temporal: bool = True,
+    ) -> jax.Array:
         if forces.ndim != 5:
             raise ValueError(f"Expected raw tactile force [B,T,F,P,C], got {forces.shape}.")
         if forces.shape[2:] != (self.num_fingers, self.num_points, self.dim_per_point):
@@ -398,17 +419,8 @@ class AdaptiveFingertipPatchTokenizer(RawTactileSpatialTokenizer):
             self.point_embedding.value[None, None, None, :, :],
             (batch_size, time_steps, self.num_fingers, self.num_points, self.output_dim),
         )
-        time_feature = self.time_proj(_continuous_time_embedding(times_seconds, self.time_embedding_dim))
-        time_feature = jnp.broadcast_to(
-            time_feature[None, :, None, None, :],
-            (batch_size, time_steps, self.num_fingers, self.num_points, self.output_dim),
-        )
-        type_feature = jnp.broadcast_to(
-            self.type_embedding.value[int(future)][None, None, None, None, :],
-            (batch_size, time_steps, self.num_fingers, self.num_points, self.output_dim),
-        )
 
-        point_tokens = force_feature + finger_feature + point_feature + time_feature + type_feature
+        point_tokens = force_feature + finger_feature + point_feature
         magnitude = jnp.linalg.norm(forces.astype(jnp.float32), axis=-1)
         temperature = jnp.asarray(max(self.contact_temperature, 1e-6), dtype=jnp.float32)
         gate = jax.nn.sigmoid((magnitude - self.contact_threshold) / temperature)
@@ -456,6 +468,8 @@ class AdaptiveFingertipPatchTokenizer(RawTactileSpatialTokenizer):
             tokens = jnp.concatenate([summary_tokens, patch_tokens], axis=2)
         else:
             tokens = summary_tokens
+        if include_temporal:
+            tokens = self._add_time_type_embedding(tokens, times_seconds, future=future)
         return self.norm(tokens)
 
 
@@ -516,7 +530,14 @@ class PatchInformedFingerTokenizer(RawTactileSpatialTokenizer):
             self.num_fingers, self.num_points
         )
 
-    def _encode_steps(self, forces: jax.Array, times_seconds: jax.Array, *, future: bool) -> jax.Array:
+    def _encode_steps(
+        self,
+        forces: jax.Array,
+        times_seconds: jax.Array,
+        *,
+        future: bool,
+        include_temporal: bool = True,
+    ) -> jax.Array:
         if forces.ndim != 5:
             raise ValueError(f"Expected raw tactile force [B,T,F,P,C], got {forces.shape}.")
         if forces.shape[2:] != (self.num_fingers, self.num_points, self.dim_per_point):
@@ -574,21 +595,14 @@ class PatchInformedFingerTokenizer(RawTactileSpatialTokenizer):
             self.patch_embedding.value[None, None, None, :, :],
             (batch_size, time_steps, self.num_fingers, self.num_patches, self.output_dim),
         )
-        time_feature = self.time_proj(_continuous_time_embedding(times_seconds, self.time_embedding_dim))
-        time_feature = jnp.broadcast_to(
-            time_feature[None, :, None, None, :],
-            (batch_size, time_steps, self.num_fingers, self.num_patches, self.output_dim),
-        )
-        type_feature = jnp.broadcast_to(
-            self.type_embedding.value[int(future)][None, None, None, None, :],
-            (batch_size, time_steps, self.num_fingers, self.num_patches, self.output_dim),
-        )
-        patch_tokens = patch_tokens + finger_feature + patch_feature + time_feature + type_feature
+        patch_tokens = patch_tokens + finger_feature + patch_feature
 
         patch_scores = jnp.squeeze(self.patch_score(nnx.swish(patch_tokens)), axis=-1).astype(jnp.float32)
         patch_scores = patch_scores + jnp.log(contact_area + 1e-6)
         patch_weights = jax.nn.softmax(patch_scores, axis=-1).astype(patch_tokens.dtype)
         finger_tokens = jnp.einsum("btfr,btfrd->btfd", patch_weights, patch_tokens)
+        if include_temporal:
+            finger_tokens = self._add_time_type_embedding(finger_tokens, times_seconds, future=future)
         return self.patch_norm(finger_tokens)
 
     def patch_reconstruction_targets(self, forces: jax.Array) -> tuple[jax.Array, jax.Array, jax.Array]:

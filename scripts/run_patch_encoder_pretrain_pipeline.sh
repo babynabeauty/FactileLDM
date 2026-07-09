@@ -32,6 +32,8 @@ GPUS="${GPUS:-0,1,2,3,4,5,6,7}"
 GLOBAL_BATCH_SIZE="${GLOBAL_BATCH_SIZE:-8}"
 STAGE1_BATCH_SIZE="${STAGE1_BATCH_SIZE:-$GLOBAL_BATCH_SIZE}"
 STAGE2_BATCH_SIZE="${STAGE2_BATCH_SIZE:-$GLOBAL_BATCH_SIZE}"
+STAGE1_HISTORY_TIME_SAMPLES="${STAGE1_HISTORY_TIME_SAMPLES:-2}"
+STAGE1_FUTURE_TIME_SAMPLES="${STAGE1_FUTURE_TIME_SAMPLES:-2}"
 NUM_WORKERS="${NUM_WORKERS:-2}"
 ALLOW_OVERWRITE="${ALLOW_OVERWRITE:-0}"
 RESUME="${RESUME:-0}"
@@ -170,6 +172,7 @@ log "Asset dir: $ASSET_DIR"
 log "GPUs: $GPUS"
 log "Global batch size: $GLOBAL_BATCH_SIZE"
 log "Stage1 batch size: $STAGE1_BATCH_SIZE"
+log "Stage1 tactile time samples: history=${STAGE1_HISTORY_TIME_SAMPLES}, future=${STAGE1_FUTURE_TIME_SAMPLES}"
 log "Stage2 batch size: $STAGE2_BATCH_SIZE"
 log "Run tag: $RUN_TAG"
 log "Resume: $RESUME"
@@ -184,7 +187,9 @@ run_train \
   "$STAGE1_SAVE_INTERVAL" \
   1 \
   "$STAGE1_BATCH_SIZE" \
-  "logs/${EXP_STAGE1}.log"
+  "logs/${EXP_STAGE1}.log" \
+  --model.pretrain-history-time-samples "$STAGE1_HISTORY_TIME_SAMPLES" \
+  --model.pretrain-future-time-samples "$STAGE1_FUTURE_TIME_SAMPLES"
 
 require_path "$CKPT_STAGE1" "stage1 encoder checkpoint was not produced"
 

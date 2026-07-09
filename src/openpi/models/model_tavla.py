@@ -141,12 +141,14 @@ class Observation(Generic[ArrayT]):
         # Ensure that tokenized_prompt and tokenized_prompt_mask are provided together.
         if ("tokenized_prompt" in data) != ("tokenized_prompt_mask" in data):
             raise ValueError("tokenized_prompt and tokenized_prompt_mask must be provided together.")
+        images = data.get("image", {})
+        image_masks = data.get("image_mask", {})
         # If images are uint8, convert them to [-1, 1] float32.
-        for key in data["image"]:
-            if data["image"][key].dtype == np.uint8:
-                data["image"][key] = data["image"][key].astype(np.float32) / 255.0 * 2.0 - 1.0
-            elif hasattr(data["image"][key], "dtype") and data["image"][key].dtype == torch.uint8:
-                data["image"][key] = data["image"][key].to(torch.float32).permute(0, 3, 1, 2) / 255.0 * 2.0 - 1.0
+        for key in images:
+            if images[key].dtype == np.uint8:
+                images[key] = images[key].astype(np.float32) / 255.0 * 2.0 - 1.0
+            elif hasattr(images[key], "dtype") and images[key].dtype == torch.uint8:
+                images[key] = images[key].to(torch.float32).permute(0, 3, 1, 2) / 255.0 * 2.0 - 1.0
         for aux_image_key in ("flow_img", "wrist_flow_img", "future_rgb_img", "future_wrist_rgb_img"):
             if aux_image_key in data:
                 if data[aux_image_key].dtype == np.uint8:
@@ -154,8 +156,8 @@ class Observation(Generic[ArrayT]):
                 elif hasattr(data[aux_image_key], "dtype") and data[aux_image_key].dtype == torch.uint8:
                     data[aux_image_key] = data[aux_image_key].to(torch.float32) / 255.0 * 2.0 - 1.0
         return cls(
-            images=data["image"],
-            image_masks=data["image_mask"],
+            images=images,
+            image_masks=image_masks,
             state=data["state"],
             tactile=data.get("tactile"),
             effort=data.get("effort", None),

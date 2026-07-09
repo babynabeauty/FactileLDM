@@ -733,6 +733,8 @@ class XHandPatchTactileEncoderPretrainConfig(_model.BaseModelConfig):
     tactile_raw_contact_top_k: int = 16
     tactile_raw_contact_threshold: float = 0.5
     tactile_raw_contact_temperature: float = 0.5
+    pretrain_history_time_samples: int = 2
+    pretrain_future_time_samples: int = 2
     patch_distribution_loss_weight: float = 1.0
     patch_summary_loss_weight: float = 1.0
     patch_contact_loss_weight: float = 0.5
@@ -756,6 +758,8 @@ class XHandPatchTactileEncoderPretrainConfig(_model.BaseModelConfig):
             raise ValueError("Patch-informed XHand pretraining currently expects tactile_num_patches=5.")
         if self.tactile_raw_contact_temperature <= 0:
             raise ValueError("tactile_raw_contact_temperature must be positive.")
+        if self.pretrain_history_time_samples < 0 or self.pretrain_future_time_samples < 0:
+            raise ValueError("pretrain time sample counts must be non-negative.")
 
     @override
     def create(self, rng: at.KeyArrayLike):
