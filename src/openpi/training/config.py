@@ -2306,6 +2306,16 @@ _CONFIGS.extend(
             "pi0_xhand_dual_patch_pretrained_f4_h16_async",
             freeze_encoder=False,
         ),
+        _patch_pretrained_dual_config(
+            "pi0_xhand_dual_patch_f8_h16_async",
+            "pi0_xhand_dual_patch_pretrained_f8_h16_async_freeze",
+            freeze_encoder=True,
+        ),
+        _patch_pretrained_dual_config(
+            "pi0_xhand_dual_patch_f8_h16_async",
+            "pi0_xhand_dual_patch_pretrained_f8_h16_async",
+            freeze_encoder=False,
+        ),
     ]
 )
 

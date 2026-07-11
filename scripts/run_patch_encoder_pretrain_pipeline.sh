@@ -3,8 +3,9 @@ set -euo pipefail
 
 # Three-stage training pipeline:
 #   1. xhand_patch_tactile_encoder_pretrain
-#   2. pi0_xhand_dual_patch_pretrained_f4_h16_async_freeze
-#   3. pi0_xhand_dual_patch_pretrained_f4_h16_async
+#   2. pi0_xhand_dual_patch_pretrained_f4_h16_async_freeze by default
+#   3. pi0_xhand_dual_patch_pretrained_f4_h16_async by default
+# Set STAGE2_BASE_CONFIG=pi0_xhand_dual_patch_f8_h16_async to run the f8 policy variant.
 #
 # Usage:
 #   bash scripts/run_patch_encoder_pretrain_pipeline.sh data/stage12345-2
@@ -47,12 +48,13 @@ STAGE2B_SAVE_INTERVAL="${STAGE2B_SAVE_INTERVAL:-10000}"
 KEEP_PERIOD="${KEEP_PERIOD:-10000}"
 
 CONFIG_STAGE1="xhand_patch_tactile_encoder_pretrain"
-CONFIG_STAGE2A="pi0_xhand_dual_patch_pretrained_f4_h16_async_freeze"
-CONFIG_STAGE2B="pi0_xhand_dual_patch_pretrained_f4_h16_async"
+STAGE2_BASE_CONFIG="${STAGE2_BASE_CONFIG:-pi0_xhand_dual_patch_f4_h16_async}"
+CONFIG_STAGE2A="${STAGE2_BASE_CONFIG/pi0_xhand_dual_patch_/pi0_xhand_dual_patch_pretrained_}_freeze"
+CONFIG_STAGE2B="${STAGE2_BASE_CONFIG/pi0_xhand_dual_patch_/pi0_xhand_dual_patch_pretrained_}"
 
 EXP_STAGE1="xhand_patch_tactile_encoder_pretrain_${RUN_TAG}"
-EXP_STAGE2A="pi0_xhand_dual_patch_pretrained_f4_h16_async_freeze_${RUN_TAG}"
-EXP_STAGE2B="pi0_xhand_dual_patch_pretrained_f4_h16_async_${RUN_TAG}"
+EXP_STAGE2A="${CONFIG_STAGE2A}_${RUN_TAG}"
+EXP_STAGE2B="${CONFIG_STAGE2B}_${RUN_TAG}"
 
 FINAL_STAGE1=$((STAGE1_STEPS - 1))
 FINAL_STAGE2A=$((STAGE2A_STEPS - 1))
@@ -174,6 +176,9 @@ log "Global batch size: $GLOBAL_BATCH_SIZE"
 log "Stage1 batch size: $STAGE1_BATCH_SIZE"
 log "Stage1 tactile time samples: history=${STAGE1_HISTORY_TIME_SAMPLES}, future=${STAGE1_FUTURE_TIME_SAMPLES}"
 log "Stage2 batch size: $STAGE2_BATCH_SIZE"
+log "Stage2 base config: $STAGE2_BASE_CONFIG"
+log "Stage2A config: $CONFIG_STAGE2A"
+log "Stage2B config: $CONFIG_STAGE2B"
 log "Run tag: $RUN_TAG"
 log "Resume: $RESUME"
 log "Stage1 final encoder params will be: $CKPT_STAGE1"
