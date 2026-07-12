@@ -17,9 +17,9 @@ export FSDP_DEVICES="${FSDP_DEVICES:-1}"
 export NUM_WORKERS="${NUM_WORKERS:-2}"
 export SAVE_INTERVAL="${SAVE_INTERVAL:-10000}"
 export KEEP_PERIOD="${KEEP_PERIOD:-10000}"
-# Strictly sequential by default. To run two jobs at a time on an 8-GPU
-# machine, set GPU_SLOTS="0,1,2,3;4,5,6,7".
-export GPU_SLOTS="${GPU_SLOTS:-0,1,2,3}"
+# Two four-GPU slots by default: run the first two jobs concurrently, then
+# launch the third as soon as either slot is released.
+export GPU_SLOTS="${GPU_SLOTS:-0,1,2,3;4,5,6,7}"
 
 JOB_LABELS=(
   "A_pi05_full_h16"
