@@ -5,6 +5,7 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 RAW_TACTILE_ASSETS_DIR="${RAW_TACTILE_ASSETS_DIR:-assets/pi0_xhand_tactile_structured_raw_dual_ae}"
 PI0_BASE_PARAMS="${PI0_BASE_PARAMS:-checkpoints/pi0_base/params}"
+PATCH_POLICY_PARAMS="${PATCH_POLICY_PARAMS:-$PI0_BASE_PARAMS}"
 PATCH_ENCODER_PARAMS="${PATCH_ENCODER_PARAMS:-}"
 
 export TRAIN_STEPS="${TRAIN_STEPS:-60000}"
@@ -28,6 +29,10 @@ if [[ ! -e "$PI0_BASE_PARAMS" ]]; then
   echo "ERROR: PI0_BASE_PARAMS not found: $PI0_BASE_PARAMS" >&2
   exit 2
 fi
+if [[ ! -e "$PATCH_POLICY_PARAMS" ]]; then
+  echo "ERROR: PATCH_POLICY_PARAMS not found: $PATCH_POLICY_PARAMS" >&2
+  exit 2
+fi
 
 JOB_LABELS=(
   "A_no_future"
@@ -48,10 +53,10 @@ JOB_ASSET_DIRS=(
   "$RAW_TACTILE_ASSETS_DIR"
 )
 JOB_WEIGHT_ARGS=(
-  "--weight-loader.pi0-params-path $PI0_BASE_PARAMS --weight-loader.encoder-params-path $PATCH_ENCODER_PARAMS"
-  "--weight-loader.pi0-params-path $PI0_BASE_PARAMS --weight-loader.encoder-params-path $PATCH_ENCODER_PARAMS"
+  "--weight-loader.pi0-params-path $PATCH_POLICY_PARAMS --weight-loader.encoder-params-path $PATCH_ENCODER_PARAMS"
+  "--weight-loader.pi0-params-path $PATCH_POLICY_PARAMS --weight-loader.encoder-params-path $PATCH_ENCODER_PARAMS"
   "--weight-loader.params-path $PI0_BASE_PARAMS"
-  "--weight-loader.pi0-params-path $PI0_BASE_PARAMS --weight-loader.encoder-params-path $PATCH_ENCODER_PARAMS"
+  "--weight-loader.pi0-params-path $PATCH_POLICY_PARAMS --weight-loader.encoder-params-path $PATCH_ENCODER_PARAMS"
 )
 
 source scripts/four_gpu_training_queue.sh
