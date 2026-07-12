@@ -1468,17 +1468,20 @@ class Pi0LatentFlow(_model.BaseModel):
         if self.structured_tactile:
             observation_count = 1 + self.history_force_token_count
             future_count = self.future_force_token_count + active_flow_token_count
+            observation_mask = [True] + [False] * (observation_count - 1)
+            future_mask = ([True] + [False] * (future_count - 1)) if future_count > 0 else []
+            action_mask = [True] + [False] * (action_len - 1)
             if self.arm_hand_mask_attention:
                 return jnp.array(
-                    ([True] + [False] * (observation_count - 1))
-                    + ([True] + [False] * (action_len - 1))
-                    + ([True] + [False] * (future_count - 1))
-                    + ([True] + [False] * (action_len - 1))
+                    observation_mask
+                    + action_mask
+                    + future_mask
+                    + action_mask
                 )
             return jnp.array(
-                ([True] + [False] * (observation_count - 1))
-                + ([True] + [False] * (future_count - 1))
-                + ([True] + [False] * (action_len - 1))
+                observation_mask
+                + future_mask
+                + action_mask
             )
         return jnp.array(
             [False, False] + [True] + ([False] * active_flow_token_count) + [True] + ([False] * (action_len - 1))
