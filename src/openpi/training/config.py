@@ -2274,6 +2274,34 @@ def _patch_pretrained_dual_config(source_name: str, new_name: str, *, freeze_enc
     )
 
 
+def _patch_pretrained_dual_ablation_config(source_name: str, new_name: str, **model_kwargs) -> TrainConfig:
+    source = next(config for config in _CONFIGS if config.name == source_name)
+    return dataclasses.replace(
+        source,
+        name=new_name,
+        model=dataclasses.replace(source.model, **model_kwargs),
+        weight_loader=weight_loaders.Pi0WithPatchTactileEncoderWeightLoader(
+            pi0_params_path="checkpoints/pi0_base/params",
+            encoder_params_path=None,
+        ),
+    )
+
+
+def _raw_mlp_dual_ablation_config(source_name: str, new_name: str) -> TrainConfig:
+    source = next(config for config in _CONFIGS if config.name == source_name)
+    return dataclasses.replace(
+        source,
+        name=new_name,
+        model=dataclasses.replace(
+            source.model,
+            tactile_patch_tokenizer=False,
+            tactile_patch_informed_tokenizer=False,
+            tactile_raw_mlp_tokenizer=True,
+            tactile_patch_aux_loss_weight=0.0,
+        ),
+    )
+
+
 _CONFIGS.extend(
     [
         _patch_distribution_aux_config(
@@ -2300,6 +2328,35 @@ _CONFIGS.extend(
             "pi0_xhand_dual_patch_f8_h16_async",
             "pi0_xhand_dual_patch_pretrained_f8_h16_async",
             freeze_encoder=False,
+        ),
+        _patch_pretrained_dual_ablation_config(
+            "pi0_xhand_dual_patch_f4_h16_async",
+            "pi0_xhand_patch_pretrained_f4_h16_async_no_future",
+            disable_future_tactile=True,
+            use_future_flow=False,
+            future_force_align_loss_weight=0.0,
+            future_flow_align_loss_weight=0.0,
+            teacher_action_loss_weight=0.0,
+            cached_vlm_async_future_align_loss_weight=0.0,
+            cached_vlm_async_use_predicted_prefix_queries=False,
+        ),
+        _patch_pretrained_dual_ablation_config(
+            "pi0_xhand_dual_patch_f4_h16_async",
+            "pi0_xhand_dual_patch_pretrained_f4_h16_async_no_future_update",
+            cached_vlm_async_use_predicted_prefix_queries=False,
+            cached_vlm_async_future_align_loss_weight=0.0,
+        ),
+        _raw_mlp_dual_ablation_config(
+            "pi0_xhand_dual_patch_f4_h16_async",
+            "pi0_xhand_dual_raw_mlp_f4_h16_async",
+        ),
+        _patch_pretrained_dual_ablation_config(
+            "pi0_xhand_dual_patch_f4_h16_async",
+            "pi0_xhand_patch_pretrained_f4_h16_async_direct_align",
+            direct_future_tactile_align=True,
+            use_future_flow=False,
+            future_flow_align_loss_weight=0.0,
+            teacher_action_loss_weight=0.0,
         ),
     ]
 )

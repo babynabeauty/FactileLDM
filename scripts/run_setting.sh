@@ -28,10 +28,18 @@ run_four_gpu_training_queue() {
   local python_bin="${PYTHON:-env/.venv/bin/python}"
   local default_weight_path="${WEIGHT_PATH:-checkpoints/pi0_base/params}"
   local has_job_weight_paths=0
+  local has_job_weight_args=0
   if declare -p JOB_WEIGHT_PATHS >/dev/null 2>&1; then
     has_job_weight_paths=1
     if (( ${#JOB_WEIGHT_PATHS[@]} != ${#JOB_LABELS[@]} )); then
       echo "ERROR: JOB_WEIGHT_PATHS must have the same length as JOB_LABELS when provided." >&2
+      return 2
+    fi
+  fi
+  if declare -p JOB_WEIGHT_ARGS >/dev/null 2>&1; then
+    has_job_weight_args=1
+    if (( ${#JOB_WEIGHT_ARGS[@]} != ${#JOB_LABELS[@]} )); then
+      echo "ERROR: JOB_WEIGHT_ARGS must have the same length as JOB_LABELS when provided." >&2
       return 2
     fi
   fi
@@ -80,7 +88,7 @@ run_four_gpu_training_queue() {
     echo "ERROR: Dataset not found: $data_repo/meta/info.json" >&2
     return 2
   fi
-  if (( has_job_weight_paths == 0 )) && [[ ! -e "$default_weight_path" ]]; then
+  if (( has_job_weight_paths == 0 && has_job_weight_args == 0 )) && [[ ! -e "$default_weight_path" ]]; then
     echo "ERROR: Base checkpoint not found: $default_weight_path" >&2
     return 2
   fi
@@ -102,13 +110,15 @@ run_four_gpu_training_queue() {
       echo "Use a new RUN_TAG to keep old checkpoints, or set ALLOW_OVERWRITE=1 to delete and rerun it." >&2
       return 2
     fi
-    local job_weight_path="$default_weight_path"
-    if (( has_job_weight_paths == 1 )); then
-      job_weight_path="${JOB_WEIGHT_PATHS[$job_index]}"
-    fi
-    if [[ ! -e "$job_weight_path" ]]; then
-      echo "ERROR: Base checkpoint not found for ${JOB_LABELS[$job_index]}: $job_weight_path" >&2
-      return 2
+    if (( has_job_weight_args == 0 )); then
+      local job_weight_path="$default_weight_path"
+      if (( has_job_weight_paths == 1 )); then
+        job_weight_path="${JOB_WEIGHT_PATHS[$job_index]}"
+      fi
+      if [[ ! -e "$job_weight_path" ]]; then
+        echo "ERROR: Base checkpoint not found for ${JOB_LABELS[$job_index]}: $job_weight_path" >&2
+        return 2
+      fi
     fi
   done
 
@@ -243,6 +253,13 @@ run_four_gpu_training_queue() {
     if (( has_job_weight_paths == 1 )); then
       job_weight_path="${JOB_WEIGHT_PATHS[$job_index]}"
     fi
+    local -a weight_args=()
+    if (( has_job_weight_args == 1 )) && [[ -n "${JOB_WEIGHT_ARGS[$job_index]}" ]]; then
+      # shellcheck disable=SC2206
+      weight_args=(${JOB_WEIGHT_ARGS[$job_index]})
+    else
+      weight_args=(--weight-loader.params-path "$job_weight_path")
+    fi
     local gpu_ids="${gpu_slots[$slot_index]}"
     local exp_name="${label}_${run_tag}"
     local log_file="logs/${exp_name}.log"
@@ -251,7 +268,7 @@ run_four_gpu_training_queue() {
       overwrite_args=(--overwrite)
     fi
 
-    log_queue "Starting ${label}: config=${config}, GPUs=${gpu_ids}, assets=${assets_dir}, weights=${job_weight_path}"
+    log_queue "Starting ${label}: config=${config}, GPUs=${gpu_ids}, assets=${assets_dir}, weights=${weight_args[*]}"
     setsid --wait env \
       HF_LEROBOT_HOME="$HF_LEROBOT_HOME" \
       HF_DATASETS_CACHE="$HF_DATASETS_CACHE" \
@@ -272,7 +289,7 @@ run_four_gpu_training_queue() {
         --keep-period "$keep_period" \
         --no-wandb-enabled \
         "${overwrite_args[@]}" \
-        --weight-loader.params-path "$job_weight_path" \
+        "${weight_args[@]}" \
       > "$log_file" 2>&1 &
 
     local pid=$!

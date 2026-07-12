@@ -15,6 +15,7 @@ from openpi.models.pi0_tavla import make_attn_mask, posemb_sincos
 from openpi.models.tactile_tokenizer import AdaptiveFingertipPatchTokenizer
 from openpi.models.tactile_tokenizer import DexterousForceTokenizer
 from openpi.models.tactile_tokenizer import PatchInformedFingerTokenizer
+from openpi.models.tactile_tokenizer import PlainRawTactileMLPTokenizer
 from openpi.models.tactile_tokenizer import RawTactileSpatialTokenizer
 from openpi.shared import array_typing as at
 
@@ -176,13 +177,17 @@ class Pi0LatentFlow(_model.BaseModel):
         self.cached_vlm_async_history_mode = getattr(config, "cached_vlm_async_history_mode", "pooled")
         self.tactile_patch_tokenizer = bool(getattr(config, "tactile_patch_tokenizer", False))
         self.tactile_patch_informed_tokenizer = bool(getattr(config, "tactile_patch_informed_tokenizer", False))
+        self.tactile_raw_mlp_tokenizer = bool(getattr(config, "tactile_raw_mlp_tokenizer", False))
+        self.disable_future_tactile = bool(getattr(config, "disable_future_tactile", False))
+        self.direct_future_tactile_align = bool(getattr(config, "direct_future_tactile_align", False))
+        self.use_teacher_ae = not (self.disable_future_tactile or self.direct_future_tactile_align)
         self.tactile_patch_fingers = tuple(int(finger) for finger in getattr(config, "tactile_patch_fingers", (0, 1, 2)))
         self.tactile_num_patches = int(getattr(config, "tactile_num_patches", 5))
         self.tactile_patch_aux_loss_weight = float(getattr(config, "tactile_patch_aux_loss_weight", 0.0))
         self.tactile_tokens_per_step = self.tactile_num_fingers
         if self.structured_tactile and self.tactile_patch_tokenizer:
             self.tactile_tokens_per_step = self.tactile_num_fingers + len(self.tactile_patch_fingers) * self.tactile_num_patches
-        self.future_force_token_count = (
+        self.future_force_token_count = 0 if self.disable_future_tactile else (
             self.future_tactile_segments * self.tactile_tokens_per_step if self.structured_tactile else 1
         )
         self.history_force_token_count = (
@@ -342,6 +347,8 @@ class Pi0LatentFlow(_model.BaseModel):
                 elif self.tactile_patch_informed_tokenizer:
                     tokenizer_cls = PatchInformedFingerTokenizer
                     tokenizer_kwargs.update(num_patches=self.tactile_num_patches)
+                elif self.tactile_raw_mlp_tokenizer:
+                    tokenizer_cls = PlainRawTactileMLPTokenizer
                 else:
                     tokenizer_cls = RawTactileSpatialTokenizer
                 self.student_force_tokenizer = tokenizer_cls(output_dim=student_config.width, rngs=rngs, **tokenizer_kwargs)
@@ -717,7 +724,18 @@ class Pi0LatentFlow(_model.BaseModel):
         hidden = self.future_force_proj_teacher(einops.rearrange(future_effort, "b h e -> b (h e)"))
         return hidden[:, None, :]
 
+    def _project_future_force_student_target(
+        self, future_effort: at.Array
+    ) -> at.Array:
+        if self.structured_tactile:
+            return self.student_force_tokenizer.encode_future(
+                future_effort, jnp.asarray(self.future_times, dtype=jnp.float32)
+            )
+        raise ValueError("direct_future_tactile_align currently requires structured_tactile=True.")
+
     def _student_query_token(self, batch_size: int, dtype: jnp.dtype) -> at.Float[at.Array, "b 1 d"]:
+        if self.disable_future_tactile:
+            return jnp.zeros((batch_size, 0, self.student_width), dtype=dtype)
         if self.structured_tactile:
             query = (
                 self.student_query_base.value[None, None, :]
@@ -1920,30 +1938,48 @@ class Pi0LatentFlow(_model.BaseModel):
             noise_rng=query_noise_rng,
             train_progress=train_progress,
         )
-        teacher_tokens, teacher_mask, teacher_ar_mask, teacher_adarms = self.embed_teacher_suffix(
-            observation, history_effort, future_effort, x_t_action, time
-        )
-        student_out, teacher_out, student_layer_hiddens, teacher_layer_hiddens = self._forward_train_joint_multilayer(
-            prefix_tokens=prefix_tokens,
-            prefix_mask=prefix_mask,
-            prefix_ar_mask=prefix_ar_mask,
-            student_suffix_tokens=student_tokens,
-            student_suffix_mask=student_mask,
-            student_suffix_ar_mask=student_ar_mask,
-            student_adarms=student_adarms,
-            teacher_suffix_tokens=teacher_tokens,
-            teacher_suffix_mask=teacher_mask,
-            teacher_suffix_ar_mask=teacher_ar_mask,
-            teacher_adarms=teacher_adarms,
-        )
+        if self.use_teacher_ae:
+            teacher_tokens, teacher_mask, teacher_ar_mask, teacher_adarms = self.embed_teacher_suffix(
+                observation, history_effort, future_effort, x_t_action, time
+            )
+            student_out, teacher_out, student_layer_hiddens, teacher_layer_hiddens = self._forward_train_joint_multilayer(
+                prefix_tokens=prefix_tokens,
+                prefix_mask=prefix_mask,
+                prefix_ar_mask=prefix_ar_mask,
+                student_suffix_tokens=student_tokens,
+                student_suffix_mask=student_mask,
+                student_suffix_ar_mask=student_ar_mask,
+                student_adarms=student_adarms,
+                teacher_suffix_tokens=teacher_tokens,
+                teacher_suffix_mask=teacher_mask,
+                teacher_suffix_ar_mask=teacher_ar_mask,
+                teacher_adarms=teacher_adarms,
+            )
+        else:
+            student_out, student_layer_hiddens = self._forward_student_multilayer(
+                prefix_tokens=prefix_tokens,
+                prefix_mask=prefix_mask,
+                prefix_ar_mask=prefix_ar_mask,
+                student_suffix_tokens=student_tokens,
+                student_suffix_mask=student_mask,
+                student_suffix_ar_mask=student_ar_mask,
+                student_adarms=student_adarms,
+            )
+            teacher_out = jnp.zeros((actions.shape[0], 0, self.teacher_width), dtype=student_out.dtype)
+            teacher_layer_hiddens = ()
 
         student_base_v = self._decode_base_action_velocity(student_out, expert="student")
         student_v, tactile_refiner_stats = self._decode_student_action_velocity_with_stats(student_out)
-        teacher_v = self._decode_action_velocity(teacher_out, expert="teacher")
         student_action_loss = jnp.mean(jnp.square(student_v - u_t_action), axis=(-2, -1))
-        teacher_action_loss = jnp.mean(jnp.square(teacher_v - u_t_action), axis=(-2, -1))
         _, student_arm_loss, student_hand_loss = self._action_losses(student_v, u_t_action)
-        _, teacher_arm_loss, teacher_hand_loss = self._action_losses(teacher_v, u_t_action)
+        if self.use_teacher_ae:
+            teacher_v = self._decode_action_velocity(teacher_out, expert="teacher")
+            teacher_action_loss = jnp.mean(jnp.square(teacher_v - u_t_action), axis=(-2, -1))
+            _, teacher_arm_loss, teacher_hand_loss = self._action_losses(teacher_v, u_t_action)
+        else:
+            teacher_action_loss = jnp.zeros_like(student_action_loss)
+            teacher_arm_loss = jnp.zeros_like(student_action_loss)
+            teacher_hand_loss = jnp.zeros_like(student_action_loss)
         hand_slice = slice(self.hand_action_start, self.hand_action_start + self.hand_action_dim)
         if self.tactile_refiner_enabled:
             synergy_loss = jnp.mean(
@@ -2056,29 +2092,46 @@ class Pi0LatentFlow(_model.BaseModel):
             )
             cached_token_mask = self._cached_async_token_mask(actions.shape[0], cached_async_offset)
             cached_force_losses = []
-            for cached_student_hidden, teacher_hidden in zip(
-                cached_student_layer_hiddens, teacher_layer_hiddens, strict=True
-            ):
-                cached_student_force_hidden = self._project_prompt_distill(
-                    cached_student_hidden[:, future_force_slice, :]
-                )
-                teacher_force_hidden = jax.lax.stop_gradient(teacher_hidden[:, future_force_slice, :])
-                cached_force_losses.append(
-                    self._cosine_distance_masked(
-                        cached_student_force_hidden,
-                        teacher_force_hidden,
-                        cached_token_mask,
+            if self.disable_future_tactile:
+                cached_async_future_align_loss = jnp.zeros_like(student_action_loss)
+            elif self.direct_future_tactile_align:
+                direct_target = jax.lax.stop_gradient(self._project_future_force_student_target(future_effort))
+                for cached_student_hidden in cached_student_layer_hiddens:
+                    cached_force_losses.append(
+                        self._cosine_distance_masked(
+                            cached_student_hidden[:, future_force_slice, :],
+                            direct_target,
+                            cached_token_mask,
+                        )
                     )
-                )
-            cached_async_future_align_loss = jnp.mean(jnp.stack(cached_force_losses, axis=0), axis=0)
+                cached_async_future_align_loss = jnp.mean(jnp.stack(cached_force_losses, axis=0), axis=0)
+            else:
+                for cached_student_hidden, teacher_hidden in zip(
+                    cached_student_layer_hiddens, teacher_layer_hiddens, strict=True
+                ):
+                    cached_student_force_hidden = self._project_prompt_distill(
+                        cached_student_hidden[:, future_force_slice, :]
+                    )
+                    teacher_force_hidden = jax.lax.stop_gradient(teacher_hidden[:, future_force_slice, :])
+                    cached_force_losses.append(
+                        self._cosine_distance_masked(
+                            cached_student_force_hidden,
+                            teacher_force_hidden,
+                            cached_token_mask,
+                        )
+                    )
+                cached_async_future_align_loss = jnp.mean(jnp.stack(cached_force_losses, axis=0), axis=0)
             prefix_segments = jnp.asarray(cached_async_offset, dtype=jnp.float32) / float(
                 self.future_steps_per_segment
             )
-            cached_prefix_consistency_loss = self._cosine_distance_masked(
-                cached_future_override.astype(student_layer_hiddens[-1].dtype),
-                jax.lax.stop_gradient(student_layer_hiddens[-1][:, future_force_slice, :]),
-                jnp.logical_not(cached_token_mask),
-            )
+            if self.disable_future_tactile:
+                cached_prefix_consistency_loss = jnp.zeros_like(student_action_loss)
+            else:
+                cached_prefix_consistency_loss = self._cosine_distance_masked(
+                    cached_future_override.astype(student_layer_hiddens[-1].dtype),
+                    jax.lax.stop_gradient(student_layer_hiddens[-1][:, future_force_slice, :]),
+                    jnp.logical_not(cached_token_mask),
+                )
         else:
             cached_async_offset = jnp.asarray(0, dtype=jnp.int32)
             prefix_segments = jnp.asarray(0.0, dtype=actions.dtype)
@@ -2086,28 +2139,41 @@ class Pi0LatentFlow(_model.BaseModel):
             cached_async_future_align_loss = jnp.zeros_like(student_action_loss)
             cached_prefix_consistency_loss = jnp.zeros_like(student_action_loss)
 
-        for student_hidden, teacher_hidden in zip(student_layer_hiddens, teacher_layer_hiddens, strict=True):
-            student_force_hidden = self._project_prompt_distill(student_hidden[:, future_force_slice, :])
-            teacher_force_hidden = jax.lax.stop_gradient(teacher_hidden[:, future_force_slice, :])
-            force_losses.append(
-                self._apply_loss_mask(
-                    self._cosine_distance(student_force_hidden, teacher_force_hidden),
-                    force_clean_mask,
+        if self.disable_future_tactile:
+            raw_future_force_align_loss = jnp.zeros_like(student_action_loss)
+        elif self.direct_future_tactile_align:
+            direct_target = jax.lax.stop_gradient(self._project_future_force_student_target(future_effort))
+            for student_hidden in student_layer_hiddens:
+                force_losses.append(
+                    self._apply_loss_mask(
+                        self._cosine_distance(student_hidden[:, future_force_slice, :], direct_target),
+                        force_clean_mask,
+                    )
                 )
-            )
-
-            if self.use_future_flow:
-                student_flow_hidden = self._project_flow_distill(student_hidden[:, flow_slice, :])
-                teacher_flow_hidden = jax.lax.stop_gradient(teacher_hidden[:, flow_slice, :])
-                flow_losses.append(
-                    self._cosine_distance_masked(
-                        student_flow_hidden,
-                        teacher_flow_hidden,
-                        flow_clean_mask,
+            raw_future_force_align_loss = jnp.mean(jnp.stack(force_losses, axis=0), axis=0)
+        else:
+            for student_hidden, teacher_hidden in zip(student_layer_hiddens, teacher_layer_hiddens, strict=True):
+                student_force_hidden = self._project_prompt_distill(student_hidden[:, future_force_slice, :])
+                teacher_force_hidden = jax.lax.stop_gradient(teacher_hidden[:, future_force_slice, :])
+                force_losses.append(
+                    self._apply_loss_mask(
+                        self._cosine_distance(student_force_hidden, teacher_force_hidden),
+                        force_clean_mask,
                     )
                 )
 
-        raw_future_force_align_loss = jnp.mean(jnp.stack(force_losses, axis=0), axis=0)
+                if self.use_future_flow:
+                    student_flow_hidden = self._project_flow_distill(student_hidden[:, flow_slice, :])
+                    teacher_flow_hidden = jax.lax.stop_gradient(teacher_hidden[:, flow_slice, :])
+                    flow_losses.append(
+                        self._cosine_distance_masked(
+                            student_flow_hidden,
+                            teacher_flow_hidden,
+                            flow_clean_mask,
+                        )
+                    )
+
+            raw_future_force_align_loss = jnp.mean(jnp.stack(force_losses, axis=0), axis=0)
         raw_future_flow_align_loss = (
             jnp.mean(jnp.stack(flow_losses, axis=0), axis=0)
             if self.use_future_flow
@@ -2115,11 +2181,14 @@ class Pi0LatentFlow(_model.BaseModel):
         )
         future_force_align_loss = raw_future_force_align_loss
         future_flow_align_loss = raw_future_flow_align_loss
-        teacher_future_tokens_for_patch_aux = self._project_future_force_teacher(future_effort)
-        patch_distribution_aux_loss = self._patch_distribution_aux_loss(
-            teacher_future_tokens=teacher_future_tokens_for_patch_aux,
-            future_effort=future_effort,
-        )
+        if self.use_teacher_ae:
+            teacher_future_tokens_for_patch_aux = self._project_future_force_teacher(future_effort)
+            patch_distribution_aux_loss = self._patch_distribution_aux_loss(
+                teacher_future_tokens=teacher_future_tokens_for_patch_aux,
+                future_effort=future_effort,
+            )
+        else:
+            patch_distribution_aux_loss = jnp.zeros_like(student_action_loss)
 
         total_loss = (
             self.student_action_loss_weight * student_action_loss

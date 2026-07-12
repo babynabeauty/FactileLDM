@@ -263,9 +263,12 @@ class Pi0LatentFlowConfig(Pi0Config):
     tactile_raw_contact_temperature: float = 0.5
     tactile_patch_tokenizer: bool = False
     tactile_patch_informed_tokenizer: bool = False
+    tactile_raw_mlp_tokenizer: bool = False
     tactile_patch_fingers: tuple[int, ...] = (0, 1, 2)
     tactile_num_patches: int = 5
     tactile_patch_aux_loss_weight: float = 0.0
+    disable_future_tactile: bool = False
+    direct_future_tactile_align: bool = False
     future_tactile_align_layer: int = 12
     tactile_sample_hz: float = 15.0
     arm_hand_mask_attention: bool = False
@@ -336,8 +339,15 @@ class Pi0LatentFlowConfig(Pi0Config):
                 raise ValueError("tactile_raw_contact_top_k must be non-negative.")
             if self.tactile_raw_contact_temperature <= 0:
                 raise ValueError("tactile_raw_contact_temperature must be positive.")
-            if self.tactile_patch_tokenizer and self.tactile_patch_informed_tokenizer:
-                raise ValueError("Use only one patch raw tactile tokenizer variant at a time.")
+            raw_tokenizer_variants = (
+                self.tactile_patch_tokenizer,
+                self.tactile_patch_informed_tokenizer,
+                self.tactile_raw_mlp_tokenizer,
+            )
+            if sum(bool(value) for value in raw_tokenizer_variants) > 1:
+                raise ValueError("Use only one raw tactile tokenizer variant at a time.")
+            if self.tactile_raw_mlp_tokenizer and self.tactile_points_per_finger <= 1:
+                raise ValueError("tactile_raw_mlp_tokenizer requires raw tactile points.")
             if self.tactile_patch_informed_tokenizer:
                 if self.tactile_points_per_finger <= 1:
                     raise ValueError("tactile_patch_informed_tokenizer requires raw tactile points.")
@@ -357,6 +367,13 @@ class Pi0LatentFlowConfig(Pi0Config):
                         f"tactile_patch_fingers must be in [0, {self.tactile_num_fingers}), "
                         f"got {self.tactile_patch_fingers}."
                     )
+            if self.disable_future_tactile and self.direct_future_tactile_align:
+                raise ValueError("disable_future_tactile and direct_future_tactile_align are mutually exclusive.")
+            if self.disable_future_tactile:
+                object.__setattr__(self, "future_force_align_loss_weight", 0.0)
+                object.__setattr__(self, "future_flow_align_loss_weight", 0.0)
+                object.__setattr__(self, "teacher_action_loss_weight", 0.0)
+                object.__setattr__(self, "cached_vlm_async_future_align_loss_weight", 0.0)
             object.__setattr__(self, "distill_layer_indices", (self.future_tactile_align_layer,))
         if self.arm_hand_mask_attention:
             if not self.structured_tactile:
