@@ -249,33 +249,7 @@ setsid nohup env \
   > logs/pi0_xhand_tactile_structured_raw_dual_ae_106ep_20k.log 2>&1 &
 ```
 
-### G. 统一命令
-```bash
-setsid nohup env \
-  HF_LEROBOT_HOME="$PROJECT_ROOT" \
-  HF_DATASETS_CACHE=.hf_datasets_cache \
-  HF_HUB_OFFLINE=1 \
-  CUDA_VISIBLE_DEVICES=0,1,2,3 \
-  XLA_PYTHON_CLIENT_PREALLOCATE=false \
-  env/.venv/bin/python scripts/train.py \
-    pi0_xhand_dual_raw_f4_h16_async \
-    --exp-name pi0_xhand_dual_raw_f4_h16_async_task12345 \
-    --data.repo-id "$DATA_REPO" \
-    --data.assets.asset-id "$ASSET_ID" \
-    --data.assets.assets-dir assets/pi0_xhand_tactile_structured_raw_dual_ae \
-    --num-train-steps 50000 \
-    --batch-size 8 \
-    --fsdp-devices 1 \
-    --num-workers 2 \
-    --save-interval 10000 \
-    --keep-period 10000 \
-    --no-wandb-enabled \
-    --overwrite \
-    --weight-loader.params-path checkpoints/pi0_base/params \
-  > logs/pi0_xhand_dual_raw_f4_h16_async_task12345.log 2>&1 &
-```
-
-### H. Patch-informed raw dual AE
+### G. Patch-informed raw dual AE
 
 保持每根手指 1 个外部 token，但在每根手指内部先按 5 个 patch 聚合点阵力，再融合成 finger token。复用 raw tactile 的 assets。
 
@@ -304,7 +278,7 @@ setsid nohup env \
   > logs/pi0_xhand_dual_patch_f4_h16.log 2>&1 &
 ```
 
-### I. Patch-informed cached VLM async AE
+### H. Patch-informed cached VLM async AE
 
 异步训练版本：action horizon=16，history tactile=10 tokens，future tactile=4 segments，对应部署里 cached VLM + fresh tactile 更新 AE 的主线。
 
@@ -343,14 +317,10 @@ setsid nohup env \
 - action horizon = 16
 - history tactile = 10 tokens，即 5 个历史摘要 finger tokens + 5 个当前帧 finger tokens
 - tokenizer 外部输出都是每个 tactile step 5 个 finger tokens
-- raw / patch-informed 都复用 `assets/pi0_xhand_tactile_structured_raw_dual_ae`
+- patch-informed 复用 `assets/pi0_xhand_tactile_structured_raw_dual_ae`
 
 | config | tokenizer | future segments | future tokens | async training | fast offsets |
 |---|---|---:|---:|---|---|
-| `pi0_xhand_dual_raw_f4_h16` | raw spatial | 4 | 20 | 否 | - |
-| `pi0_xhand_dual_raw_f4_h16_async` | raw spatial | 4 | 20 | 是 | 4,8,12 |
-| `pi0_xhand_dual_raw_f8_h16` | raw spatial | 8 | 40 | 否 | - |
-| `pi0_xhand_dual_raw_f8_h16_async` | raw spatial | 8 | 40 | 是 | 2,4,6,8,10 |
 | `pi0_xhand_dual_patch_f4_h16` | patch-informed | 4 | 20 | 否 | - |
 | `pi0_xhand_dual_patch_f4_h16_async` | patch-informed | 4 | 20 | 是 | 4,8,12 |
 | `pi0_xhand_dual_patch_f8_h16` | patch-informed | 8 | 40 | 否 | - |

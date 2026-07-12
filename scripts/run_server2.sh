@@ -14,17 +14,14 @@ export KEEP_PERIOD="${KEEP_PERIOD:-10000}"
 export GPU_SLOTS="${GPU_SLOTS:-0,1,2,3,4,5,6,7}"
 
 JOB_LABELS=(
-  "D_patch_f4_h16_async"
-  "E_patch_f8_h16_async"
-  "F_raw_f4_h16_async"
+  "A_patch_f4_h16_async"
+  "B_patch_f8_h16_async"
 )
 JOB_CONFIGS=(
   "pi0_xhand_dual_patch_f4_h16_async"
   "pi0_xhand_dual_patch_f8_h16_async"
-  "pi0_xhand_dual_raw_f4_h16_async"
 )
 JOB_ASSET_DIRS=(
-  "$RAW_TACTILE_ASSETS_DIR"
   "$RAW_TACTILE_ASSETS_DIR"
   "$RAW_TACTILE_ASSETS_DIR"
 )

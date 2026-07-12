@@ -684,6 +684,7 @@ class LeRobotXHandPi0DataConfig(DataConfigFactory):
     action_dim: int = 18
     action_sequence_keys: Sequence[str] = ("action",)
     concat_current_tactile_to_state: bool = False
+    state_tactile_mode: Literal["calc_force", "raw_force"] = "calc_force"
 
     @override
     def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
@@ -700,6 +701,11 @@ class LeRobotXHandPi0DataConfig(DataConfigFactory):
                     wrist_image_key=self.wrist_image_key,
                     extra_image_key=self.extra_image_key,
                     state_dim=self.action_dim,
+                    **(
+                        {"tactile_mode": self.state_tactile_mode}
+                        if input_transform_cls is xhand_policy.XHandPi0StateTactileInputs
+                        else {}
+                    ),
                 )
             ],
             outputs=[xhand_policy.XHandTactileFlowOutputs(action_dim=self.action_dim)],
@@ -2032,20 +2038,27 @@ def _xhand_pi05_h16_config(source_name: str, new_name: str) -> TrainConfig:
 
 def _xhand_state_tactile_h16_config(source_name: str, new_name: str, *, pi05: bool) -> TrainConfig:
     source = next(config for config in _CONFIGS if config.name == source_name)
+    raw_tactile_dim = (
+        xhand_policy.TACTILE_SENSOR_COUNT
+        * xhand_policy.TACTILE_RAW_FORCE_POINTS
+        * 3
+    )
+    state_dim = 18 + raw_tactile_dim
     return dataclasses.replace(
         source,
         name=new_name,
         model=dataclasses.replace(
             source.model,
             action_horizon=16,
-            state_dim=33,
+            state_dim=state_dim,
             pi05=pi05,
-            max_token_len=200 if pi05 else source.model.max_token_len,
+            max_token_len=2048 if pi05 else source.model.max_token_len,
             discrete_state_input=True if pi05 else source.model.discrete_state_input,
         ),
         data=dataclasses.replace(
             source.data,
             concat_current_tactile_to_state=True,
+            state_tactile_mode="raw_force",
         ),
         weight_loader=weight_loaders.CheckpointWeightLoader(
             "checkpoints/pi05_base/params" if pi05 else "checkpoints/pi0_base/params"
@@ -2204,34 +2217,6 @@ def _canonical_dual_ae_h16_config(
 
 _CONFIGS.extend(
     [
-        _canonical_dual_ae_h16_config(
-            "pi0_xhand_tactile_structured_raw_dual_ae",
-            "pi0_xhand_dual_raw_f4_h16",
-            future_tactile_segments=4,
-            async_enabled=False,
-            async_fast_offsets=(4, 8, 12),
-        ),
-        _canonical_dual_ae_h16_config(
-            "pi0_xhand_tactile_structured_raw_dual_ae",
-            "pi0_xhand_dual_raw_f4_h16_async",
-            future_tactile_segments=4,
-            async_enabled=True,
-            async_fast_offsets=(4, 8, 12),
-        ),
-        _canonical_dual_ae_h16_config(
-            "pi0_xhand_tactile_structured_raw_dual_ae",
-            "pi0_xhand_dual_raw_f8_h16",
-            future_tactile_segments=8,
-            async_enabled=False,
-            async_fast_offsets=(2, 4, 6, 8, 10),
-        ),
-        _canonical_dual_ae_h16_config(
-            "pi0_xhand_tactile_structured_raw_dual_ae",
-            "pi0_xhand_dual_raw_f8_h16_async",
-            future_tactile_segments=8,
-            async_enabled=True,
-            async_fast_offsets=(2, 4, 6, 8, 10),
-        ),
         _canonical_dual_ae_h16_config(
             "pi0_xhand_tactile_structured_patch_informed_raw_dual_ae",
             "pi0_xhand_dual_patch_f4_h16",

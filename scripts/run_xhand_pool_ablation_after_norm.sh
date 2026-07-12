@@ -53,27 +53,20 @@ NORM_CONFIGS="pi0_xhand_tactile_structured_dual_ae pi0_xhand_tactile_structured_
 
 log "Stage 2/2: queued training for history/future pooled ablations"
 log "No-tactile assets: ${NO_TACTILE_ASSETS_DIR}"
-log "Raw tactile assets: ${RAW_TACTILE_ASSETS_DIR}"
 log "Patch raw tactile assets: ${PATCH_RAW_TACTILE_ASSETS_DIR}"
 
 JOB_LABELS=(
   "A_pi0_full_h16"
-  "B_raw_f4_h16"
-  "C_raw_f4_h16_async"
-  "D_patch_f4_h16"
-  "E_patch_f4_h16_async"
+  "B_patch_f4_h16"
+  "C_patch_f4_h16_async"
 )
 JOB_CONFIGS=(
   "pi0_xhand_full_finetune_h16"
-  "pi0_xhand_dual_raw_f4_h16"
-  "pi0_xhand_dual_raw_f4_h16_async"
   "pi0_xhand_dual_patch_f4_h16"
   "pi0_xhand_dual_patch_f4_h16_async"
 )
 JOB_ASSET_DIRS=(
   "$NO_TACTILE_ASSETS_DIR"
-  "$RAW_TACTILE_ASSETS_DIR"
-  "$RAW_TACTILE_ASSETS_DIR"
   "$RAW_TACTILE_ASSETS_DIR"
   "$RAW_TACTILE_ASSETS_DIR"
 )

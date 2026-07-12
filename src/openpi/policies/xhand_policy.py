@@ -184,6 +184,29 @@ def _extract_current_calc_force(state: np.ndarray) -> np.ndarray:
     ).astype(np.float32)
 
 
+def _extract_current_raw_force(state: np.ndarray) -> np.ndarray:
+    required_dim = TACTILE_BLOCK_START + TACTILE_SENSOR_COUNT * TACTILE_BLOCK_SIZE
+    if state.shape[-1] < required_dim:
+        raise ValueError(
+            "XHand raw-force tactile extraction requires the full raw observation.state "
+            f"with at least {required_dim} values, got {state.shape[-1]}."
+        )
+    return np.stack(
+        [
+            state[
+                TACTILE_BLOCK_START
+                + sensor_id * TACTILE_BLOCK_SIZE
+                + TACTILE_RAW_FORCE_OFFSET : TACTILE_BLOCK_START
+                + sensor_id * TACTILE_BLOCK_SIZE
+                + TACTILE_RAW_FORCE_OFFSET
+                + TACTILE_RAW_FORCE_POINTS * 3
+            ].reshape(TACTILE_RAW_FORCE_POINTS, 3)
+            for sensor_id in range(TACTILE_SENSOR_COUNT)
+        ],
+        axis=0,
+    ).astype(np.float32)
+
+
 def _load_scene_flow_npz(
     *,
     root: pathlib.Path,
@@ -283,23 +306,40 @@ class XHandPi0Inputs(transforms.DataTransformFn):
 
 @dataclasses.dataclass(frozen=True)
 class XHandPi0StateTactileInputs(XHandPi0Inputs):
-    """Concatenates the current five-finger resultant force into the pi0/pi0.5 state input."""
+    """Concatenates the current XHand tactile observation into the pi0/pi0.5 state input."""
+
+    tactile_mode: Literal["calc_force", "raw_force"] = "calc_force"
 
     def __call__(self, data: dict) -> dict:
         inputs = super().__call__(data)
         tactile_key = _first_present(data, TACTILE_KEY_ALIASES)
         if tactile_key is not None:
             tactile = np.asarray(data[tactile_key], dtype=np.float32)
-            if tactile.shape == (TACTILE_SENSOR_COUNT * 3,):
+            if self.tactile_mode == "calc_force" and tactile.shape == (TACTILE_SENSOR_COUNT * 3,):
                 tactile = tactile.reshape(TACTILE_SENSOR_COUNT, 3)
-            if tactile.shape != (TACTILE_SENSOR_COUNT, 3):
+            elif self.tactile_mode == "raw_force" and tactile.shape == (
+                TACTILE_SENSOR_COUNT * TACTILE_RAW_FORCE_POINTS * 3,
+            ):
+                tactile = tactile.reshape(TACTILE_SENSOR_COUNT, TACTILE_RAW_FORCE_POINTS, 3)
+
+            expected_shape = (
+                (TACTILE_SENSOR_COUNT, 3)
+                if self.tactile_mode == "calc_force"
+                else (TACTILE_SENSOR_COUNT, TACTILE_RAW_FORCE_POINTS, 3)
+            )
+            if tactile.shape != expected_shape:
                 raise ValueError(
-                    "Expected explicit XHand tactile observation with shape "
-                    f"({TACTILE_SENSOR_COUNT}, 3), got {tactile.shape}."
+                    f"Expected explicit XHand tactile observation for mode={self.tactile_mode!r} "
+                    f"with shape {expected_shape}, got {tactile.shape}."
                 )
         else:
             state_seq = _as_state_sequence(_get_required(data, STATE_KEY_ALIASES, "observation.state"))
-            tactile = _extract_current_calc_force(state_seq[-1])
+            if self.tactile_mode == "calc_force":
+                tactile = _extract_current_calc_force(state_seq[-1])
+            elif self.tactile_mode == "raw_force":
+                tactile = _extract_current_raw_force(state_seq[-1])
+            else:
+                raise ValueError(f"Unsupported tactile_mode={self.tactile_mode!r}.")
 
         inputs["state"] = np.concatenate(
             [np.asarray(inputs["state"], dtype=np.float32), tactile.reshape(-1).astype(np.float32)],
