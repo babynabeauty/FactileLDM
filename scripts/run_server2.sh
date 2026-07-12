@@ -41,10 +41,10 @@ JOB_LABELS=(
   "D_direct_align"
 )
 JOB_CONFIGS=(
-  "pi0_xhand_patch_pretrained_f4_h16_async_no_future"
-  "pi0_xhand_dual_patch_pretrained_f4_h16_async_no_future_update"
-  "pi0_xhand_dual_raw_mlp_f4_h16_async"
-  "pi0_xhand_patch_pretrained_f4_h16_async_direct_align"
+  "pi0_xhand_patch_pretrained_f8_h16_async_no_future"
+  "pi0_xhand_dual_patch_pretrained_f8_h16_async_no_future_update"
+  "pi0_xhand_dual_raw_mlp_f8_h16_async"
+  "pi0_xhand_patch_pretrained_f8_h16_async_direct_align"
 )
 JOB_ASSET_DIRS=(
   "$RAW_TACTILE_ASSETS_DIR"
