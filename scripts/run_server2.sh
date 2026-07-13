@@ -39,14 +39,17 @@ JOB_LABELS=(
   "B_no_future_update"
   "C_raw_mlp"
   "D_direct_align"
+  "E_no_async"
 )
 JOB_CONFIGS=(
   "pi0_xhand_patch_pretrained_f8_h16_async_no_future"
   "pi0_xhand_dual_patch_pretrained_f8_h16_async_no_future_update"
   "pi0_xhand_dual_raw_mlp_f8_h16_async"
   "pi0_xhand_patch_pretrained_f8_h16_async_direct_align"
+  "pi0_xhand_dual_patch_pretrained_f8_h16_no_async"
 )
 JOB_ASSET_DIRS=(
+  "$RAW_TACTILE_ASSETS_DIR"
   "$RAW_TACTILE_ASSETS_DIR"
   "$RAW_TACTILE_ASSETS_DIR"
   "$RAW_TACTILE_ASSETS_DIR"
@@ -56,6 +59,7 @@ JOB_WEIGHT_ARGS=(
   "--weight-loader.pi0-params-path $PATCH_POLICY_PARAMS --weight-loader.encoder-params-path $PATCH_ENCODER_PARAMS"
   "--weight-loader.pi0-params-path $PATCH_POLICY_PARAMS --weight-loader.encoder-params-path $PATCH_ENCODER_PARAMS"
   "--weight-loader.params-path $PI0_BASE_PARAMS"
+  "--weight-loader.pi0-params-path $PATCH_POLICY_PARAMS --weight-loader.encoder-params-path $PATCH_ENCODER_PARAMS"
   "--weight-loader.pi0-params-path $PATCH_POLICY_PARAMS --weight-loader.encoder-params-path $PATCH_ENCODER_PARAMS"
 )
 

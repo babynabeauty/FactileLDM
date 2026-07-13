@@ -95,7 +95,13 @@ def main(
     config = dataclasses.replace(config, data=data)
     print("[compute_norm_stats] creating data config", flush=True)
     data_config = config.data.create(config.assets_dirs, config.model)
-    print(f"[compute_norm_stats] data_config created: repo_id={data_config.repo_id}", flush=True)
+    print(
+        "[compute_norm_stats] data_config created: "
+        f"repo_id={data_config.repo_id} "
+        f"state_action_only={data_config.state_action_only} "
+        f"state_delta_timestamps={tuple(data_config.state_delta_timestamps)}",
+        flush=True,
+    )
 
     if data_config.rlds_data_dir is not None:
         print("[compute_norm_stats] creating RLDS dataloader", flush=True)

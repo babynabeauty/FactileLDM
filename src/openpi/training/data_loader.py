@@ -480,6 +480,12 @@ def create_torch_dataset(
     if data_config.state_action_only and local_repo.is_dir():
         if len(data_config.action_sequence_keys) != 1:
             raise ValueError("state_action_only currently supports exactly one action sequence key.")
+        print(
+            "[data_loader] FAST LOCAL PARQUET PATH: "
+            f"repo={local_repo} action_horizon={action_horizon} "
+            f"state_delta_timestamps={tuple(data_config.state_delta_timestamps)}",
+            flush=True,
+        )
         dataset = LocalParquetStateActionOnlyDataset(
             local_repo,
             state_delta_timestamps=data_config.state_delta_timestamps,
