@@ -21,6 +21,8 @@ MAX_GPU_UTIL="${MAX_GPU_UTIL:-20}"
 POLL_INTERVAL="${POLL_INTERVAL:-30}"
 OVERWRITE_NORM="${OVERWRITE_NORM:-0}"
 RUN_TAG="${RUN_TAG:-${ASSET_ID}_$(date +%m%d_%H%M%S)}"
+NORM_BATCH_SIZE="${NORM_BATCH_SIZE:-64}"
+NORM_NUM_WORKERS="${NORM_NUM_WORKERS:-2}"
 
 if [[ -n "${NORM_CONFIGS:-}" ]]; then
   # Space-separated override, e.g.
@@ -109,7 +111,9 @@ launch_job() {
       "$PYTHON" -u scripts/compute_norm_stats.py \
         --config-name "$config" \
         --repo-id "$DATA_REPO" \
-        --asset-id "$ASSET_ID"
+        --asset-id "$ASSET_ID" \
+        --batch-size "$NORM_BATCH_SIZE" \
+        --num-workers "$NORM_NUM_WORKERS"
   } > "$log_file" 2>&1 &
 
   local pid=$!
@@ -144,6 +148,7 @@ fi
 
 log "Dataset=${DATA_REPO}, asset=${ASSET_ID}"
 log "GPU pool=${GPU_IDS}, min free=${MIN_FREE_MEMORY_MB} MiB, max util=${MAX_GPU_UTIL}%"
+log "Norm loader: batch_size=${NORM_BATCH_SIZE}, num_workers=${NORM_NUM_WORKERS}"
 
 FAILED=0
 while (( ${#PENDING[@]} > 0 || ${#PID_CONFIG[@]} > 0 )); do

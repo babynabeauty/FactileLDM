@@ -71,6 +71,8 @@ def main(
     max_frames: int | None = None,
     repo_id: str | None = None,
     asset_id: str | None = None,
+    batch_size: int | None = None,
+    num_workers: int | None = None,
 ):
     print(
         f"[compute_norm_stats] start config={config_name} repo_id={repo_id} asset_id={asset_id} max_frames={max_frames}",
@@ -103,15 +105,28 @@ def main(
         flush=True,
     )
 
+    effective_batch_size = batch_size or config.batch_size
+    effective_num_workers = config.num_workers if num_workers is None else num_workers
+    print(
+        "[compute_norm_stats] loader args: "
+        f"batch_size={effective_batch_size} num_workers={effective_num_workers}",
+        flush=True,
+    )
+
     if data_config.rlds_data_dir is not None:
         print("[compute_norm_stats] creating RLDS dataloader", flush=True)
         data_loader, num_batches = create_rlds_dataloader(
-            data_config, config.model.action_horizon, config.batch_size, max_frames
+            data_config, config.model.action_horizon, effective_batch_size, max_frames
         )
     else:
         print("[compute_norm_stats] creating torch dataloader", flush=True)
         data_loader, num_batches = create_torch_dataloader(
-            data_config, config.model.action_horizon, config.batch_size, config.model, config.num_workers, max_frames
+            data_config,
+            config.model.action_horizon,
+            effective_batch_size,
+            config.model,
+            effective_num_workers,
+            max_frames,
         )
     print(f"[compute_norm_stats] dataloader ready: num_batches={num_batches}", flush=True)
 
