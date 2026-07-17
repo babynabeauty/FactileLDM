@@ -3,7 +3,8 @@ set -Eeuo pipefail
 
 # Server 1 for the task6+7 experiment:
 #   1. Compute missing norm stats with the fast local-parquet path.
-#   2. Run four baselines plus no-async ablation in two 4-GPU slots.
+#   2. Run the server1 jobs in this order:
+#      pi0 tactile -> pi05 tactile -> no-async freeze -> no-async -> pi0 full -> pi05 full.
 #
 # The no-async ablation needs a pretrained patch encoder. Set
 # PATCH_ENCODER_PARAMS to the Stage-1 checkpoint path. If the path does not
@@ -82,7 +83,7 @@ fi
 
 mkdir -p logs
 
-echo "[server1] Stage 1/2: normalization for baselines and no-async assets"
+echo "[server1] Stage 1/5: normalization for baselines and no-async assets"
 NORM_CONFIGS="pi0_xhand_full_finetune_h16 pi05_xhand_full_finetune_h16 pi0_xhand_state_tactile_finetune_h16 pi0_xhand_tactile_structured_raw_dual_ae" \
 ASSET_ID="$ASSET_ID" \
 PYTHON="$PYTHON" \
@@ -99,33 +100,26 @@ mkdir -p "$(dirname "$dst_norm")"
 cp "$src_norm" "$dst_norm"
 echo "[server1] Reused tactile norm stats: $src_norm -> $dst_norm"
 
+source scripts/four_gpu_training_queue.sh
+
 JOB_LABELS=(
-  "A_pi0_full_h16"
-  "B_pi05_full_h16"
-  "C_pi0_raw_state_tactile_h16"
-  "D_pi05_raw_state_tactile_h16"
+  "A_pi0_raw_state_tactile_h16"
+  "B_pi05_raw_state_tactile_h16"
 )
 JOB_CONFIGS=(
-  "pi0_xhand_full_finetune_h16"
-  "pi05_xhand_full_finetune_h16"
   "pi0_xhand_state_tactile_finetune_h16"
   "pi05_xhand_state_tactile_finetune_h16"
 )
 JOB_ASSET_DIRS=(
-  "$PI0_ASSETS_DIR"
-  "$PI05_ASSETS_DIR"
   "$PI0_TACTILE_ASSETS_DIR"
   "$PI05_TACTILE_ASSETS_DIR"
 )
 JOB_WEIGHT_ARGS=(
   "--weight-loader.params-path $PI0_BASE_PARAMS"
   "--weight-loader.params-path $PI05_BASE_PARAMS"
-  "--weight-loader.params-path $PI0_BASE_PARAMS"
-  "--weight-loader.params-path $PI05_BASE_PARAMS"
 )
 
-echo "[server1] Stage 2/3: queued baseline training, steps=${TRAIN_STEPS}, batch=${GLOBAL_BATCH_SIZE}, fsdp=${FSDP_DEVICES}"
-source scripts/four_gpu_training_queue.sh
+echo "[server1] Stage 2/5: queued state+tactile baselines, steps=${TRAIN_STEPS}, batch=${GLOBAL_BATCH_SIZE}, fsdp=${FSDP_DEVICES}"
 DATA_ASSET_ID="$ASSET_ID" run_four_gpu_training_queue "$DATA_REPO"
 
 if [[ -z "$PATCH_ENCODER_PARAMS" ]]; then
@@ -139,7 +133,7 @@ BASE_TRAIN_STEPS="$TRAIN_STEPS"
 BASE_SAVE_INTERVAL="$SAVE_INTERVAL"
 
 NOASYNC_FREEZE_CONFIG="pi0_xhand_dual_patch_pretrained_f8_h16_no_async_freeze"
-NOASYNC_FREEZE_LABEL="E_patch_pretrained_f8_h16_no_async_freeze"
+NOASYNC_FREEZE_LABEL="C_patch_pretrained_f8_h16_no_async_freeze"
 NOASYNC_FREEZE_RUN_TAG="${RUN_TAG}_noasync_freeze"
 NOASYNC_FREEZE_PARAMS="checkpoints/${NOASYNC_FREEZE_CONFIG}/${NOASYNC_FREEZE_LABEL}_${NOASYNC_FREEZE_RUN_TAG}/$((NOASYNC_FREEZE_STEPS - 1))/params"
 
@@ -150,7 +144,7 @@ JOB_WEIGHT_ARGS=(
   "--weight-loader.pi0-params-path $PI0_BASE_PARAMS --weight-loader.encoder-params-path $PATCH_ENCODER_PARAMS"
 )
 
-echo "[server1] Stage 3/4: queued no-async-specific freeze warmup"
+echo "[server1] Stage 3/5: queued no-async-specific freeze warmup"
 TRAIN_STEPS="$NOASYNC_FREEZE_STEPS" \
 SAVE_INTERVAL="$NOASYNC_FREEZE_SAVE_INTERVAL" \
 DATA_ASSET_ID="$ASSET_ID" \
@@ -162,16 +156,40 @@ if [[ ! -e "$NOASYNC_FREEZE_PARAMS" ]]; then
   exit 2
 fi
 
-JOB_LABELS=("E_patch_pretrained_f8_h16_no_async")
+JOB_LABELS=("D_patch_pretrained_f8_h16_no_async")
 JOB_CONFIGS=("pi0_xhand_dual_patch_pretrained_f8_h16_no_async")
 JOB_ASSET_DIRS=("$RAW_TACTILE_ASSETS_DIR")
 JOB_WEIGHT_ARGS=(
   "--weight-loader.pi0-params-path $NOASYNC_FREEZE_PARAMS --weight-loader.encoder-params-path $PATCH_ENCODER_PARAMS"
 )
 
-echo "[server1] Stage 4/4: queued no-async ablation"
+echo "[server1] Stage 4/5: queued no-async ablation"
 TRAIN_STEPS="$BASE_TRAIN_STEPS" \
 SAVE_INTERVAL="$BASE_SAVE_INTERVAL" \
 DATA_ASSET_ID="$ASSET_ID" \
 RUN_TAG="${RUN_TAG}_noasync" \
+run_four_gpu_training_queue "$DATA_REPO"
+
+JOB_LABELS=(
+  "E_pi0_full_h16"
+  "F_pi05_full_h16"
+)
+JOB_CONFIGS=(
+  "pi0_xhand_full_finetune_h16"
+  "pi05_xhand_full_finetune_h16"
+)
+JOB_ASSET_DIRS=(
+  "$PI0_ASSETS_DIR"
+  "$PI05_ASSETS_DIR"
+)
+JOB_WEIGHT_ARGS=(
+  "--weight-loader.params-path $PI0_BASE_PARAMS"
+  "--weight-loader.params-path $PI05_BASE_PARAMS"
+)
+
+echo "[server1] Stage 5/5: queued no-tactile pi0/pi05 baselines"
+TRAIN_STEPS="$BASE_TRAIN_STEPS" \
+SAVE_INTERVAL="$BASE_SAVE_INTERVAL" \
+DATA_ASSET_ID="$ASSET_ID" \
+RUN_TAG="${RUN_TAG}_full" \
 run_four_gpu_training_queue "$DATA_REPO"
