@@ -2274,7 +2274,13 @@ def _patch_pretrained_dual_config(source_name: str, new_name: str, *, freeze_enc
     )
 
 
-def _patch_pretrained_dual_ablation_config(source_name: str, new_name: str, **model_kwargs) -> TrainConfig:
+def _patch_pretrained_dual_ablation_config(
+    source_name: str,
+    new_name: str,
+    *,
+    freeze_encoder: bool = False,
+    **model_kwargs,
+) -> TrainConfig:
     source = next(config for config in _CONFIGS if config.name == source_name)
     return dataclasses.replace(
         source,
@@ -2284,6 +2290,7 @@ def _patch_pretrained_dual_ablation_config(source_name: str, new_name: str, **mo
             pi0_params_path="checkpoints/pi0_base/params",
             encoder_params_path=None,
         ),
+        freeze_filter=(nnx_utils.PathRegex(".*force_tokenizer.*") if freeze_encoder else nnx.Nothing),
     )
 
 
@@ -2331,8 +2338,25 @@ _CONFIGS.extend(
         ),
         _patch_pretrained_dual_config(
             "pi0_xhand_dual_patch_f8_h16",
+            "pi0_xhand_dual_patch_pretrained_f8_h16_no_async_freeze",
+            freeze_encoder=True,
+        ),
+        _patch_pretrained_dual_config(
+            "pi0_xhand_dual_patch_f8_h16",
             "pi0_xhand_dual_patch_pretrained_f8_h16_no_async",
             freeze_encoder=False,
+        ),
+        _patch_pretrained_dual_ablation_config(
+            "pi0_xhand_dual_patch_f8_h16_async",
+            "pi0_xhand_patch_pretrained_f8_h16_async_no_future_freeze",
+            freeze_encoder=True,
+            disable_future_tactile=True,
+            use_future_flow=False,
+            future_force_align_loss_weight=0.0,
+            future_flow_align_loss_weight=0.0,
+            teacher_action_loss_weight=0.0,
+            cached_vlm_async_future_align_loss_weight=0.0,
+            cached_vlm_async_use_predicted_prefix_queries=False,
         ),
         _patch_pretrained_dual_ablation_config(
             "pi0_xhand_dual_patch_f8_h16_async",
@@ -2344,6 +2368,13 @@ _CONFIGS.extend(
             teacher_action_loss_weight=0.0,
             cached_vlm_async_future_align_loss_weight=0.0,
             cached_vlm_async_use_predicted_prefix_queries=False,
+        ),
+        _patch_pretrained_dual_ablation_config(
+            "pi0_xhand_dual_patch_f8_h16_async",
+            "pi0_xhand_dual_patch_pretrained_f8_h16_async_no_future_update_freeze",
+            freeze_encoder=True,
+            cached_vlm_async_use_predicted_prefix_queries=False,
+            cached_vlm_async_future_align_loss_weight=0.0,
         ),
         _patch_pretrained_dual_ablation_config(
             "pi0_xhand_dual_patch_f8_h16_async",
