@@ -129,67 +129,55 @@ if [[ -z "$PATCH_ENCODER_PARAMS" ]]; then
 fi
 wait_for_path "$PATCH_ENCODER_PARAMS" "Stage-1 patch encoder params"
 
-BASE_TRAIN_STEPS="$TRAIN_STEPS"
-BASE_SAVE_INTERVAL="$SAVE_INTERVAL"
-
 NOASYNC_FREEZE_CONFIG="pi0_xhand_dual_patch_pretrained_f8_h16_no_async_freeze"
 NOASYNC_FREEZE_LABEL="C_patch_pretrained_f8_h16_no_async_freeze"
-NOASYNC_FREEZE_RUN_TAG="${RUN_TAG}_noasync_freeze"
-NOASYNC_FREEZE_PARAMS="checkpoints/${NOASYNC_FREEZE_CONFIG}/${NOASYNC_FREEZE_LABEL}_${NOASYNC_FREEZE_RUN_TAG}/$((NOASYNC_FREEZE_STEPS - 1))/params"
-
-JOB_LABELS=("$NOASYNC_FREEZE_LABEL")
-JOB_CONFIGS=("$NOASYNC_FREEZE_CONFIG")
-JOB_ASSET_DIRS=("$RAW_TACTILE_ASSETS_DIR")
-JOB_WEIGHT_ARGS=(
-  "--weight-loader.pi0-params-path $PI0_BASE_PARAMS --weight-loader.encoder-params-path $PATCH_ENCODER_PARAMS"
-)
-
-echo "[server1] Stage 3/5: queued no-async-specific freeze warmup"
-TRAIN_STEPS="$NOASYNC_FREEZE_STEPS" \
-SAVE_INTERVAL="$NOASYNC_FREEZE_SAVE_INTERVAL" \
-DATA_ASSET_ID="$ASSET_ID" \
-RUN_TAG="$NOASYNC_FREEZE_RUN_TAG" \
-run_four_gpu_training_queue "$DATA_REPO"
-
-if [[ ! -e "$NOASYNC_FREEZE_PARAMS" ]]; then
-  echo "ERROR: no-async freeze checkpoint was not produced: $NOASYNC_FREEZE_PARAMS" >&2
-  exit 2
-fi
-
-JOB_LABELS=("D_patch_pretrained_f8_h16_no_async")
-JOB_CONFIGS=("pi0_xhand_dual_patch_pretrained_f8_h16_no_async")
-JOB_ASSET_DIRS=("$RAW_TACTILE_ASSETS_DIR")
-JOB_WEIGHT_ARGS=(
-  "--weight-loader.pi0-params-path $NOASYNC_FREEZE_PARAMS --weight-loader.encoder-params-path $PATCH_ENCODER_PARAMS"
-)
-
-echo "[server1] Stage 4/5: queued no-async ablation"
-TRAIN_STEPS="$BASE_TRAIN_STEPS" \
-SAVE_INTERVAL="$BASE_SAVE_INTERVAL" \
-DATA_ASSET_ID="$ASSET_ID" \
-RUN_TAG="${RUN_TAG}_noasync" \
-run_four_gpu_training_queue "$DATA_REPO"
+TAIL_RUN_TAG="${RUN_TAG}_tail"
+NOASYNC_FREEZE_PARAMS="checkpoints/${NOASYNC_FREEZE_CONFIG}/${NOASYNC_FREEZE_LABEL}_${TAIL_RUN_TAG}/$((NOASYNC_FREEZE_STEPS - 1))/params"
 
 JOB_LABELS=(
+  "$NOASYNC_FREEZE_LABEL"
   "E_pi0_full_h16"
+  "D_patch_pretrained_f8_h16_no_async"
   "F_pi05_full_h16"
 )
 JOB_CONFIGS=(
+  "$NOASYNC_FREEZE_CONFIG"
   "pi0_xhand_full_finetune_h16"
+  "pi0_xhand_dual_patch_pretrained_f8_h16_no_async"
   "pi05_xhand_full_finetune_h16"
 )
 JOB_ASSET_DIRS=(
+  "$RAW_TACTILE_ASSETS_DIR"
   "$PI0_ASSETS_DIR"
+  "$RAW_TACTILE_ASSETS_DIR"
   "$PI05_ASSETS_DIR"
 )
 JOB_WEIGHT_ARGS=(
+  "--weight-loader.pi0-params-path $PI0_BASE_PARAMS --weight-loader.encoder-params-path $PATCH_ENCODER_PARAMS"
   "--weight-loader.params-path $PI0_BASE_PARAMS"
+  "--weight-loader.pi0-params-path $NOASYNC_FREEZE_PARAMS --weight-loader.encoder-params-path $PATCH_ENCODER_PARAMS"
   "--weight-loader.params-path $PI05_BASE_PARAMS"
 )
+JOB_READY_PATHS=(
+  ""
+  ""
+  "$NOASYNC_FREEZE_PARAMS"
+  ""
+)
+JOB_TRAIN_STEPS=(
+  "$NOASYNC_FREEZE_STEPS"
+  "$TRAIN_STEPS"
+  "$TRAIN_STEPS"
+  "$TRAIN_STEPS"
+)
+JOB_SAVE_INTERVALS=(
+  "$NOASYNC_FREEZE_SAVE_INTERVAL"
+  "$SAVE_INTERVAL"
+  "$SAVE_INTERVAL"
+  "$SAVE_INTERVAL"
+)
 
-echo "[server1] Stage 5/5: queued no-tactile pi0/pi05 baselines"
-TRAIN_STEPS="$BASE_TRAIN_STEPS" \
-SAVE_INTERVAL="$BASE_SAVE_INTERVAL" \
+echo "[server1] Stage 3/3: queued no-async freeze/no-async and no-tactile baselines"
 DATA_ASSET_ID="$ASSET_ID" \
-RUN_TAG="${RUN_TAG}_full" \
+RUN_TAG="$TAIL_RUN_TAG" \
 run_four_gpu_training_queue "$DATA_REPO"

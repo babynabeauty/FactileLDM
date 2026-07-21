@@ -29,10 +29,34 @@ run_four_gpu_training_queue() {
   local default_weight_path="${WEIGHT_PATH:-checkpoints/pi0_base/params}"
   local has_job_weight_paths=0
   local has_job_weight_args=0
+  local has_job_ready_paths=0
+  local has_job_train_steps=0
+  local has_job_save_intervals=0
   if declare -p JOB_WEIGHT_PATHS >/dev/null 2>&1; then
     has_job_weight_paths=1
     if (( ${#JOB_WEIGHT_PATHS[@]} != ${#JOB_LABELS[@]} )); then
       echo "ERROR: JOB_WEIGHT_PATHS must have the same length as JOB_LABELS when provided." >&2
+      return 2
+    fi
+  fi
+  if declare -p JOB_TRAIN_STEPS >/dev/null 2>&1; then
+    has_job_train_steps=1
+    if (( ${#JOB_TRAIN_STEPS[@]} != ${#JOB_LABELS[@]} )); then
+      echo "ERROR: JOB_TRAIN_STEPS must have the same length as JOB_LABELS when provided." >&2
+      return 2
+    fi
+  fi
+  if declare -p JOB_SAVE_INTERVALS >/dev/null 2>&1; then
+    has_job_save_intervals=1
+    if (( ${#JOB_SAVE_INTERVALS[@]} != ${#JOB_LABELS[@]} )); then
+      echo "ERROR: JOB_SAVE_INTERVALS must have the same length as JOB_LABELS when provided." >&2
+      return 2
+    fi
+  fi
+  if declare -p JOB_READY_PATHS >/dev/null 2>&1; then
+    has_job_ready_paths=1
+    if (( ${#JOB_READY_PATHS[@]} != ${#JOB_LABELS[@]} )); then
+      echo "ERROR: JOB_READY_PATHS must have the same length as JOB_LABELS when provided." >&2
       return 2
     fi
   fi
@@ -249,6 +273,14 @@ run_four_gpu_training_queue() {
     local label="${JOB_LABELS[$job_index]}"
     local config="${JOB_CONFIGS[$job_index]}"
     local assets_dir="${JOB_ASSET_DIRS[$job_index]}"
+    local job_train_steps="$train_steps"
+    local job_save_interval="$save_interval"
+    if (( has_job_train_steps == 1 )) && [[ -n "${JOB_TRAIN_STEPS[$job_index]}" ]]; then
+      job_train_steps="${JOB_TRAIN_STEPS[$job_index]}"
+    fi
+    if (( has_job_save_intervals == 1 )) && [[ -n "${JOB_SAVE_INTERVALS[$job_index]}" ]]; then
+      job_save_interval="${JOB_SAVE_INTERVALS[$job_index]}"
+    fi
     local job_weight_path="$default_weight_path"
     if (( has_job_weight_paths == 1 )); then
       job_weight_path="${JOB_WEIGHT_PATHS[$job_index]}"
@@ -281,11 +313,11 @@ run_four_gpu_training_queue() {
         --data.repo-id "$data_repo" \
         --data.assets.asset-id "$data_asset_id" \
         --data.assets.assets-dir "$assets_dir" \
-        --num-train-steps "$train_steps" \
+        --num-train-steps "$job_train_steps" \
         --batch-size "$global_batch_size" \
         --fsdp-devices "$fsdp_devices" \
         --num-workers "$num_workers" \
-        --save-interval "$save_interval" \
+        --save-interval "$job_save_interval" \
         --keep-period "$keep_period" \
         --no-wandb-enabled \
         "${overwrite_args[@]}" \
@@ -351,6 +383,9 @@ run_four_gpu_training_queue() {
 
     if (( failed == 0 && next_job < ${#JOB_LABELS[@]} )); then
       local memory_query_ok=1
+      local readiness_blocked=0
+      local readiness_wait_label=""
+      local readiness_wait_path=""
       if (( gpu_wait_enabled == 1 )) && ! refresh_gpu_free_memory; then
         memory_query_ok=0
       fi
@@ -362,6 +397,12 @@ run_four_gpu_training_queue() {
         fi
         if [[ -n "${slot_pid[$slot_index]}" ]]; then
           continue
+        fi
+        if (( has_job_ready_paths == 1 )) && [[ -n "${JOB_READY_PATHS[$next_job]}" && ! -e "${JOB_READY_PATHS[$next_job]}" ]]; then
+          readiness_blocked=1
+          readiness_wait_label="${JOB_LABELS[$next_job]}"
+          readiness_wait_path="${JOB_READY_PATHS[$next_job]}"
+          break
         fi
         if (( memory_query_ok == 1 )) && slot_has_enough_memory "$slot_index"; then
           launch_job "$next_job" "$slot_index"
@@ -375,7 +416,9 @@ run_four_gpu_training_queue() {
         local now
         now="$(date +%s)"
         if (( now - last_gpu_status_log >= gpu_status_log_seconds )); then
-          if (( memory_query_ok == 0 )); then
+          if (( readiness_blocked == 1 )); then
+            log_queue "Waiting for dependency before ${readiness_wait_label}: ${readiness_wait_path}"
+          elif (( memory_query_ok == 0 )); then
             log_queue "Waiting: nvidia-smi memory query failed; retrying in ${gpu_poll_seconds}s."
           else
             local -a slot_statuses=()

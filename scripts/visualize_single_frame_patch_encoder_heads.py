@@ -198,7 +198,7 @@ def _patch_grid(
     finger_idx: int,
     patch_values: np.ndarray,
     resolution: tuple[int, int] = (190, 260),
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, tuple[float, float, float, float]]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, tuple[float, float, float, float]]:
     coords, _ = _taxel_coords(layout_dir, finger_idx)
     patch_ids = np.asarray(AdaptiveFingertipPatchTokenizer._official_xhand_patch_ids(5, 120)[finger_idx], dtype=np.int32)
     point_values = patch_values[patch_ids].astype(np.float32)
@@ -214,12 +214,14 @@ def _patch_grid(
     tree = scipy.spatial.cKDTree(coords)
     _, nearest = tree.query(np.stack([grid_x.ravel(), grid_y.ravel()], axis=-1))
     grid_values = point_values[nearest].reshape(grid_x.shape)
+    grid_patch_ids = patch_ids[nearest].reshape(grid_x.shape).astype(np.float32)
 
     hull = scipy.spatial.Delaunay(coords)
     inside = hull.find_simplex(np.stack([grid_x.ravel(), grid_y.ravel()], axis=-1)) >= 0
     inside = inside.reshape(grid_x.shape)
     alpha = scipy.ndimage.gaussian_filter(inside.astype(np.float32), sigma=1.0)
-    return grid_values, alpha, coords, (xlim[0], xlim[1], ylim[0], ylim[1])
+    grid_patch_ids = np.where(inside, grid_patch_ids, np.nan)
+    return grid_values, grid_patch_ids, alpha, coords, (xlim[0], xlim[1], ylim[0], ylim[1])
 
 
 def _draw_patch_values(
@@ -233,7 +235,7 @@ def _draw_patch_values(
     vmax: float,
     title: str,
 ) -> None:
-    grid_values, alpha, coords, extent = _patch_grid(layout_dir=layout_dir, finger_idx=finger_idx, patch_values=values)
+    grid_values, grid_patch_ids, alpha, coords, extent = _patch_grid(layout_dir=layout_dir, finger_idx=finger_idx, patch_values=values)
     masked = np.ma.array(grid_values, mask=alpha < 0.2)
     cmap = plt.get_cmap(cmap_name).copy()
     cmap.set_bad((1, 1, 1, 0))
@@ -245,6 +247,16 @@ def _draw_patch_values(
         vmin=vmin,
         vmax=max(vmax, vmin + 1e-6),
         interpolation="bilinear",
+    )
+    ax.contour(
+        grid_patch_ids,
+        levels=[0.5, 1.5, 2.5, 3.5],
+        origin="lower",
+        extent=extent,
+        colors="black",
+        linewidths=1.2,
+        alpha=0.95,
+        zorder=4,
     )
     try:
         hull = scipy.spatial.ConvexHull(coords)

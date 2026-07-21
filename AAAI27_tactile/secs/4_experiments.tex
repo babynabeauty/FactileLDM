@@ -1,0 +1,29 @@
+% !TEX root = ../AnonymousSubmission2027.tex
+\section{Experiments}
+\subsection{Experimental Setup}
+\noindent{\textbf{Robot Platform}}
+We evaluate \systemname on a real XHand--UR7e tactile manipulation platform. The XHand provides dense force-taxel tactile observations from five fingers, with each finger containing 120 three-dimensional taxels. The policy receives visual observations, language instructions, robot state, and tactile streams, and executes actions on the real robot at high frequency.
+
+\noindent{\textbf{Data and Tasks}}
+We collect 800 tactile-action demonstrations on the XHand--UR7e platform. Each demonstration contains visual observations, language instructions, robot states, robot actions, and dense tactile streams from the five fingers. The dataset covers seven contact-rich dexterous manipulation tasks with diverse physical challenges: (1) \textit{Pipette Press}, picking up a pipette and precisely pressing its button; (2) \textit{Bottle Grasping}, grasping transparent water bottles with different weights; (3) \textit{Cob Grasping}, pinching orange cobs at different heights; (4) \textit{Sponge Wiping}, wiping marks on a whiteboard with a sponge at different heights; (5) \textit{Button Pressing}, pressing small buttons at different heights; (6) \textit{Cabinet Retrieval}, opening a cabinet to retrieve and place a transparent beaker under visual occlusion; and (7) \textit{Liquid Transfer}, transferring water from a graduated cylinder to a transparent beaker with a plastic pipette. We train all learning-based methods on the same demonstration set unless otherwise specified.
+
+\noindent{\textbf{Evaluation Protocol and Metrics}}
+We evaluate all methods on the seven contact-rich dexterous manipulation tasks described above, with 20 real-robot trials per method on each task. We report normalized task score (\%) as the primary metric. Single-criterion tasks are evaluated by binary success, while tasks with multiple success criteria use task-specific component-based rubrics that assign partial credit to weighted task components. Detailed rubrics for all tasks are provided in App.~\ref{app:task_rubrics}.
+
+\noindent{\textbf{Baselines}}
+We compare \systemname\ with seven baselines covering tactile imitation policies, pretrained VLA policies, and direct tactile-fusion variants: (1) ViTacFormer, an ACT-style visuo-tactile imitation policy with cross-attention tactile fusion and future tactile prediction; (2) RDP, a slow-fast visual-tactile diffusion policy that performs high-frequency tactile-reactive action refinement for contact-rich manipulation; (3) Tactile-VLA, a tactile-aware VLA that incorporates tactile sensing for contact-rich manipulation; (4) $\pi_0$ and (5) $\pi_{0.5}$, pretrained VLA policies fine-tuned on our task-specific demonstrations; and (6) $\pi_0$ + tactile and (7) $\pi_{0.5}$ + tactile, which directly condition the corresponding VLA policies on tactile force observations and robot state. All methods use the same robot platform, action space, and evaluation protocol, with implementation details provided in App.~\ref{app:baseline_details}.
+
+\noindent{\textbf{Implementation Details}}
+\systemname\ uses a 16-step action horizon and a tactile history window of 9 frames. The vision-language module updates semantic context at 4 Hz, while the Foresight Action Expert runs at 20 Hz. We train a single policy jointly on demonstrations from all seven tasks for 80k steps. The Tactile-Patch Encoder is first pretrained for 20k steps with patch-level structural supervision, then frozen for the first 5k policy-training steps before being optimized end-to-end with the policy. To train asynchronous revision, we randomly sample an intermediate offset from \(\{4, 8, 12\}\) within each action chunk. At deployment, only the Foresight Action Expert is retained and invoked at the high-frequency control rate. 
+
+\subsection{Main Results}
+\input{tabs/main_results}
+
+\subsection{Robustness to Perturbations}
+We further evaluate robustness under visual and physical perturbations, including lighting changes, height variations, weight changes, and external post-grasp disturbances. Table~\ref{tab:generalization_results} reports the average success rate for each perturbation type.
+\input{tabs/robustness_results}
+
+
+\subsection{Ablation Studies}
+We conduct ablations to isolate the effect of asynchronous high-frequency updates, future tactile latents, recursive future-latent updates, patch-aware tactile encoding, and privileged teacher action supervision. The variants are summarized in Table~\ref{tab:ablation_results}.
+\input{tabs/ablation_results}
