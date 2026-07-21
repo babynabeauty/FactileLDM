@@ -471,3 +471,56 @@ aws s3 cp /Users/babyna/Downloads/0627_grasp_cob s3://sqzhang26-2/0627_grasp_cob
 # 大文件上传  mac支持\
 s3cmd put /Users/babyna/Downloads/grasp_pipette_and_press_w_force_w_depth_0615_good_tactile_26ep.zip \
   s3://sqzhang26-2/grasp_pipette_and_press_w_force_w_depth_0615_good_tactile_26ep.zip
+
+
+
+# 划分验证集
+cd /workspace/mnt/sqzhang26/FactileLDM
+
+env/.venv/bin/python scripts/create_task_stratified_episode_split.py \
+  --repo-id data/taskall-2 \
+  --output-dir outputs/episode_splits/taskall-2_recursive_revision \
+  --val-ratio 0.10 \
+  --min-val-per-task 3 \
+  --seed 42
+
+# 验证encoder
+cd /workspace/mnt/sqzhang26/FactileLDM
+
+PATCH_ENCODER_PARAMS=checkpoints/xhand_patch_tactile_encoder_pretrain/xhand_patch_tactile_encoder_pretrain_taskall2_patch_pretrained_f8_async_90k_0717/19999/params
+
+env/.venv/bin/python scripts/eval_patch_tactile_encoder.py \
+  --repo-id data/taskall-2 \
+  --params "$PATCH_ENCODER_PARAMS" \
+  --filter-path outputs/episode_splits/taskall-2_recursive_revision/val_episodes.json \
+  --output-dir outputs/patch_encoder_eval/taskall-2 \
+  --batch-size 256 \
+  --max-frames 20000
+
+
+# 验证未来触觉预测
+cd /workspace/mnt/sqzhang26/FactileLDM
+
+export HF_LEROBOT_HOME=$PWD
+export HF_HUB_OFFLINE=1
+
+DATA_REPO=data/task12345-2
+ASSET_ID=$(basename "$DATA_REPO")
+POLICY_PARAMS=checkpoints/pi0_xhand_dual_patch_pretrained_f8_h16_async/pi0_xhand_dual_patch_pretrained_f8_h16_async_task12345_2_patch_pretrain_f8_0711_1607/59999/params
+
+CUDA_VISIBLE_DEVICES=0,1,2,3 \
+XLA_PYTHON_CLIENT_PREALLOCATE=false \
+env/.venv/bin/python scripts/eval_recursive_revision_analysis.py \
+  --config-name pi0_xhand_dual_patch_f8_h16_async \
+  --pretrained-params "$POLICY_PARAMS" \
+  --repo-id "$DATA_REPO" \
+  --asset-id "$ASSET_ID" \
+  --assets-dir assets/pi0_xhand_tactile_structured_raw_dual_ae \
+  --output-dir outputs/recursive_revision/task12345_2_f8_main \
+  --filter-path outputs/episode_splits/task12345-2_recursive_revision/val_episodes.json \
+  --batch-size 4 \
+  --fsdp-devices 4 \
+  --num-workers 2 \
+  --max-batches 100 \
+  --num-steps 10 \
+  --offsets 0 2 4 6 8 10 12 14

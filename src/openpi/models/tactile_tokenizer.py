@@ -759,6 +759,15 @@ class PatchInformedFingerTokenizer(RawTactileSpatialTokenizer):
         distribution, _, _ = self.patch_reconstruction_targets(forces)
         return distribution
 
+    def patch_mean_force_targets(self, forces: jax.Array) -> jax.Array:
+        """Return contact-gated mean 3D force targets for each finger patch.
+
+        Shape:
+          mean_force: [B, T, F, R, 3]
+        """
+        _, summary, _ = self.patch_reconstruction_targets(forces)
+        return summary[..., : self.dim_per_point]
+
 
 class _QFormerBlock(nnx.Module):
     """Small pre-norm query block with self-attention, cross-attention, and FFN."""

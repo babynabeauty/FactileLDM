@@ -812,3 +812,19 @@ class XHandPatchTactileEncoderPretrainConfig(_model.BaseModelConfig):
         return observation_spec, jax.ShapeDtypeStruct(
             [batch_size, self.action_horizon, self.action_dim], jnp.float32
         )
+
+
+@dataclasses.dataclass(frozen=True)
+class XHandPatchMeanForceEncoderPretrainConfig(XHandPatchTactileEncoderPretrainConfig):
+    """Stage-1 pretraining that decodes only 5-patch mean 3D forces."""
+
+    patch_distribution_loss_weight: float = 0.0
+    patch_summary_loss_weight: float = 0.0
+    patch_contact_loss_weight: float = 0.0
+    patch_mean_force_loss_weight: float = 1.0
+
+    @override
+    def create(self, rng: at.KeyArrayLike):
+        from openpi.models.patch_tactile_pretrain import XHandPatchMeanForceEncoderPretrain
+
+        return XHandPatchMeanForceEncoderPretrain(self, rngs=nnx.Rngs(rng))
