@@ -2313,6 +2313,32 @@ def _patch_pretrained_dual_config(source_name: str, new_name: str, *, freeze_enc
     )
 
 
+def _patch_pretrained_fresh_async_config(source_name: str, new_name: str, *, freeze_encoder: bool) -> TrainConfig:
+    """Patch-pretrained async config that reinitializes future queries at each offset.
+
+    This keeps teacher/student future tactile distillation enabled, but disables
+    recursive warm-start from the previous predicted future hidden. It is the
+    fair training-time counterpart for the fresh-reset diagnostic in recursive
+    revision analysis.
+    """
+
+    source = next(config for config in _CONFIGS if config.name == source_name)
+    return dataclasses.replace(
+        source,
+        name=new_name,
+        model=dataclasses.replace(
+            source.model,
+            cached_vlm_async_use_predicted_prefix_queries=False,
+            cached_vlm_async_future_align_loss_weight=0.1,
+        ),
+        weight_loader=weight_loaders.Pi0WithPatchTactileEncoderWeightLoader(
+            pi0_params_path="checkpoints/pi0_base/params",
+            encoder_params_path=None,
+        ),
+        freeze_filter=(nnx_utils.PathRegex(".*force_tokenizer.*") if freeze_encoder else nnx.Nothing),
+    )
+
+
 def _patch_pretrained_dual_ablation_config(
     source_name: str,
     new_name: str,
@@ -2373,6 +2399,26 @@ _CONFIGS.extend(
         _patch_pretrained_dual_config(
             "pi0_xhand_dual_patch_f8_h16_async",
             "pi0_xhand_dual_patch_pretrained_f8_h16_async",
+            freeze_encoder=False,
+        ),
+        _patch_pretrained_fresh_async_config(
+            "pi0_xhand_dual_patch_f4_h16_async",
+            "pi0_xhand_dual_patch_pretrained_f4_h16_async_fresh_freeze",
+            freeze_encoder=True,
+        ),
+        _patch_pretrained_fresh_async_config(
+            "pi0_xhand_dual_patch_f4_h16_async",
+            "pi0_xhand_dual_patch_pretrained_f4_h16_async_fresh",
+            freeze_encoder=False,
+        ),
+        _patch_pretrained_fresh_async_config(
+            "pi0_xhand_dual_patch_f8_h16_async",
+            "pi0_xhand_dual_patch_pretrained_f8_h16_async_fresh_freeze",
+            freeze_encoder=True,
+        ),
+        _patch_pretrained_fresh_async_config(
+            "pi0_xhand_dual_patch_f8_h16_async",
+            "pi0_xhand_dual_patch_pretrained_f8_h16_async_fresh",
             freeze_encoder=False,
         ),
         _patch_pretrained_dual_config(
