@@ -39,6 +39,7 @@ import tyro
 
 from openpi.models import model as _model
 from openpi.policies import xhand_policy
+from openpi.shared import normalize as _normalize
 from openpi.training import config as _config
 from openpi.training.data_loader import _arrow_column_to_numpy
 
@@ -52,6 +53,8 @@ class Args:
     params: str
     output_dir: str = "outputs/patch_encoder_eval"
     config_name: str = "xhand_patch_tactile_encoder_pretrain"
+    assets_dir: str = "assets/pi0_xhand_tactile_structured_raw_dual_ae"
+    asset_id: str | None = None
     filter_path: str | None = None
     batch_size: int = 256
     max_frames: int | None = 20000
@@ -122,10 +125,40 @@ def _extract_raw_tactile_from_state(states: np.ndarray) -> np.ndarray:
     return np.stack(chunks, axis=1).astype(np.float32)  # [N, 5, 120, 3]
 
 
+def _normalize_tactile(tactile: np.ndarray, mean: np.ndarray, std: np.ndarray) -> np.ndarray:
+    """Match transforms.Normalize for common raw-tactile norm-stat layouts."""
+    mean = np.asarray(mean, dtype=np.float32).reshape(-1)
+    std = np.asarray(std, dtype=np.float32).reshape(-1)
+    feature_shape = tactile.shape[1:]
+    if mean.size == feature_shape[-1]:
+        return ((tactile - mean) / (std + 1e-6)).astype(np.float32)
+    if mean.size == feature_shape[-2] * feature_shape[-1]:
+        flat = tactile.reshape(tactile.shape[0], feature_shape[0], -1)
+        return ((flat - mean) / (std + 1e-6)).reshape(tactile.shape).astype(np.float32)
+    if mean.size == int(np.prod(feature_shape)):
+        flat = tactile.reshape(tactile.shape[0], -1)
+        return ((flat - mean) / (std + 1e-6)).reshape(tactile.shape).astype(np.float32)
+    raise ValueError(
+        f"Cannot apply effort norm stats of length {mean.size} to tactile shape {feature_shape}."
+    )
+
+
+def _load_effort_norm(args: Args) -> tuple[np.ndarray, np.ndarray]:
+    asset_id = args.asset_id or pathlib.Path(args.repo_id.rstrip("/")).name
+    norm_dir = pathlib.Path(args.assets_dir).expanduser().resolve() / asset_id
+    norm_stats = _normalize.load(norm_dir)
+    if "effort" not in norm_stats:
+        raise KeyError(f"No 'effort' norm stats found in {norm_dir / 'norm_stats.json'}")
+    effort_stats = norm_stats["effort"]
+    logging.info("Using effort normalization from %s", norm_dir / "norm_stats.json")
+    return np.asarray(effort_stats.mean), np.asarray(effort_stats.std)
+
+
 def _iter_tactile_batches(args: Args):
     repo = pathlib.Path(args.repo_id).expanduser().resolve()
     episode_indices = _episode_filter(args.filter_path)
     files = _episode_files(repo, episode_indices)
+    effort_mean, effort_std = _load_effort_norm(args)
     logging.info("Reading %d parquet episodes from %s", len(files), repo)
 
     rng = np.random.default_rng(args.seed)
@@ -137,6 +170,7 @@ def _iter_tactile_batches(args: Args):
         if args.frame_stride > 1:
             states = states[:: args.frame_stride]
         tactile = _extract_raw_tactile_from_state(states)
+        tactile = _normalize_tactile(tactile, effort_mean, effort_std)
         if args.max_frames is not None and frame_count + tactile.shape[0] > args.max_frames:
             remaining = args.max_frames - frame_count
             if remaining <= 0:
