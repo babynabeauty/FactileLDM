@@ -37,6 +37,11 @@ TRAIN_EVAL_NUM_BATCHES="${TRAIN_EVAL_NUM_BATCHES:-100}"
 TRAIN_EVAL_BATCH_SIZE="${TRAIN_EVAL_BATCH_SIZE:-64}"
 FINAL_EVAL_BATCH_SIZE="${FINAL_EVAL_BATCH_SIZE:-256}"
 FINAL_EVAL_MAX_FRAMES="${FINAL_EVAL_MAX_FRAMES:-20000}"
+RUN_PATCH_VISUALIZATION="${RUN_PATCH_VISUALIZATION:-1}"
+PATCH_VIS_SELECTION="${PATCH_VIS_SELECTION:-max_contact}"
+PATCH_VIS_FRAME_STRIDE="${PATCH_VIS_FRAME_STRIDE:-1}"
+PATCH_VIS_DPI="${PATCH_VIS_DPI:-150}"
+PATCH_VIS_MAKE_VIDEO="${PATCH_VIS_MAKE_VIDEO:-1}"
 ALLOW_OVERWRITE="${ALLOW_OVERWRITE:-0}"
 RESUME="${RESUME:-0}"
 
@@ -70,6 +75,10 @@ mkdir -p logs "$SPLIT_DIR" .hf_datasets_cache .cache/huggingface
 [[ "$ALLOW_OVERWRITE" == "0" || "$ALLOW_OVERWRITE" == "1" ]] || die "ALLOW_OVERWRITE must be 0 or 1"
 [[ "$RESUME" == "0" || "$RESUME" == "1" ]] || die "RESUME must be 0 or 1"
 [[ "$RECREATE_SPLIT" == "0" || "$RECREATE_SPLIT" == "1" ]] || die "RECREATE_SPLIT must be 0 or 1"
+[[ "$RUN_PATCH_VISUALIZATION" == "0" || "$RUN_PATCH_VISUALIZATION" == "1" ]] || \
+  die "RUN_PATCH_VISUALIZATION must be 0 or 1"
+[[ "$PATCH_VIS_MAKE_VIDEO" == "0" || "$PATCH_VIS_MAKE_VIDEO" == "1" ]] || \
+  die "PATCH_VIS_MAKE_VIDEO must be 0 or 1"
 [[ ! ("$ALLOW_OVERWRITE" == "1" && "$RESUME" == "1") ]] || \
   die "ALLOW_OVERWRITE=1 and RESUME=1 cannot be enabled together"
 
@@ -302,6 +311,42 @@ for pid in "${eval_pids[@]}"; do
   fi
 done
 (( eval_failed == 0 )) || die "at least one independent encoder evaluation failed"
+
+if [[ "$RUN_PATCH_VISUALIZATION" == "1" ]]; then
+  patch_config="xhand_patch_tactile_encoder_pretrain"
+  patch_label="patch_informed_full_heads"
+  patch_exp="${patch_label}_${RUN_TAG}"
+  patch_step=$((TRAIN_STEPS - 1))
+  patch_params="checkpoints/${patch_config}/${patch_exp}/${patch_step}/params"
+  patch_output="outputs/patch_reconstruction_visualization/${RUN_TAG}"
+  patch_log="logs/patch_reconstruction_visualization_${RUN_TAG}.log"
+  video_args=()
+  if [[ "$PATCH_VIS_MAKE_VIDEO" == "1" ]]; then
+    video_args=(--make-video)
+  fi
+
+  log "Rendering held-out patch reconstruction episodes with $patch_params"
+  CUDA_VISIBLE_DEVICES="${GPUS[2]}" \
+  HF_LEROBOT_HOME="$PROJECT_ROOT" \
+  HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}" \
+  XLA_PYTHON_CLIENT_PREALLOCATE=false \
+  "$PYTHON_BIN" scripts/visualize_patch_reconstruction_episodes.py \
+    --repo-id "$DATA_REPO" \
+    --params "$patch_params" \
+    --config-name "$patch_config" \
+    --filter-path "$EVAL_FILTER_PATH" \
+    --assets-dir "$ASSET_DIR" \
+    --asset-id "$ASSET_ID" \
+    --output-dir "$patch_output" \
+    --selection "$PATCH_VIS_SELECTION" \
+    --seed "$SPLIT_SEED" \
+    --batch-size "$FINAL_EVAL_BATCH_SIZE" \
+    --frame-stride "$PATCH_VIS_FRAME_STRIDE" \
+    --dpi "$PATCH_VIS_DPI" \
+    "${video_args[@]}" \
+    > "$patch_log" 2>&1
+  log "Patch reconstruction visualization finished: $patch_output"
+fi
 
 log "Final three-encoder comparison completed successfully."
 log "Metrics root: outputs/patch_encoder_eval_normalized"
