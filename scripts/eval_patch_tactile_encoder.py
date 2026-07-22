@@ -216,13 +216,19 @@ def _pearson(x: jax.Array, y: jax.Array) -> jax.Array:
     return jnp.sum(x * y) / jnp.maximum(jnp.sqrt(jnp.sum(x * x) * jnp.sum(y * y)), 1e-6)
 
 
-def _contact_stats(pred_prob: jax.Array, target: jax.Array) -> dict[str, jax.Array]:
+def _contact_counts(pred_prob: jax.Array, target: jax.Array) -> dict[str, jax.Array]:
     pred = pred_prob >= 0.5
     true = target >= 0.5
     tp = jnp.sum(jnp.logical_and(pred, true))
     fp = jnp.sum(jnp.logical_and(pred, jnp.logical_not(true)))
     fn = jnp.sum(jnp.logical_and(jnp.logical_not(pred), true))
     tn = jnp.sum(jnp.logical_and(jnp.logical_not(pred), jnp.logical_not(true)))
+    return {"tp": tp, "fp": fp, "fn": fn, "tn": tn}
+
+
+def _contact_stats(pred_prob: jax.Array, target: jax.Array) -> dict[str, jax.Array]:
+    counts = _contact_counts(pred_prob, target)
+    tp, fp, fn, tn = counts["tp"], counts["fp"], counts["fn"], counts["tn"]
     precision = tp / jnp.maximum(tp + fp, 1.0)
     recall = tp / jnp.maximum(tp + fn, 1.0)
     f1 = 2.0 * precision * recall / jnp.maximum(precision + recall, 1e-6)
@@ -233,6 +239,33 @@ def _contact_stats(pred_prob: jax.Array, target: jax.Array) -> dict[str, jax.Arr
         "contact_f1": f1,
         "contact_accuracy": accuracy,
     }
+
+
+def _pearson_sufficient_stats(x: jax.Array, y: jax.Array) -> dict[str, jax.Array]:
+    x = x.astype(jnp.float32).reshape(-1)
+    y = y.astype(jnp.float32).reshape(-1)
+    return {
+        "n": jnp.asarray(x.size, dtype=jnp.float32),
+        "sum_x": jnp.sum(x),
+        "sum_y": jnp.sum(y),
+        "sum_x2": jnp.sum(jnp.square(x)),
+        "sum_y2": jnp.sum(jnp.square(y)),
+        "sum_xy": jnp.sum(x * y),
+    }
+
+
+def _add_global_aggregate_stats(
+    metrics: dict[str, jax.Array],
+    prefix: str,
+    pred_contact: jax.Array,
+    target_contact: jax.Array,
+    pred_strength: jax.Array,
+    target_strength: jax.Array,
+) -> None:
+    for name, value in _contact_counts(pred_contact, target_contact).items():
+        metrics[f"_aggregate/{prefix}/contact/{name}"] = value
+    for name, value in _pearson_sufficient_stats(pred_strength, target_strength).items():
+        metrics[f"_aggregate/{prefix}/strength/{name}"] = value
 
 
 def _eval_batch(model, tactile: jax.Array) -> dict[str, jax.Array]:
@@ -327,7 +360,50 @@ def _eval_batch(model, tactile: jax.Array) -> dict[str, jax.Array]:
             pred_strength[:, :, finger_idx],
             target_strength[:, :, finger_idx],
         )
+        _add_global_aggregate_stats(
+            metrics,
+            f"finger/{finger_name}",
+            pred_contact[:, :, finger_idx],
+            target_contact[:, :, finger_idx],
+            pred_strength[:, :, finger_idx],
+            target_strength[:, :, finger_idx],
+        )
+    _add_global_aggregate_stats(
+        metrics,
+        "global",
+        pred_contact,
+        target_contact,
+        pred_strength,
+        target_strength,
+    )
     return metrics
+
+
+def _finalize_contact_metrics(aggregate: dict[str, float], prefix: str) -> dict[str, float]:
+    base = f"_aggregate/{prefix}/contact"
+    tp = aggregate[f"{base}/tp"]
+    fp = aggregate[f"{base}/fp"]
+    fn = aggregate[f"{base}/fn"]
+    tn = aggregate[f"{base}/tn"]
+    precision = tp / max(tp + fp, 1.0)
+    recall = tp / max(tp + fn, 1.0)
+    return {
+        "contact_precision": precision,
+        "contact_recall": recall,
+        "contact_f1": 2.0 * precision * recall / max(precision + recall, 1e-12),
+        "contact_accuracy": (tp + tn) / max(tp + fp + fn + tn, 1.0),
+    }
+
+
+def _finalize_pearson(aggregate: dict[str, float], prefix: str) -> float:
+    base = f"_aggregate/{prefix}/strength"
+    n = aggregate[f"{base}/n"]
+    sum_x = aggregate[f"{base}/sum_x"]
+    sum_y = aggregate[f"{base}/sum_y"]
+    covariance = aggregate[f"{base}/sum_xy"] - sum_x * sum_y / max(n, 1.0)
+    variance_x = max(aggregate[f"{base}/sum_x2"] - sum_x * sum_x / max(n, 1.0), 0.0)
+    variance_y = max(aggregate[f"{base}/sum_y2"] - sum_y * sum_y / max(n, 1.0), 0.0)
+    return covariance / max(np.sqrt(variance_x * variance_y), 1e-12)
 
 
 def _write_outputs(output_dir: pathlib.Path, args: Args, metrics: dict[str, float]) -> None:
@@ -378,6 +454,7 @@ def main(args: Args) -> None:
 
     peval = jax.jit(lambda batch: _eval_batch(model, batch))
     sums: dict[str, float] = {}
+    aggregate: dict[str, float] = {}
     total_frames = 0
     batches = 0
     for tactile_np in _iter_tactile_batches(args):
@@ -385,7 +462,11 @@ def main(args: Args) -> None:
         metrics_np = jax.device_get(metrics)
         batch_size = tactile_np.shape[0]
         for key, value in metrics_np.items():
-            sums[key] = sums.get(key, 0.0) + float(np.asarray(value)) * batch_size
+            scalar = float(np.asarray(value))
+            if key.startswith("_aggregate/"):
+                aggregate[key] = aggregate.get(key, 0.0) + scalar
+            else:
+                sums[key] = sums.get(key, 0.0) + scalar * batch_size
         total_frames += batch_size
         batches += 1
         if batches == 1 or batches % 20 == 0:
@@ -394,6 +475,15 @@ def main(args: Args) -> None:
     if total_frames == 0:
         raise RuntimeError("No frames were evaluated.")
     metrics = {key: value / total_frames for key, value in sorted(sums.items())}
+    metrics.update(_finalize_contact_metrics(aggregate, "global"))
+    metrics["strength_pearson"] = _finalize_pearson(aggregate, "global")
+    for finger_name in FINGER_NAMES:
+        finger_contact = _finalize_contact_metrics(aggregate, f"finger/{finger_name}")
+        for metric_name, value in finger_contact.items():
+            metrics[f"finger/{finger_name}/{metric_name}"] = value
+        metrics[f"finger/{finger_name}/strength_pearson"] = _finalize_pearson(
+            aggregate, f"finger/{finger_name}"
+        )
     metrics["eval_frames"] = float(total_frames)
     metrics["eval_batches"] = float(batches)
     _write_outputs(output_dir, args, metrics)
