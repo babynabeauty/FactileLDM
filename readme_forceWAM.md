@@ -524,3 +524,25 @@ env/.venv/bin/python scripts/eval_recursive_revision_analysis.py \
   --max-batches 100 \
   --num-steps 10 \
   --offsets 0 2 4 6 8 10 12 14
+
+
+# 可视化 PatchTactileEncoder的结果
+cd /workspace/mnt/sqzhang26/FactileLDM
+
+PATCH_ENCODER_PARAMS=checkpoints/xhand_patch_tactile_encoder_pretrain/patch_informed_full_heads_taskall2_encoder_final_20k_0722/19999/params
+
+CUDA_VISIBLE_DEVICES=2 \
+XLA_PYTHON_CLIENT_PREALLOCATE=false \
+env/.venv/bin/python scripts/visualize_patch_reconstruction_episodes.py \
+  --repo-id data/taskall-2 \
+  --params "$PATCH_ENCODER_PARAMS" \
+  --config-name xhand_patch_tactile_encoder_pretrain \
+  --filter-path outputs/episode_splits/taskall-2_encoder_final_10pct_seed42/val_episodes.json \
+  --assets-dir assets/pi0_xhand_tactile_structured_raw_dual_ae \
+  --asset-id taskall-2 \
+  --output-dir outputs/patch_reconstruction_visualization/taskall2_encoder_final_20k_0722 \
+  --selection max_contact \
+  --batch-size 256 \
+  --frame-stride 1 \
+  --dpi 150 \
+  --make-video
