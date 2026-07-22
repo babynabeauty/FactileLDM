@@ -389,3 +389,178 @@ class XHandPatchMeanForceEncoderPretrain(nnx.Module):
     def sample_actions(self, rng, observation, **kwargs):
         del rng, observation, kwargs
         raise NotImplementedError("XHandPatchMeanForceEncoderPretrain is a stage-1 training-only model.")
+
+
+class XHandPatchStrengthEncoderPretrain(nnx.Module):
+    """Stage-1 pretraining with patch-level contact strength reconstruction.
+
+    This objective asks each policy-facing finger token to preserve where local
+    contact happens and how strong it is, without forcing the token to preserve
+    the full 3D force direction.
+    """
+
+    def __init__(self, config: pi0_config.XHandPatchStrengthEncoderPretrainConfig, rngs: nnx.Rngs):
+        self.action_dim = int(config.action_dim)
+        self.action_horizon = int(config.action_horizon)
+        self.max_token_len = int(config.max_token_len)
+        self.effort_type = config.effort_type
+        self.force_input_frames = int(config.force_input_frames)
+        self.num_fingers = int(config.tactile_num_fingers)
+        self.num_points = int(config.tactile_points_per_finger)
+        self.dim_per_point = int(config.tactile_dim_per_finger)
+        self.num_patches = int(config.tactile_num_patches)
+        self.encoder_width = int(config.encoder_width)
+        self.contact_threshold = float(config.tactile_raw_contact_threshold)
+        self.contact_temperature = float(config.tactile_raw_contact_temperature)
+        self.patch_strength_loss_weight = float(config.patch_strength_loss_weight)
+        self.patch_strength_contact_loss_weight = float(config.patch_strength_contact_loss_weight)
+        self.patch_strength_zero_loss_weight = float(config.patch_strength_zero_loss_weight)
+        self.pretrain_history_time_samples = int(config.pretrain_history_time_samples)
+        self.pretrain_future_time_samples = int(config.pretrain_future_time_samples)
+        self.history_times = tuple(
+            float(offset) / float(config.tactile_sample_hz) for offset in config.tactile_history_offsets
+        )
+        self.future_times = tuple(
+            float(step) / float(config.tactile_sample_hz) for step in range(1, config.action_horizon + 1)
+        )
+
+        self.patch_encoder = PatchInformedFingerTokenizer(
+            output_dim=self.encoder_width,
+            hidden_dim=config.tactile_tokenizer_dim,
+            num_fingers=self.num_fingers,
+            num_points=self.num_points,
+            dim_per_point=self.dim_per_point,
+            future_segments=config.future_tactile_segments,
+            future_steps_per_segment=config.future_steps_per_segment,
+            contact_top_k=config.tactile_raw_contact_top_k,
+            contact_threshold=config.tactile_raw_contact_threshold,
+            contact_temperature=config.tactile_raw_contact_temperature,
+            num_patches=self.num_patches,
+            rngs=rngs,
+        )
+        self.patch_strength_head = nnx.Linear(self.encoder_width, self.num_patches, rngs=rngs)
+
+    def _split_effort(self, observation: _model.Observation, dtype: jnp.dtype) -> tuple[jax.Array, jax.Array]:
+        if observation.effort is None:
+            raise ValueError("XHand patch strength pretraining requires observation.effort.")
+        effort = jnp.asarray(observation.effort, dtype=dtype)
+        expected = (
+            self.force_input_frames + self.action_horizon,
+            self.num_fingers,
+            self.num_points,
+            self.dim_per_point,
+        )
+        if effort.ndim != 5 or effort.shape[1:] != expected:
+            raise ValueError(f"Expected raw tactile effort [B,{expected}], got {effort.shape}.")
+        return effort[:, : self.force_input_frames], effort[:, self.force_input_frames :]
+
+    def _sample_time_axis(
+        self,
+        rng: jax.Array,
+        effort: jax.Array,
+        times: jax.Array,
+        sample_count: int,
+        *,
+        train: bool,
+    ) -> tuple[jax.Array, jax.Array]:
+        total_steps = effort.shape[1]
+        if sample_count <= 0 or sample_count >= total_steps:
+            return effort, times
+        if train:
+            indices = jnp.sort(jax.random.permutation(rng, total_steps)[:sample_count])
+        else:
+            indices = jnp.linspace(0, total_steps - 1, sample_count).astype(jnp.int32)
+        return jnp.take(effort, indices, axis=1), jnp.take(times, indices, axis=0)
+
+    def _encode_all_steps(
+        self,
+        history_effort: jax.Array,
+        future_effort: jax.Array,
+        history_times: jax.Array,
+        future_times: jax.Array,
+    ) -> jax.Array:
+        history_tokens = self.patch_encoder._encode_steps(
+            history_effort,
+            history_times,
+            future=False,
+            include_temporal=False,
+        )
+        future_tokens = self.patch_encoder._encode_steps(
+            future_effort,
+            future_times,
+            future=True,
+            include_temporal=False,
+        )
+        return jnp.concatenate([history_tokens, future_tokens], axis=1)
+
+    def compute_loss_with_stats(self, rng, observation, actions, *, train=False):
+        action_dtype = actions.dtype
+        del actions
+        history_effort, future_effort = self._split_effort(observation, dtype=action_dtype)
+        history_times = jnp.asarray(self.history_times, dtype=jnp.float32)
+        future_times = jnp.asarray(self.future_times, dtype=jnp.float32)
+        history_rng, future_rng = jax.random.split(rng)
+        history_effort, history_times = self._sample_time_axis(
+            history_rng,
+            history_effort,
+            history_times,
+            self.pretrain_history_time_samples,
+            train=train,
+        )
+        future_effort, future_times = self._sample_time_axis(
+            future_rng,
+            future_effort,
+            future_times,
+            self.pretrain_future_time_samples,
+            train=train,
+        )
+        effort = jnp.concatenate([history_effort, future_effort], axis=1)
+        tokens = self._encode_all_steps(history_effort, future_effort, history_times, future_times)
+
+        _, target_summary, target_contact = self.patch_encoder.patch_reconstruction_targets(effort)
+        target_strength = target_summary[..., -1]
+        pred_strength = jax.nn.softplus(self.patch_strength_head(tokens).astype(jnp.float32))
+
+        strength_loss = jnp.mean(
+            _smooth_l1(pred_strength, jax.lax.stop_gradient(target_strength)),
+            axis=(1, 2, 3),
+        )
+
+        contact_temperature = jnp.asarray(max(self.contact_temperature, 1e-6), dtype=jnp.float32)
+        contact_threshold = jnp.asarray(self.contact_threshold, dtype=jnp.float32)
+        pred_contact_logits = (pred_strength - contact_threshold) / contact_temperature
+        contact_loss = jnp.mean(
+            _sigmoid_bce_with_logits(pred_contact_logits, jax.lax.stop_gradient(target_contact)),
+            axis=(1, 2, 3),
+        )
+        inactive_mask = 1.0 - jax.lax.stop_gradient(target_contact.astype(jnp.float32))
+        inactive_denom = jnp.maximum(jnp.sum(inactive_mask, axis=(1, 2, 3)), 1.0)
+        zero_patch_loss = jnp.sum(pred_strength * inactive_mask, axis=(1, 2, 3)) / inactive_denom
+        total = (
+            self.patch_strength_loss_weight * strength_loss
+            + self.patch_strength_contact_loss_weight * contact_loss
+            + self.patch_strength_zero_loss_weight * zero_patch_loss
+        )
+
+        pred_contact = pred_strength > contact_threshold
+        target_contact_bool = target_contact > 0.5
+        contact_accuracy = jnp.mean(pred_contact == target_contact_bool, axis=(1, 2, 3))
+        return total, {
+            "loss/patch_strength": strength_loss,
+            "loss/contact_from_strength": contact_loss,
+            "loss/zero_patch_suppression": zero_patch_loss,
+            "loss/total": total,
+            "metric/contact_accuracy_from_strength": contact_accuracy,
+            "metric/pred_contact_ratio_from_strength": jnp.mean(pred_contact.astype(jnp.float32), axis=(1, 2, 3)),
+            "metric/target_contact_ratio": jnp.mean(target_contact, axis=(1, 2, 3)),
+            "metric/pred_patch_strength_mean": jnp.mean(pred_strength, axis=(1, 2, 3)),
+            "metric/target_patch_strength_mean": jnp.mean(target_strength, axis=(1, 2, 3)),
+        }
+
+    def compute_loss(self, rng, observation, actions, *, train=False):
+        loss, _ = self.compute_loss_with_stats(rng, observation, actions, train=train)
+        return loss
+
+    def sample_actions(self, rng, observation, **kwargs):
+        del rng, observation, kwargs
+        raise NotImplementedError("XHandPatchStrengthEncoderPretrain is a stage-1 training-only model.")

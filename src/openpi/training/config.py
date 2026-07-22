@@ -807,6 +807,9 @@ class TrainConfig:
 
     # Determines the data to be trained on.
     data: DataConfigFactory = dataclasses.field(default_factory=FakeDataConfig)
+    # Optional episode split-json for the training loader. This is a top-level
+    # convenience override for DataConfig.filter_dict_path.
+    train_filter_path: str | None = None
 
     # Base directory for config assets (e.g., norm stats).
     assets_base_dir: str = "./assets"
@@ -829,6 +832,20 @@ class TrainConfig:
     save_interval: int = 1000
     # If set, any existing checkpoints matching step % keep_period == 0 will not be deleted.
     keep_period: int | None = 5000
+
+    # Optional validation during training. Disabled when eval_interval <= 0.
+    # Validation reuses the training data config unless eval_* overrides are
+    # provided. eval_filter_path can point to a split-json file containing
+    # episodes / val / train / episode_indices.
+    eval_interval: int = 0
+    eval_num_batches: int = 10
+    eval_batch_size: int | None = None
+    eval_num_workers: int | None = None
+    eval_repo_id: str | None = None
+    eval_asset_id: str | None = None
+    eval_assets_dir: str | None = None
+    eval_filter_path: str | None = None
+    eval_at_start: bool = False
 
     # If true, will overwrite the checkpoint directory if it already exists.
     overwrite: bool = False
@@ -1867,6 +1884,47 @@ _CONFIGS = [
             patch_mean_force_loss_weight=1.0,
             patch_mean_force_contact_loss_weight=0.5,
             patch_mean_force_zero_loss_weight=0.1,
+        ),
+        data=LeRobotXHandPatchTactilePretrainDataConfig(
+            repo_id="grasp_pipette_and_press_button",
+            state_delta_timestamps=tuple(list(range(-9, 1)) + list(range(1, 17))),
+            base_config=DataConfig(prompt_from_task=True),
+        ),
+        weight_loader=weight_loaders.NoOpWeightLoader(),
+        num_train_steps=20_000,
+        batch_size=64,
+        num_workers=2,
+        save_interval=5000,
+        keep_period=5000,
+        ema_decay=None,
+    ),
+    TrainConfig(
+        name="xhand_patch_strength_contact_encoder_pretrain",
+        model=pi0_config.XHandPatchStrengthEncoderPretrainConfig(
+            action_horizon=16,
+            action_dim=32,
+            max_token_len=48,
+            effort_type=EffortType.MOT,
+            effort_dim=1800,
+            force_input_frames=10,
+            tactile_history_offsets=tuple(range(-9, 1)),
+            tactile_num_fingers=5,
+            tactile_points_per_finger=120,
+            tactile_dim_per_finger=3,
+            tactile_num_patches=5,
+            future_tactile_segments=4,
+            future_steps_per_segment=4,
+            tactile_sample_hz=15.0,
+            tactile_tokenizer_dim=256,
+            encoder_width=1024,
+            tactile_raw_contact_top_k=16,
+            tactile_raw_contact_threshold=0.5,
+            tactile_raw_contact_temperature=0.5,
+            pretrain_history_time_samples=2,
+            pretrain_future_time_samples=2,
+            patch_strength_loss_weight=1.0,
+            patch_strength_contact_loss_weight=0.5,
+            patch_strength_zero_loss_weight=0.1,
         ),
         data=LeRobotXHandPatchTactilePretrainDataConfig(
             repo_id="grasp_pipette_and_press_button",

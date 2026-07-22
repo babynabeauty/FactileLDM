@@ -830,3 +830,21 @@ class XHandPatchMeanForceEncoderPretrainConfig(XHandPatchTactileEncoderPretrainC
         from openpi.models.patch_tactile_pretrain import XHandPatchMeanForceEncoderPretrain
 
         return XHandPatchMeanForceEncoderPretrain(self, rngs=nnx.Rngs(rng))
+
+
+@dataclasses.dataclass(frozen=True)
+class XHandPatchStrengthEncoderPretrainConfig(XHandPatchTactileEncoderPretrainConfig):
+    """Stage-1 pretraining that decodes 5-patch contact strength only."""
+
+    patch_distribution_loss_weight: float = 0.0
+    patch_summary_loss_weight: float = 0.0
+    patch_contact_loss_weight: float = 0.0
+    patch_strength_loss_weight: float = 1.0
+    patch_strength_contact_loss_weight: float = 0.5
+    patch_strength_zero_loss_weight: float = 0.1
+
+    @override
+    def create(self, rng: at.KeyArrayLike):
+        from openpi.models.patch_tactile_pretrain import XHandPatchStrengthEncoderPretrain
+
+        return XHandPatchStrengthEncoderPretrain(self, rngs=nnx.Rngs(rng))

@@ -1,6 +1,7 @@
 import dataclasses
 import functools
 import logging
+import pathlib
 import platform
 from typing import Any
 import openpi.training.checkpoints as _checkpoints
@@ -294,6 +295,40 @@ def train_step(
 
 
 @at.typecheck
+def eval_step(
+    config: _config.TrainConfig,
+    rng: at.KeyArrayLike,
+    state: training_utils.TrainState,
+    batch,
+) -> dict[str, at.Array]:
+    model = nnx.merge(state.model_def, state.params)
+    model.eval()
+    has_loss_stats = hasattr(model, "compute_loss_with_stats")
+    eval_progress = jnp.asarray(state.step, dtype=jnp.float32) / jnp.asarray(
+        max(config.num_train_steps - 1, 1), dtype=jnp.float32
+    )
+    eval_rng = jax.random.fold_in(rng, state.step)
+    observation, actions = batch
+
+    if has_loss_stats:
+        if getattr(model, "uses_train_progress", False):
+            chunked_loss, loss_stats = model.compute_loss_with_stats(
+                eval_rng, observation, actions, train=False, train_progress=eval_progress
+            )
+        else:
+            chunked_loss, loss_stats = model.compute_loss_with_stats(eval_rng, observation, actions, train=False)
+        info = {"loss": jnp.mean(chunked_loss)}
+        info.update(jax.tree.map(jnp.mean, loss_stats))
+        return info
+
+    if getattr(model, "uses_train_progress", False):
+        chunked_loss = model.compute_loss(eval_rng, observation, actions, train=False, train_progress=eval_progress)
+    else:
+        chunked_loss = model.compute_loss(eval_rng, observation, actions, train=False)
+    return {"loss": jnp.mean(chunked_loss)}
+
+
+@at.typecheck
 def grad_stats_step(
     config: _config.TrainConfig,
     rng: at.KeyArrayLike,
@@ -312,6 +347,68 @@ def grad_stats_step(
     return model.compute_grad_stats(train_rng, observation, actions, train=True)
 
 
+def _with_filter_path(data_factory: _config.DataConfigFactory, filter_path: str | None) -> _config.DataConfigFactory:
+    if filter_path is None:
+        return data_factory
+    base_config = data_factory.base_config or _config.DataConfig()
+    return dataclasses.replace(
+        data_factory,
+        base_config=dataclasses.replace(base_config, filter_dict_path=str(pathlib.Path(filter_path).expanduser())),
+    )
+
+
+def _make_eval_config(config: _config.TrainConfig) -> _config.TrainConfig:
+    data_factory = config.data
+    if config.eval_repo_id is not None:
+        data_factory = dataclasses.replace(data_factory, repo_id=config.eval_repo_id)
+    if config.eval_asset_id is not None or config.eval_assets_dir is not None:
+        data_factory = dataclasses.replace(
+            data_factory,
+            assets=dataclasses.replace(
+                data_factory.assets,
+                asset_id=config.eval_asset_id if config.eval_asset_id is not None else data_factory.assets.asset_id,
+                assets_dir=(
+                    config.eval_assets_dir if config.eval_assets_dir is not None else data_factory.assets.assets_dir
+                ),
+            ),
+        )
+    data_factory = _with_filter_path(data_factory, config.eval_filter_path)
+    return dataclasses.replace(
+        config,
+        data=data_factory,
+        batch_size=config.eval_batch_size or config.batch_size,
+        num_workers=config.eval_num_workers if config.eval_num_workers is not None else config.num_workers,
+        wandb_enabled=False,
+    )
+
+
+def _fmt_val(v):
+    try:
+        return f"{float(v):.8f}"
+    except (TypeError, ValueError):
+        return str(v)
+
+
+def _run_validation(
+    *,
+    step: int,
+    eval_num_batches: int,
+    eval_iter,
+    peval_step,
+    eval_rng,
+    train_state: training_utils.TrainState,
+) -> dict[str, Any]:
+    eval_infos = []
+    for _ in range(eval_num_batches):
+        eval_batch = next(eval_iter)
+        eval_infos.append(peval_step(eval_rng, train_state, eval_batch))
+    stacked_infos = common_utils.stack_forest(eval_infos)
+    reduced_info = jax.device_get(jax.tree.map(jnp.mean, stacked_infos))
+    prefixed = {f"eval/{key}": value for key, value in reduced_info.items()}
+    logging.info("Eval step %d: %s", step, ", ".join(f"{k}={_fmt_val(v)}" for k, v in prefixed.items()))
+    return prefixed
+
+
 def main(config: _config.TrainConfig):
     init_logging()
     logging.info(f"Running on: {platform.node()}")
@@ -320,6 +417,14 @@ def main(config: _config.TrainConfig):
         raise ValueError(
             f"Batch size {config.batch_size} must be divisible by the number of devices {jax.device_count()}."
         )
+    if config.eval_interval > 0:
+        eval_batch_size = config.eval_batch_size or config.batch_size
+        if eval_batch_size % jax.device_count() != 0:
+            raise ValueError(
+                f"Eval batch size {eval_batch_size} must be divisible by the number of devices {jax.device_count()}."
+            )
+        if config.eval_num_batches <= 0:
+            raise ValueError("--eval-num-batches must be positive when --eval-interval is enabled.")
 
     jax.config.update("jax_compilation_cache_dir", str(epath.Path("~/.cache/jax").expanduser()))
 
@@ -338,8 +443,13 @@ def main(config: _config.TrainConfig):
     )
     init_wandb(config, resuming=resuming, enabled=config.wandb_enabled)
 
+    train_data_config = config
+    if config.train_filter_path is not None:
+        train_data_config = dataclasses.replace(config, data=_with_filter_path(config.data, config.train_filter_path))
+        logging.info("Train episode filter enabled: %s", config.train_filter_path)
+
     data_loader = _data_loader.create_data_loader(
-        config,
+        train_data_config,
         sharding=data_sharding,
         shuffle=True,
     )
@@ -357,6 +467,25 @@ def main(config: _config.TrainConfig):
         wandb.log({"camera_views": images_to_log}, step=0)
     else:
         logging.info("Skipping camera view logging: batch has no images.")
+
+    eval_config = None
+    eval_iter = None
+    if config.eval_interval > 0:
+        eval_config = _make_eval_config(config)
+        logging.info(
+            "Validation enabled: interval=%d num_batches=%d repo=%s filter=%s batch_size=%d",
+            config.eval_interval,
+            config.eval_num_batches,
+            eval_config.data.repo_id,
+            config.eval_filter_path,
+            eval_config.batch_size,
+        )
+        eval_loader = _data_loader.create_data_loader(
+            eval_config,
+            sharding=data_sharding,
+            shuffle=False,
+        )
+        eval_iter = iter(eval_loader)
 
     train_state, train_state_sharding = init_train_state(config, init_rng, mesh, resume=resuming)
     # 打印可训练参数名
@@ -389,6 +518,13 @@ def main(config: _config.TrainConfig):
         out_shardings=(train_state_sharding, replicated_sharding),
         donate_argnums=(1,),
     )
+    peval_step = None
+    if eval_config is not None:
+        peval_step = jax.jit(
+            functools.partial(eval_step, eval_config),
+            in_shardings=(replicated_sharding, train_state_sharding, data_sharding),
+            out_shardings=replicated_sharding,
+        )
     model_for_stats = nnx.merge(train_state.model_def, train_state.params)
     has_grad_stats = hasattr(model_for_stats, "compute_grad_stats")
     del model_for_stats
@@ -402,6 +538,18 @@ def main(config: _config.TrainConfig):
         )
 
     start_step = int(train_state.step)
+    if config.eval_interval > 0 and config.eval_at_start:
+        eval_step_num = int(jax.device_get(train_state.step))
+        eval_info = _run_validation(
+            step=eval_step_num,
+            eval_num_batches=config.eval_num_batches,
+            eval_iter=eval_iter,
+            peval_step=peval_step,
+            eval_rng=train_rng,
+            train_state=train_state,
+        )
+        wandb.log(eval_info, step=eval_step_num)
+
     pbar = tqdm.tqdm(
         range(start_step, config.num_train_steps),
         initial=start_step,
@@ -422,12 +570,6 @@ def main(config: _config.TrainConfig):
                 grad_stats = jax.device_get(jax.tree.map(jnp.mean, grad_stats))
                 reduced_info.update(grad_stats)
 
-            def _fmt_val(v):
-                try:
-                    return f"{float(v):.8f}"
-                except (TypeError, ValueError):
-                    return str(v)
-
             info_str = ", ".join(f"{k}={_fmt_val(v)}" for k, v in reduced_info.items())
             logging.info("Step %d: %s", step, info_str)
             display_loss = reduced_info.get("loss/total", reduced_info.get("loss"))
@@ -436,6 +578,23 @@ def main(config: _config.TrainConfig):
             wandb.log(reduced_info, step=step)
             infos = []
         batch = next(data_iter)
+
+        completed_step = int(jax.device_get(train_state.step))
+        should_eval = (
+            config.eval_interval > 0
+            and completed_step > start_step
+            and (completed_step % config.eval_interval == 0 or completed_step == config.num_train_steps)
+        )
+        if should_eval:
+            eval_info = _run_validation(
+                step=completed_step,
+                eval_num_batches=config.eval_num_batches,
+                eval_iter=eval_iter,
+                peval_step=peval_step,
+                eval_rng=train_rng,
+                train_state=train_state,
+            )
+            wandb.log(eval_info, step=completed_step)
 
         if (step % config.save_interval == 0 and step > start_step) or step == config.num_train_steps - 1:
             _checkpoints.save_state(checkpoint_manager, train_state, data_loader, step)
