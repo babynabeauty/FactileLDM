@@ -457,6 +457,12 @@ class XHandTactileFlowInputs(transforms.DataTransformFn):
         if prompt_key is not None:
             inputs["prompt"] = data[prompt_key]
 
+        # Preserve identifiers for episode-level offline analysis. These keys are
+        # ignored by Observation.from_dict and therefore never enter the policy.
+        for metadata_key in ("episode_index", "frame_index", "task_index", "timestamp"):
+            if metadata_key in data:
+                inputs[metadata_key] = data[metadata_key]
+
         return inputs
 
     def _extract_proprio(self, state: np.ndarray) -> np.ndarray:

@@ -22,8 +22,8 @@ import pathlib
 from typing import Literal
 
 import einops
-import flax.nnx as nnx
 from flax import traverse_util
+import flax.nnx as nnx
 import jax
 from jax import ShapeDtypeStruct
 import jax.numpy as jnp
@@ -32,25 +32,29 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
-import optax
+import pandas as pd
 import tyro
 
 from openpi.models import model_tavla as _model
 from openpi.models.pi0_tavla import make_attn_mask
+from openpi.policies import xhand_policy
 import openpi.shared.array_typing as at
 import openpi.training.config as _config
 import openpi.training.data_loader as _data_loader
 import openpi.training.sharding as sharding
 import openpi.training.weight_loaders as _weight_loaders
 
-
-MODES = ("one_shot", "fresh_reinfer", "retouch")
+EvalMode = Literal["one_shot", "action_only", "fresh_reinfer", "retouch"]
+MODES: tuple[EvalMode, ...] = ("one_shot", "action_only", "fresh_reinfer", "retouch")
+PHASES = ("overall", "pre_contact", "post_contact", "no_contact")
 
 
 @dataclasses.dataclass(frozen=True)
 class Args:
     config_name: str
     pretrained_params: str
+    model_label: str | None = None
+    modes: tuple[EvalMode, ...] = MODES
 
     repo_id: str | None = None
     asset_id: str | None = None
@@ -61,12 +65,21 @@ class Args:
     batch_size: int = 4
     fsdp_devices: int = 1
     num_workers: int = 0
-    max_batches: int = 100
+    # 0 evaluates one complete dataloader pass. Positive values cap the pass.
+    max_batches: int = 0
     seed: int = 42
     num_steps: int = 10
     offsets: tuple[int, ...] = (0, 4, 8, 12)
 
     latent_action_condition: Literal["zero", "gt"] = "zero"
+
+    # Contact onset is computed from raw (pre-normalization) XHand taxels over
+    # each complete episode. A frame is contact-active when at least
+    # contact_min_taxels exceed contact_threshold.
+    split_by_contact: bool = True
+    contact_threshold: float = 1.0
+    contact_min_taxels: int = 1
+    contact_min_consecutive_frames: int = 1
 
 
 def init_logging() -> None:
@@ -74,6 +87,134 @@ def init_logging() -> None:
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(message)s",
     )
+
+
+def _resolve_params_path(path_text: str) -> pathlib.Path:
+    path = pathlib.Path(path_text).expanduser().resolve()
+    if (path / "params").is_dir():
+        path = path / "params"
+    if not path.exists():
+        raise FileNotFoundError(f"Policy parameter path does not exist: {path}")
+    return path
+
+
+def _selected_episode_indices(filter_path: str | None) -> set[int] | None:
+    if filter_path is None:
+        return None
+    with pathlib.Path(filter_path).expanduser().open() as f:
+        value = json.load(f)
+    if isinstance(value, list):
+        episodes = value
+    elif isinstance(value, dict):
+        episodes = next(
+            (
+                value[key]
+                for key in ("episodes", "episode_indices", "episode_index", "train", "val")
+                if value.get(key) is not None
+            ),
+            None,
+        )
+    else:
+        episodes = None
+    if episodes is None:
+        raise ValueError(f"Cannot read episode indices from filter file: {filter_path}")
+    return {int(episode) for episode in episodes}
+
+
+def _extract_raw_tactile(states: np.ndarray) -> np.ndarray:
+    required_dim = (
+        xhand_policy.TACTILE_BLOCK_START
+        + xhand_policy.TACTILE_SENSOR_COUNT * xhand_policy.TACTILE_BLOCK_SIZE
+    )
+    if states.ndim != 2 or states.shape[-1] < required_dim:
+        raise ValueError(
+            "Contact-onset analysis requires full XHand observation.state; "
+            f"expected [T,D] with D >= {required_dim}, got {states.shape}."
+        )
+    fingers = []
+    for finger in range(xhand_policy.TACTILE_SENSOR_COUNT):
+        start = (
+            xhand_policy.TACTILE_BLOCK_START
+            + finger * xhand_policy.TACTILE_BLOCK_SIZE
+            + xhand_policy.TACTILE_RAW_FORCE_OFFSET
+        )
+        end = start + xhand_policy.TACTILE_RAW_FORCE_POINTS * 3
+        fingers.append(states[:, start:end].reshape(states.shape[0], xhand_policy.TACTILE_RAW_FORCE_POINTS, 3))
+    return np.stack(fingers, axis=1).astype(np.float32)
+
+
+def _first_consecutive_true(mask: np.ndarray, length: int) -> int | None:
+    length = max(int(length), 1)
+    if mask.size < length:
+        return None
+    if length == 1:
+        hits = np.flatnonzero(mask)
+    else:
+        hits = np.flatnonzero(np.convolve(mask.astype(np.int32), np.ones(length, dtype=np.int32), mode="valid") >= length)
+    return int(hits[0]) if hits.size else None
+
+
+def _compute_contact_onsets(args: Args) -> tuple[dict[int, int | None], dict[str, object]]:
+    if args.repo_id is None:
+        raise ValueError("--repo-id is required when --split-by-contact is enabled.")
+    repo = pathlib.Path(args.repo_id).expanduser().resolve()
+    parquet_files = sorted(repo.glob("data/**/episode_*.parquet"))
+    if not parquet_files:
+        raise FileNotFoundError(f"No episode parquet files found under {repo / 'data'}")
+    info_path = repo / "meta" / "info.json"
+    fps = 15.0
+    if info_path.exists():
+        with info_path.open() as f:
+            fps = float(json.load(f).get("fps", fps))
+
+    selected = _selected_episode_indices(args.filter_path)
+    onsets: dict[int, int | None] = {}
+    episode_rows: list[dict[str, object]] = []
+    for parquet_path in parquet_files:
+        frame = pd.read_parquet(
+            parquet_path,
+            columns=["observation.state", "episode_index", "frame_index"],
+        )
+        states = np.asarray(frame["observation.state"].to_list(), dtype=np.float32)
+        episode_indices = np.asarray(frame["episode_index"].to_list(), dtype=np.int64)
+        frame_indices = np.asarray(frame["frame_index"].to_list(), dtype=np.int64)
+        for episode_index in np.unique(episode_indices):
+            episode = int(episode_index)
+            if selected is not None and episode not in selected:
+                continue
+            rows = episode_indices == episode_index
+            order = np.argsort(frame_indices[rows])
+            episode_frames = frame_indices[rows][order]
+            tactile = _extract_raw_tactile(states[rows][order])
+            magnitude = np.linalg.norm(tactile, axis=-1)
+            active_taxels = np.sum(magnitude > float(args.contact_threshold), axis=(1, 2))
+            onset_row = _first_consecutive_true(
+                active_taxels >= int(args.contact_min_taxels),
+                args.contact_min_consecutive_frames,
+            )
+            onset_frame = None if onset_row is None else int(episode_frames[onset_row])
+            onsets[episode] = onset_frame
+            episode_rows.append(
+                {
+                    "episode_index": episode,
+                    "first_contact_frame": onset_frame,
+                    "first_contact_time_sec": None if onset_frame is None else onset_frame / fps,
+                    "num_frames": int(episode_frames.size),
+                    "max_active_taxels": int(np.max(active_taxels, initial=0)),
+                }
+            )
+
+    summary: dict[str, object] = {
+        "repo_id": str(repo),
+        "fps": fps,
+        "contact_threshold": float(args.contact_threshold),
+        "contact_min_taxels": int(args.contact_min_taxels),
+        "contact_min_consecutive_frames": int(args.contact_min_consecutive_frames),
+        "num_episodes": len(onsets),
+        "num_episodes_with_contact": sum(onset is not None for onset in onsets.values()),
+        "episodes": sorted(episode_rows, key=lambda row: int(row["episode_index"])),
+    }
+    return onsets, summary
 
 
 def _path_key(key: tuple[object, ...]) -> str:
@@ -136,7 +277,7 @@ def _override_config(args: Args) -> _config.TrainConfig:
     return dataclasses.replace(
         base,
         data=data,
-        weight_loader=_weight_loaders.CheckpointWeightLoader(args.pretrained_params),
+        weight_loader=_weight_loaders.CheckpointWeightLoader(str(_resolve_params_path(args.pretrained_params))),
         batch_size=args.batch_size,
         fsdp_devices=args.fsdp_devices,
         num_workers=args.num_workers,
@@ -157,6 +298,16 @@ def _validate_config(config: _config.TrainConfig, offsets: tuple[int, ...]) -> N
         raise ValueError(f"Max offset {max(offsets)} must be smaller than action_horizon={model_config.action_horizon}.")
     if int(model_config.future_steps_per_segment) <= 0:
         raise ValueError("future_steps_per_segment must be positive.")
+
+
+def config_mode_values(args_modes: tuple[EvalMode, ...]) -> tuple[EvalMode, ...]:
+    """Validate modes while keeping Tyro's tuple value available as a static JIT argument."""
+    invalid = sorted(set(args_modes) - set(MODES))
+    if invalid:
+        raise ValueError(f"Unsupported --modes values: {invalid}; expected a subset of {MODES}.")
+    if not args_modes:
+        raise ValueError("--modes must contain at least one evaluation behavior.")
+    return args_modes
 
 
 def _init_frozen_model(config: _config.TrainConfig, rng: at.KeyArrayLike) -> tuple[nnx.GraphDef, nnx.State]:
@@ -298,7 +449,7 @@ def _latent_cosine(student_hidden: at.Array, teacher_hidden: at.Array, token_mas
     teacher = teacher_hidden / jnp.maximum(jnp.linalg.norm(teacher_hidden, axis=-1, keepdims=True), 1e-6)
     per_token = jnp.sum(student * teacher, axis=-1)
     mask = token_mask.astype(per_token.dtype)
-    return jnp.sum(per_token * mask[None, :]) / jnp.maximum(jnp.sum(mask) * per_token.shape[0], 1.0)
+    return jnp.sum(per_token * mask[None, :], axis=-1) / jnp.maximum(jnp.sum(mask), 1.0)
 
 
 def _future_token_mask(model, offset: at.Array, *, suffix_only: bool) -> at.Array:
@@ -317,17 +468,26 @@ def _physical_actions(model, actions: at.Array) -> at.Array:
     return jnp.concatenate([actions[..., : model.arm_action_dim], actions[..., hand_slice]], axis=-1)
 
 
-def _action_mse(model, prediction: at.Array, target: at.Array, offset: at.Array, *, suffix_only: bool) -> at.Array:
-    pred = _physical_actions(model, prediction)
-    tgt = _physical_actions(model, target)
+def _action_mse(
+    model,
+    prediction: at.Array,
+    target: at.Array,
+    offset: at.Array,
+    action_center: at.Array,
+    action_scale: at.Array,
+    *,
+    suffix_only: bool,
+) -> at.Array:
+    pred = _physical_actions(model, prediction) * action_scale + action_center
+    tgt = _physical_actions(model, target) * action_scale + action_center
     sq = jnp.square(pred - tgt)
     if not suffix_only:
-        return jnp.mean(sq)
+        return jnp.mean(sq, axis=(1, 2))
     mask = (
         jnp.arange(model.action_horizon, dtype=jnp.int32)[None, :, None]
         >= jnp.asarray(offset, dtype=jnp.int32)
     ).astype(sq.dtype)
-    return jnp.sum(sq * mask) / jnp.maximum(jnp.sum(mask) * sq.shape[0] * sq.shape[-1], 1.0)
+    return jnp.sum(sq * mask, axis=(1, 2)) / jnp.maximum(jnp.sum(mask) * sq.shape[-1], 1.0)
 
 
 def _eval_batch(
@@ -337,6 +497,8 @@ def _eval_batch(
     model_params: nnx.State,
     batch,
     rng: at.KeyArrayLike,
+    action_center: at.Array,
+    action_scale: at.Array,
 ) -> dict[str, at.Array]:
     model = nnx.merge(model_def, model_params)
     model.eval()
@@ -390,6 +552,7 @@ def _eval_batch(
     results: dict[str, at.Array] = {}
     previous_latent_hidden = one_hidden0
     previous_sample_hidden = sample_hidden0
+    requested_modes = set(args.modes)
 
     for offset_index, offset_int in enumerate(offsets):
         offset = jnp.asarray(offset_int, dtype=jnp.int32)
@@ -407,74 +570,88 @@ def _eval_batch(
         )
         teacher_hidden = jax.lax.stop_gradient(teacher_hidden)
 
-        if offset_index == 0:
-            fresh_hidden = one_hidden0
-            retouch_hidden = one_hidden0
-            fresh_actions = one_actions0
-            retouch_actions = one_actions0
-        else:
-            fresh_hidden = _student_future_hidden(
-                model,
-                processed,
-                prefix_tokens,
-                prefix_mask,
-                prefix_ar_mask,
-                offset_history,
-                token_actions,
-                token_time,
-                async_offset=offset,
-                previous_future_hidden=None,
-            )
-            retouch_hidden = _student_future_hidden(
-                model,
-                processed,
-                prefix_tokens,
-                prefix_mask,
-                prefix_ar_mask,
-                offset_history,
-                token_actions,
-                token_time,
-                async_offset=offset,
-                previous_future_hidden=previous_latent_hidden,
-            )
-            fresh_actions, _ = model._cached_vlm_async_denoise_with_prefix_cache(
-                rng,
-                processed,
-                history_effort=offset_history,
-                prefix_mask=prefix_mask,
-                prefix_kv_cache=prefix_kv_cache,
-                async_chunk_offset=offset,
-                prefix_future_hidden=None,
-                noise=action_noise,
-                num_steps=args.num_steps,
-            )
-            retouch_actions, previous_sample_hidden = model._cached_vlm_async_denoise_with_prefix_cache(
-                rng,
-                processed,
-                history_effort=offset_history,
-                prefix_mask=prefix_mask,
-                prefix_kv_cache=prefix_kv_cache,
-                async_chunk_offset=offset,
-                prefix_future_hidden=previous_sample_hidden,
-                noise=action_noise,
-                num_steps=args.num_steps,
-            )
-            previous_latent_hidden = retouch_hidden
+        hidden_by_mode: dict[str, at.Array] = {}
+        action_by_mode: dict[str, at.Array] = {}
+        if "one_shot" in requested_modes:
+            hidden_by_mode["one_shot"] = one_hidden0
+            action_by_mode["one_shot"] = one_actions0
 
-        hidden_by_mode = {
-            "one_shot": one_hidden0,
-            "fresh_reinfer": fresh_hidden,
-            "retouch": retouch_hidden,
-        }
-        action_by_mode = {
-            "one_shot": one_actions0,
-            "fresh_reinfer": fresh_actions,
-            "retouch": retouch_actions,
-        }
+        if offset_index == 0:
+            if "action_only" in requested_modes:
+                hidden_by_mode["action_only"] = one_hidden0
+                action_by_mode["action_only"] = one_actions0
+            if "fresh_reinfer" in requested_modes:
+                hidden_by_mode["fresh_reinfer"] = one_hidden0
+                action_by_mode["fresh_reinfer"] = one_actions0
+            if "retouch" in requested_modes:
+                hidden_by_mode["retouch"] = one_hidden0
+                action_by_mode["retouch"] = one_actions0
+        else:
+            if requested_modes.intersection(("action_only", "fresh_reinfer")):
+                if "fresh_reinfer" in requested_modes:
+                    fresh_hidden = _student_future_hidden(
+                        model,
+                        processed,
+                        prefix_tokens,
+                        prefix_mask,
+                        prefix_ar_mask,
+                        offset_history,
+                        token_actions,
+                        token_time,
+                        async_offset=offset,
+                        previous_future_hidden=None,
+                    )
+                fresh_actions, _ = model._cached_vlm_async_denoise_with_prefix_cache(
+                    rng,
+                    processed,
+                    history_effort=offset_history,
+                    prefix_mask=prefix_mask,
+                    prefix_kv_cache=prefix_kv_cache,
+                    async_chunk_offset=offset,
+                    prefix_future_hidden=None,
+                    noise=action_noise,
+                    num_steps=args.num_steps,
+                )
+                if "action_only" in requested_modes:
+                    # Action is refreshed from the latest tactile window, while the
+                    # future-contact prediction remains the one made at t0.
+                    hidden_by_mode["action_only"] = one_hidden0
+                    action_by_mode["action_only"] = fresh_actions
+                if "fresh_reinfer" in requested_modes:
+                    hidden_by_mode["fresh_reinfer"] = fresh_hidden
+                    action_by_mode["fresh_reinfer"] = fresh_actions
+
+            if "retouch" in requested_modes:
+                retouch_hidden = _student_future_hidden(
+                    model,
+                    processed,
+                    prefix_tokens,
+                    prefix_mask,
+                    prefix_ar_mask,
+                    offset_history,
+                    token_actions,
+                    token_time,
+                    async_offset=offset,
+                    previous_future_hidden=previous_latent_hidden,
+                )
+                retouch_actions, previous_sample_hidden = model._cached_vlm_async_denoise_with_prefix_cache(
+                    rng,
+                    processed,
+                    history_effort=offset_history,
+                    prefix_mask=prefix_mask,
+                    prefix_kv_cache=prefix_kv_cache,
+                    async_chunk_offset=offset,
+                    prefix_future_hidden=previous_sample_hidden,
+                    noise=action_noise,
+                    num_steps=args.num_steps,
+                )
+                previous_latent_hidden = retouch_hidden
+                hidden_by_mode["retouch"] = retouch_hidden
+                action_by_mode["retouch"] = retouch_actions
 
         full_token_mask = _future_token_mask(model, offset, suffix_only=False)
         suffix_token_mask = _future_token_mask(model, offset, suffix_only=True)
-        for mode in MODES:
+        for mode in args.modes:
             projected_student = _project_student_for_cosine(model, hidden_by_mode[mode])
             results[f"latent_cosine/full/{mode}/{offset_int}"] = _latent_cosine(
                 projected_student,
@@ -491,6 +668,8 @@ def _eval_batch(
                 action_by_mode[mode],
                 target_actions,
                 offset,
+                action_center,
+                action_scale,
                 suffix_only=False,
             )
             results[f"action_mse/suffix/{mode}/{offset_int}"] = _action_mse(
@@ -498,18 +677,59 @@ def _eval_batch(
                 action_by_mode[mode],
                 target_actions,
                 offset,
+                action_center,
+                action_scale,
                 suffix_only=True,
             )
 
     return results
 
 
-def _write_metrics(output_dir: pathlib.Path, rows: list[dict[str, object]], metrics: dict[str, float], args: Args) -> None:
+def _phase_masks(
+    episode_indices: np.ndarray,
+    frame_indices: np.ndarray,
+    offset: int,
+    contact_onsets: dict[int, int | None],
+) -> dict[str, np.ndarray]:
+    eval_frames = frame_indices.astype(np.int64) + int(offset)
+    pre_contact = np.zeros_like(eval_frames, dtype=bool)
+    post_contact = np.zeros_like(eval_frames, dtype=bool)
+    no_contact = np.zeros_like(eval_frames, dtype=bool)
+    for index, (episode, frame) in enumerate(zip(episode_indices, eval_frames, strict=True)):
+        onset = contact_onsets.get(int(episode))
+        if onset is None:
+            no_contact[index] = True
+        elif int(frame) < onset:
+            pre_contact[index] = True
+        else:
+            post_contact[index] = True
+    return {
+        "overall": np.ones_like(eval_frames, dtype=bool),
+        "pre_contact": pre_contact,
+        "post_contact": post_contact,
+        "no_contact": no_contact,
+    }
+
+
+def _write_metrics(
+    output_dir: pathlib.Path,
+    rows: list[dict[str, object]],
+    metrics: dict[str, float],
+    args: Args,
+    contact_summary: dict[str, object] | None,
+) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / "args.json").write_text(json.dumps(dataclasses.asdict(args), indent=2, ensure_ascii=False))
     (output_dir / "metrics.json").write_text(json.dumps(metrics, indent=2, ensure_ascii=False))
+    if contact_summary is not None:
+        (output_dir / "contact_onsets.json").write_text(
+            json.dumps(contact_summary, indent=2, ensure_ascii=False)
+        )
     with (output_dir / "metrics_long.csv").open("w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=["metric", "scope", "mode", "offset", "value"])
+        writer = csv.DictWriter(
+            f,
+            fieldnames=["model", "metric", "scope", "mode", "offset", "phase", "value", "samples"],
+        )
         writer.writeheader()
         writer.writerows(rows)
 
@@ -520,13 +740,26 @@ def _plot_metric(
     *,
     metric: str,
     scope: str,
+    phase: str,
+    modes: tuple[EvalMode, ...],
     ylabel: str,
     filename: str,
 ) -> None:
     fig, ax = plt.subplots(figsize=(5.5, 3.4), dpi=180)
-    for mode in MODES:
-        selected = [row for row in rows if row["metric"] == metric and row["scope"] == scope and row["mode"] == mode]
+    plotted = False
+    for mode in modes:
+        selected = [
+            row
+            for row in rows
+            if row["metric"] == metric
+            and row["scope"] == scope
+            and row["mode"] == mode
+            and row["phase"] == phase
+            and int(row["samples"]) > 0
+        ]
         selected = sorted(selected, key=lambda row: int(row["offset"]))
+        if not selected:
+            continue
         ax.plot(
             [int(row["offset"]) for row in selected],
             [float(row["value"]) for row in selected],
@@ -534,17 +767,33 @@ def _plot_metric(
             linewidth=2,
             label=mode,
         )
+        plotted = True
     ax.set_xlabel("async offset")
     ax.set_ylabel(ylabel)
     ax.grid(True, alpha=0.25)
-    ax.legend(frameon=False)
+    if plotted:
+        ax.legend(frameon=False)
     fig.tight_layout()
     fig.savefig(output_dir / filename)
     plt.close(fig)
 
 
+def _action_unnormalization_affine(data_config: _config.DataConfig) -> tuple[np.ndarray, np.ndarray]:
+    if data_config.norm_stats is None or "actions" not in data_config.norm_stats:
+        raise ValueError("Action normalization stats are required for physical-space action MSE.")
+    stats = data_config.norm_stats["actions"]
+    if data_config.use_quantile_norm:
+        if stats.q01 is None or stats.q99 is None:
+            raise ValueError("Quantile action normalization requires q01/q99 stats.")
+        q01 = np.asarray(stats.q01, dtype=np.float32)
+        q99 = np.asarray(stats.q99, dtype=np.float32)
+        return (q01 + q99) * 0.5, (q99 - q01 + 1e-6) * 0.5
+    return np.asarray(stats.mean, dtype=np.float32), np.asarray(stats.std, dtype=np.float32) + 1e-6
+
+
 def main(args: Args) -> None:
     init_logging()
+    config_mode_values(args.modes)
     output_dir = pathlib.Path(args.output_dir).expanduser().resolve()
     config = _override_config(args)
     _validate_config(config, args.offsets)
@@ -555,11 +804,27 @@ def main(args: Args) -> None:
     logging.info("Policy params: %s", args.pretrained_params)
     logging.info("Dataset: repo=%s asset=%s filter=%s", args.repo_id, args.asset_id, args.filter_path)
     logging.info("Offsets: %s", args.offsets)
+    logging.info("Evaluation behavior(s): %s", args.modes)
+
+    contact_onsets: dict[int, int | None] = {}
+    contact_summary: dict[str, object] | None = None
+    if args.split_by_contact:
+        contact_onsets, contact_summary = _compute_contact_onsets(args)
+        logging.info(
+            "Contact split: %d/%d episodes contain contact (threshold=%.3f, min_taxels=%d, consecutive=%d).",
+            contact_summary["num_episodes_with_contact"],
+            contact_summary["num_episodes"],
+            args.contact_threshold,
+            args.contact_min_taxels,
+            args.contact_min_consecutive_frames,
+        )
 
     mesh = sharding.make_mesh(args.fsdp_devices)
     data_sharding = jax.sharding.NamedSharding(mesh, jax.sharding.PartitionSpec(sharding.DATA_AXIS))
     replicated = jax.sharding.NamedSharding(mesh, jax.sharding.PartitionSpec())
     data_loader = _data_loader.create_data_loader(config, sharding=data_sharding, shuffle=False)
+    action_center_np, action_scale_np = _action_unnormalization_affine(data_loader.data_config())
+    logging.info("Action MSE will be computed after unnormalizing %d physical action dimensions.", action_center_np.size)
 
     rng = jax.random.PRNGKey(args.seed)
     model_rng, eval_rng = jax.random.split(rng)
@@ -567,57 +832,116 @@ def main(args: Args) -> None:
         model_def, model_params = _init_frozen_model(config, model_rng)
         model_params = jax.device_put(model_params, replicated)
 
+        action_center = jax.device_put(jnp.asarray(action_center_np), replicated)
+        action_scale = jax.device_put(jnp.asarray(action_scale_np), replicated)
+
         def peval(model_params_arg, batch_arg, rng_arg):
-            return _eval_batch(args, args.offsets, model_def, model_params_arg, batch_arg, rng_arg)
+            return _eval_batch(
+                args,
+                args.offsets,
+                model_def,
+                model_params_arg,
+                batch_arg,
+                rng_arg,
+                action_center,
+                action_scale,
+            )
 
         peval = jax.jit(peval)
-        sums: dict[str, float] = {}
-        count = 0
-        for batch_index, batch in enumerate(data_loader):
-            if batch_index >= args.max_batches:
+        sums: dict[tuple[str, str], float] = {}
+        sample_counts: dict[tuple[str, str], int] = {}
+        batch_count = 0
+
+        # Use the transformed dictionary iterator directly so episode/frame IDs
+        # remain available for contact-phase grouping. Observation.from_dict
+        # ignores these metadata fields when constructing model inputs.
+        raw_loader = data_loader._data_loader  # noqa: SLF001
+        available_batches = len(raw_loader.torch_loader)
+        target_batches = available_batches if args.max_batches <= 0 else min(args.max_batches, available_batches)
+        for batch_index, raw_batch in enumerate(raw_loader):
+            if batch_index >= target_batches:
                 break
+            if "episode_index" not in raw_batch or "frame_index" not in raw_batch:
+                raise KeyError(
+                    "Transformed eval batch is missing episode_index/frame_index. "
+                    "Use XHandTactileFlowInputs with metadata preservation enabled."
+                )
+            episode_indices = np.asarray(jax.device_get(raw_batch["episode_index"]), dtype=np.int64).reshape(-1)
+            frame_indices = np.asarray(jax.device_get(raw_batch["frame_index"]), dtype=np.int64).reshape(-1)
+            batch = (_model.Observation.from_dict(raw_batch), raw_batch["actions"])
             batch_rng = jax.random.fold_in(eval_rng, batch_index)
             batch_metrics = peval(model_params, batch, batch_rng)
             batch_metrics = jax.device_get(batch_metrics)
             for key, value in batch_metrics.items():
-                sums[key] = sums.get(key, 0.0) + float(np.asarray(value))
-            count += 1
-            if count == 1 or count % 10 == 0:
-                logging.info("Processed %d/%d batches.", count, args.max_batches)
+                values = np.asarray(value, dtype=np.float64).reshape(-1)
+                if values.shape[0] != episode_indices.shape[0]:
+                    raise ValueError(
+                        f"Metric {key} returned {values.shape[0]} samples for a batch of "
+                        f"{episode_indices.shape[0]}."
+                    )
+                _, _, _, offset_text = key.split("/")
+                phase_masks = (
+                    _phase_masks(episode_indices, frame_indices, int(offset_text), contact_onsets)
+                    if args.split_by_contact
+                    else {"overall": np.ones_like(episode_indices, dtype=bool)}
+                )
+                for phase, phase_mask in phase_masks.items():
+                    phase_count = int(np.sum(phase_mask))
+                    aggregate_key = (key, phase)
+                    if phase_count > 0:
+                        sums[aggregate_key] = sums.get(aggregate_key, 0.0) + float(np.sum(values[phase_mask]))
+                    sample_counts[aggregate_key] = sample_counts.get(aggregate_key, 0) + phase_count
+            batch_count += 1
+            if batch_count == 1 or batch_count % 10 == 0:
+                logging.info("Processed %d/%d batches.", batch_count, target_batches)
 
-    if count == 0:
+    if batch_count == 0:
         raise RuntimeError("No batches were evaluated.")
 
-    metrics = {key: value / count for key, value in sorted(sums.items())}
+    metrics: dict[str, float] = {}
     rows = []
-    for key, value in metrics.items():
+    model_label = args.model_label or args.config_name
+    for (key, phase), count in sorted(sample_counts.items()):
+        value = float("nan") if count == 0 else sums[(key, phase)] / count
         metric, scope, mode, offset = key.split("/")
+        output_key = f"{metric}/{scope}/{mode}/{offset}/{phase}"
+        metrics[output_key] = value
         rows.append(
             {
+                "model": model_label,
                 "metric": metric,
                 "scope": scope,
                 "mode": mode,
                 "offset": int(offset),
+                "phase": phase,
                 "value": value,
+                "samples": count,
             }
         )
-    _write_metrics(output_dir, rows, metrics, args)
-    _plot_metric(
-        output_dir,
-        rows,
-        metric="latent_cosine",
-        scope="suffix",
-        ylabel="latent cosine (suffix, higher is better)",
-        filename="latent_cosine_suffix.png",
-    )
-    _plot_metric(
-        output_dir,
-        rows,
-        metric="action_mse",
-        scope="suffix",
-        ylabel="action suffix MSE (lower is better)",
-        filename="action_mse_suffix.png",
-    )
+    _write_metrics(output_dir, rows, metrics, args, contact_summary)
+    phases = PHASES if args.split_by_contact else ("overall",)
+    for phase in phases:
+        suffix = "" if phase == "overall" else f"_{phase}"
+        _plot_metric(
+            output_dir,
+            rows,
+            metric="latent_cosine",
+            scope="suffix",
+            phase=phase,
+            modes=args.modes,
+            ylabel=f"latent cosine ({phase}, higher is better)",
+            filename=f"latent_cosine_suffix{suffix}.png",
+        )
+        _plot_metric(
+            output_dir,
+            rows,
+            metric="action_mse",
+            scope="suffix",
+            phase=phase,
+            modes=args.modes,
+            ylabel=f"physical action suffix MSE ({phase}, lower is better)",
+            filename=f"action_mse_suffix{suffix}.png",
+        )
     logging.info("Saved recursive revision metrics to %s", output_dir)
 
 
