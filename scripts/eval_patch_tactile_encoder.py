@@ -2,7 +2,8 @@
 """Evaluate pretrained XHand patch tactile encoder decoder heads.
 
 This is a fast local-parquet evaluator for the Stage-1
-`xhand_patch_tactile_encoder_pretrain` checkpoint. It reads raw tactile force
+Full-head and strength/contact/zero Stage-1 checkpoints are supported. The
+evaluator reads raw tactile force
 from `observation.state`, runs the patch-informed encoder plus its three
 pretraining heads, and reports whether one finger token preserves local
 5-patch contact structure.
@@ -205,55 +206,81 @@ def _eval_batch(model, tactile: jax.Array) -> dict[str, jax.Array]:
     times = jnp.zeros((1,), dtype=jnp.float32)
     tokens = model.patch_encoder._encode_steps(effort, times, future=False, include_temporal=False)
 
-    dist_logits = model.patch_distribution_head(tokens)
-    pred_dist = jax.nn.softmax(dist_logits.astype(jnp.float32), axis=-1)
-
-    summary_pred = model.patch_summary_head(tokens)
-    summary_pred = einops.rearrange(
-        summary_pred,
-        "b t f (r c) -> b t f r c",
-        r=model.num_patches,
-        c=model.summary_dim,
-    ).astype(jnp.float32)
-
-    contact_logits = model.patch_contact_head(tokens).astype(jnp.float32)
-    pred_contact = jax.nn.sigmoid(contact_logits)
     target_dist, target_summary, target_contact = model.patch_encoder.patch_reconstruction_targets(effort)
     target_dist = target_dist.astype(jnp.float32)
     target_summary = target_summary.astype(jnp.float32)
     target_contact = target_contact.astype(jnp.float32)
-
-    eps = 1e-6
-    dist_ce = -jnp.mean(jnp.sum(target_dist * jnp.log(jnp.maximum(pred_dist, eps)), axis=-1))
-    dist_kl = jnp.mean(
-        jnp.sum(
-            target_dist * (jnp.log(jnp.maximum(target_dist, eps)) - jnp.log(jnp.maximum(pred_dist, eps))),
-            axis=-1,
-        )
-    )
-    contact_bce = jnp.mean(_sigmoid_bce_with_logits(contact_logits, target_contact))
-    contact = _contact_stats(pred_contact, target_contact)
-
-    pred_strength = summary_pred[..., -1]
     target_strength = target_summary[..., -1]
-    strength_mae = jnp.mean(jnp.abs(pred_strength - target_strength))
-    strength_smooth_l1 = jnp.mean(_smooth_l1(pred_strength, target_strength))
-    summary_smooth_l1 = jnp.mean(_smooth_l1(summary_pred, target_summary))
-    strength_corr = _pearson(pred_strength, target_strength)
 
-    metrics = {
-        "distribution_ce": dist_ce,
-        "distribution_kl": dist_kl,
-        "contact_bce": contact_bce,
-        "strength_mae": strength_mae,
-        "strength_smooth_l1": strength_smooth_l1,
-        "summary_smooth_l1": summary_smooth_l1,
-        "strength_pearson": strength_corr,
-        "pred_contact_ratio": jnp.mean((pred_contact >= 0.5).astype(jnp.float32)),
-        "target_contact_ratio": jnp.mean(target_contact),
-        "target_strength_mean": jnp.mean(target_strength),
-        **contact,
-    }
+    if hasattr(model, "patch_strength_head"):
+        pred_strength = jax.nn.softplus(model.patch_strength_head(tokens).astype(jnp.float32))
+        threshold = jnp.asarray(model.contact_threshold, dtype=jnp.float32)
+        temperature = jnp.asarray(max(model.contact_temperature, 1e-6), dtype=jnp.float32)
+        contact_logits = (pred_strength - threshold) / temperature
+        pred_contact = jax.nn.sigmoid(contact_logits)
+        contact_bce = jnp.mean(_sigmoid_bce_with_logits(contact_logits, target_contact))
+        contact = _contact_stats(pred_contact, target_contact)
+        strength_mae = jnp.mean(jnp.abs(pred_strength - target_strength))
+        strength_smooth_l1 = jnp.mean(_smooth_l1(pred_strength, target_strength))
+        strength_corr = _pearson(pred_strength, target_strength)
+        inactive = 1.0 - target_contact
+        inactive_denom = jnp.maximum(jnp.sum(inactive), 1.0)
+        zero_patch_mean = jnp.sum(pred_strength * inactive) / inactive_denom
+        metrics = {
+            "contact_bce": contact_bce,
+            "strength_mae": strength_mae,
+            "strength_smooth_l1": strength_smooth_l1,
+            "strength_pearson": strength_corr,
+            "zero_patch_strength_mean": zero_patch_mean,
+            "pred_contact_ratio": jnp.mean((pred_contact >= 0.5).astype(jnp.float32)),
+            "target_contact_ratio": jnp.mean(target_contact),
+            "pred_strength_mean": jnp.mean(pred_strength),
+            "target_strength_mean": jnp.mean(target_strength),
+            **contact,
+        }
+    else:
+        dist_logits = model.patch_distribution_head(tokens)
+        pred_dist = jax.nn.softmax(dist_logits.astype(jnp.float32), axis=-1)
+
+        summary_pred = model.patch_summary_head(tokens)
+        summary_pred = einops.rearrange(
+            summary_pred,
+            "b t f (r c) -> b t f r c",
+            r=model.num_patches,
+            c=model.summary_dim,
+        ).astype(jnp.float32)
+
+        contact_logits = model.patch_contact_head(tokens).astype(jnp.float32)
+        pred_contact = jax.nn.sigmoid(contact_logits)
+        eps = 1e-6
+        dist_ce = -jnp.mean(jnp.sum(target_dist * jnp.log(jnp.maximum(pred_dist, eps)), axis=-1))
+        dist_kl = jnp.mean(
+            jnp.sum(
+                target_dist * (jnp.log(jnp.maximum(target_dist, eps)) - jnp.log(jnp.maximum(pred_dist, eps))),
+                axis=-1,
+            )
+        )
+        contact_bce = jnp.mean(_sigmoid_bce_with_logits(contact_logits, target_contact))
+        contact = _contact_stats(pred_contact, target_contact)
+        pred_strength = summary_pred[..., -1]
+        strength_mae = jnp.mean(jnp.abs(pred_strength - target_strength))
+        strength_smooth_l1 = jnp.mean(_smooth_l1(pred_strength, target_strength))
+        summary_smooth_l1 = jnp.mean(_smooth_l1(summary_pred, target_summary))
+        strength_corr = _pearson(pred_strength, target_strength)
+        metrics = {
+            "distribution_ce": dist_ce,
+            "distribution_kl": dist_kl,
+            "contact_bce": contact_bce,
+            "strength_mae": strength_mae,
+            "strength_smooth_l1": strength_smooth_l1,
+            "summary_smooth_l1": summary_smooth_l1,
+            "strength_pearson": strength_corr,
+            "pred_contact_ratio": jnp.mean((pred_contact >= 0.5).astype(jnp.float32)),
+            "target_contact_ratio": jnp.mean(target_contact),
+            "pred_strength_mean": jnp.mean(pred_strength),
+            "target_strength_mean": jnp.mean(target_strength),
+            **contact,
+        }
 
     for finger_idx, finger_name in enumerate(FINGER_NAMES):
         finger_contact = _contact_stats(pred_contact[:, :, finger_idx], target_contact[:, :, finger_idx])
@@ -338,13 +365,20 @@ def main(args: Args) -> None:
     _write_outputs(output_dir, args, metrics)
     _plot_outputs(output_dir, metrics)
     logging.info("Saved patch encoder metrics to %s", output_dir)
+    summary = (
+        "Summary: contact_f1=%.4f precision=%.4f recall=%.4f "
+        "strength_mae=%.4f strength_pearson=%.4f"
+    )
     logging.info(
-        "Summary: contact_f1=%.4f strength_mae=%.4f strength_pearson=%.4f distribution_kl=%.4f",
+        summary,
         metrics["contact_f1"],
+        metrics["contact_precision"],
+        metrics["contact_recall"],
         metrics["strength_mae"],
         metrics["strength_pearson"],
-        metrics["distribution_kl"],
     )
+    if "distribution_kl" in metrics:
+        logging.info("Distribution KL: %.4f", metrics["distribution_kl"])
 
 
 if __name__ == "__main__":

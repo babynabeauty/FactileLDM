@@ -6,6 +6,33 @@ import jax.numpy as jnp
 from openpi.models import model_tavla as _model
 from openpi.models import pi0_config
 from openpi.models.tactile_tokenizer import PatchInformedFingerTokenizer
+from openpi.models.tactile_tokenizer import PlainRawTactileMLPTokenizer
+from openpi.models.tactile_tokenizer import RawTactileSpatialTokenizer
+
+
+def _create_tactile_encoder(config, rngs: nnx.Rngs):
+    encoder_type = config.pretrain_tactile_encoder
+    encoder_cls = {
+        "patch_informed": PatchInformedFingerTokenizer,
+        "raw_spatial": RawTactileSpatialTokenizer,
+        "raw_mlp": PlainRawTactileMLPTokenizer,
+    }[encoder_type]
+    common_kwargs = dict(
+        output_dim=config.encoder_width,
+        hidden_dim=config.tactile_tokenizer_dim,
+        num_fingers=config.tactile_num_fingers,
+        num_points=config.tactile_points_per_finger,
+        dim_per_point=config.tactile_dim_per_finger,
+        future_segments=config.future_tactile_segments,
+        future_steps_per_segment=config.future_steps_per_segment,
+        contact_top_k=config.tactile_raw_contact_top_k,
+        contact_threshold=config.tactile_raw_contact_threshold,
+        contact_temperature=config.tactile_raw_contact_temperature,
+        rngs=rngs,
+    )
+    if encoder_type == "patch_informed":
+        common_kwargs["num_patches"] = config.tactile_num_patches
+    return encoder_cls(**common_kwargs)
 
 
 def _sigmoid_bce_with_logits(logits: jax.Array, targets: jax.Array) -> jax.Array:
@@ -52,20 +79,7 @@ class XHandPatchTactileEncoderPretrain(nnx.Module):
             float(step) / float(config.tactile_sample_hz) for step in range(1, config.action_horizon + 1)
         )
 
-        self.patch_encoder = PatchInformedFingerTokenizer(
-            output_dim=self.encoder_width,
-            hidden_dim=config.tactile_tokenizer_dim,
-            num_fingers=self.num_fingers,
-            num_points=self.num_points,
-            dim_per_point=self.dim_per_point,
-            future_segments=config.future_tactile_segments,
-            future_steps_per_segment=config.future_steps_per_segment,
-            contact_top_k=config.tactile_raw_contact_top_k,
-            contact_threshold=config.tactile_raw_contact_threshold,
-            contact_temperature=config.tactile_raw_contact_temperature,
-            num_patches=self.num_patches,
-            rngs=rngs,
-        )
+        self.patch_encoder = _create_tactile_encoder(config, rngs)
         self.patch_distribution_head = nnx.Linear(self.encoder_width, self.num_patches, rngs=rngs)
         self.patch_summary_head = nnx.Linear(
             self.encoder_width, self.num_patches * self.summary_dim, rngs=rngs
@@ -237,20 +251,7 @@ class XHandPatchMeanForceEncoderPretrain(nnx.Module):
             float(step) / float(config.tactile_sample_hz) for step in range(1, config.action_horizon + 1)
         )
 
-        self.patch_encoder = PatchInformedFingerTokenizer(
-            output_dim=self.encoder_width,
-            hidden_dim=config.tactile_tokenizer_dim,
-            num_fingers=self.num_fingers,
-            num_points=self.num_points,
-            dim_per_point=self.dim_per_point,
-            future_segments=config.future_tactile_segments,
-            future_steps_per_segment=config.future_steps_per_segment,
-            contact_top_k=config.tactile_raw_contact_top_k,
-            contact_threshold=config.tactile_raw_contact_threshold,
-            contact_temperature=config.tactile_raw_contact_temperature,
-            num_patches=self.num_patches,
-            rngs=rngs,
-        )
+        self.patch_encoder = _create_tactile_encoder(config, rngs)
         self.patch_force_mean_head = nnx.Linear(
             self.encoder_width,
             self.num_patches * self.dim_per_point,
@@ -424,20 +425,7 @@ class XHandPatchStrengthEncoderPretrain(nnx.Module):
             float(step) / float(config.tactile_sample_hz) for step in range(1, config.action_horizon + 1)
         )
 
-        self.patch_encoder = PatchInformedFingerTokenizer(
-            output_dim=self.encoder_width,
-            hidden_dim=config.tactile_tokenizer_dim,
-            num_fingers=self.num_fingers,
-            num_points=self.num_points,
-            dim_per_point=self.dim_per_point,
-            future_segments=config.future_tactile_segments,
-            future_steps_per_segment=config.future_steps_per_segment,
-            contact_top_k=config.tactile_raw_contact_top_k,
-            contact_threshold=config.tactile_raw_contact_threshold,
-            contact_temperature=config.tactile_raw_contact_temperature,
-            num_patches=self.num_patches,
-            rngs=rngs,
-        )
+        self.patch_encoder = _create_tactile_encoder(config, rngs)
         self.patch_strength_head = nnx.Linear(self.encoder_width, self.num_patches, rngs=rngs)
 
     def _split_effort(self, observation: _model.Observation, dtype: jnp.dtype) -> tuple[jax.Array, jax.Array]:

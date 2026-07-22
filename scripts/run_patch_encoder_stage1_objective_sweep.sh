@@ -20,6 +20,8 @@ set -Eeuo pipefail
 #   EVAL_NUM_BATCHES=100
 #   BATCH_SIZE=64
 #   NUM_WORKERS=2
+#   SWEEP_GROUP=nonpatch         # train only raw-spatial and raw-MLP controls
+#   SWEEP_GROUP=all              # train all four objectives plus two controls
 #   RESUME=1                    # resume existing RUN_TAG dirs
 #   ALLOW_OVERWRITE=1           # overwrite existing RUN_TAG dirs
 
@@ -52,20 +54,41 @@ EVAL_EPISODES_PER_TASK="${EVAL_EPISODES_PER_TASK:-10}"
 SPLIT_SEED="${SPLIT_SEED:-42}"
 ALLOW_OVERWRITE="${ALLOW_OVERWRITE:-0}"
 RESUME="${RESUME:-0}"
+SWEEP_GROUP="${SWEEP_GROUP:-objectives}"
 
-CONFIGS=(
-  "xhand_patch_tactile_encoder_pretrain"
-  "xhand_patch_mean_force_encoder_pretrain"
-  "xhand_patch_mean_force_contact_encoder_pretrain"
-  "xhand_patch_strength_contact_encoder_pretrain"
-)
-
-LABELS=(
-  "full_heads"
-  "mean_force"
-  "mean_force_contact_zero"
-  "strength_contact_zero"
-)
+case "$SWEEP_GROUP" in
+  objectives)
+    CONFIGS=(
+      "xhand_patch_tactile_encoder_pretrain"
+      "xhand_patch_mean_force_encoder_pretrain"
+      "xhand_patch_mean_force_contact_encoder_pretrain"
+      "xhand_patch_strength_contact_encoder_pretrain"
+    )
+    LABELS=("full_heads" "mean_force" "mean_force_contact_zero" "strength_contact_zero")
+    ;;
+  nonpatch)
+    CONFIGS=("xhand_raw_spatial_tactile_encoder_pretrain" "xhand_raw_mlp_tactile_encoder_pretrain")
+    LABELS=("raw_spatial_full_heads" "raw_mlp_full_heads")
+    ;;
+  all)
+    CONFIGS=(
+      "xhand_patch_tactile_encoder_pretrain"
+      "xhand_patch_mean_force_encoder_pretrain"
+      "xhand_patch_mean_force_contact_encoder_pretrain"
+      "xhand_patch_strength_contact_encoder_pretrain"
+      "xhand_raw_spatial_tactile_encoder_pretrain"
+      "xhand_raw_mlp_tactile_encoder_pretrain"
+    )
+    LABELS=(
+      "full_heads" "mean_force" "mean_force_contact_zero" "strength_contact_zero"
+      "raw_spatial_full_heads" "raw_mlp_full_heads"
+    )
+    ;;
+  *)
+    echo "ERROR: SWEEP_GROUP must be objectives, nonpatch, or all; got: $SWEEP_GROUP" >&2
+    exit 2
+    ;;
+esac
 
 log() {
   printf '[%s] %s\n' "$(date '+%F %T')" "$*"
@@ -285,6 +308,7 @@ log "Train steps: $TRAIN_STEPS, save interval: $SAVE_INTERVAL"
 log "Eval interval: $EVAL_INTERVAL, eval batches: $EVAL_NUM_BATCHES"
 log "Batch size: $BATCH_SIZE, eval batch size: $EVAL_BATCH_SIZE"
 log "Parallel: $PARALLEL, GPU pool: $GPU_POOL"
+log "Sweep group: $SWEEP_GROUP"
 log "Run tag: $RUN_TAG"
 
 if [[ "$PARALLEL" == "1" ]]; then

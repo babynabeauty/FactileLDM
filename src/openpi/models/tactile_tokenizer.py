@@ -21,6 +21,59 @@ def _continuous_time_embedding(times_seconds: jax.Array, dim: int) -> jax.Array:
     return embedding
 
 
+def _patch_reconstruction_targets(
+    forces: jax.Array,
+    *,
+    point_patch_ids: tuple[tuple[int, ...], ...],
+    num_fingers: int,
+    num_points: int,
+    dim_per_point: int,
+    num_patches: int,
+    contact_threshold: float,
+    contact_temperature: float,
+) -> tuple[jax.Array, jax.Array, jax.Array]:
+    """Build common 5-patch targets without exposing the patch map to the encoder."""
+    if forces.ndim != 5:
+        raise ValueError(f"Expected raw tactile force [B,T,F,P,C], got {forces.shape}.")
+    if forces.shape[2:] != (num_fingers, num_points, dim_per_point):
+        raise ValueError(
+            f"Expected raw tactile finger/point shape {(num_fingers, num_points, dim_per_point)}, "
+            f"got {forces.shape[2:]}."
+        )
+
+    forces_f32 = forces.astype(jnp.float32)
+    magnitude = jnp.linalg.norm(forces_f32, axis=-1)
+    temperature = jnp.asarray(max(contact_temperature, 1e-6), dtype=jnp.float32)
+    gate = jax.nn.sigmoid((magnitude - contact_threshold) / temperature)
+
+    patch_ids = jnp.asarray(point_patch_ids, dtype=jnp.int32)
+    patch_masks = jax.nn.one_hot(patch_ids, num_patches, dtype=jnp.float32)
+    patch_masks = einops.rearrange(patch_masks, "f p r -> f r p")
+
+    masked_gate = gate[:, :, :, None, :] * patch_masks[None, None, :, :, :]
+    gate_sum = jnp.sum(masked_gate, axis=-1)
+    gate_denom = jnp.maximum(gate_sum, 1e-6)
+    gated_force_mean = jnp.einsum("btfrp,btfpc->btfrc", masked_gate, forces_f32) / gate_denom[..., None]
+
+    abs_forces = jnp.abs(forces_f32)
+    patch_abs_max = jnp.max(
+        jnp.where(patch_masks[None, None, :, :, :, None] > 0, abs_forces[:, :, :, None, :, :], 0.0),
+        axis=-2,
+    )
+    patch_strength = jnp.max(
+        jnp.where(patch_masks[None, None, :, :, :] > 0, magnitude[:, :, :, None, :], 0.0),
+        axis=-1,
+    )
+
+    contact_mask = patch_strength > jnp.asarray(contact_threshold, dtype=jnp.float32)
+    active_strength = jnp.where(contact_mask, patch_strength, 0.0)
+    strength_sum = jnp.sum(active_strength, axis=-1, keepdims=True)
+    uniform = jnp.full_like(active_strength, 1.0 / float(num_patches))
+    distribution = jnp.where(strength_sum > 1e-6, active_strength / jnp.maximum(strength_sum, 1e-6), uniform)
+    summary = jnp.concatenate([gated_force_mean, patch_abs_max, patch_strength[..., None]], axis=-1)
+    return distribution, summary, contact_mask.astype(jnp.float32)
+
+
 class DexterousForceTokenizer(nnx.Module):
     """Tokenizes five-finger forces with explicit content and metadata subspaces."""
 
@@ -294,6 +347,21 @@ class RawTactileSpatialTokenizer(nnx.Module):
         pooled = jnp.einsum("p,bspfd->bsfd", weights, tokens)
         return einops.rearrange(pooled, "b s f d -> b (s f) d")
 
+    def patch_reconstruction_targets(self, forces: jax.Array) -> tuple[jax.Array, jax.Array, jax.Array]:
+        """Return patch targets for probing; the encoder itself never uses this map."""
+        return _patch_reconstruction_targets(
+            forces,
+            point_patch_ids=AdaptiveFingertipPatchTokenizer._official_xhand_patch_ids(
+                self.num_fingers, self.num_points
+            ),
+            num_fingers=self.num_fingers,
+            num_points=self.num_points,
+            dim_per_point=self.dim_per_point,
+            num_patches=5,
+            contact_threshold=self.contact_threshold,
+            contact_temperature=self.contact_temperature,
+        )
+
 
 class PlainRawTactileMLPTokenizer(nnx.Module):
     """Minimal raw tactile tokenizer for ablations.
@@ -318,7 +386,7 @@ class PlainRawTactileMLPTokenizer(nnx.Module):
         contact_temperature: float,
         rngs: nnx.Rngs,
     ):
-        del contact_top_k, contact_threshold, contact_temperature
+        del contact_top_k
         self.output_dim = int(output_dim)
         self.hidden_dim = int(hidden_dim)
         self.num_fingers = int(num_fingers)
@@ -326,6 +394,8 @@ class PlainRawTactileMLPTokenizer(nnx.Module):
         self.dim_per_point = int(dim_per_point)
         self.future_segments = int(future_segments)
         self.future_steps_per_segment = int(future_steps_per_segment)
+        self.contact_threshold = float(contact_threshold)
+        self.contact_temperature = float(contact_temperature)
         self.time_embedding_dim = 64
         self.tokens_per_tactile_step = self.num_fingers
 
@@ -354,7 +424,14 @@ class PlainRawTactileMLPTokenizer(nnx.Module):
         )
         return tokens + time_feature.astype(tokens.dtype) + type_feature.astype(tokens.dtype)
 
-    def _encode_steps(self, forces: jax.Array, times_seconds: jax.Array, *, future: bool) -> jax.Array:
+    def _encode_steps(
+        self,
+        forces: jax.Array,
+        times_seconds: jax.Array,
+        *,
+        future: bool,
+        include_temporal: bool = True,
+    ) -> jax.Array:
         if forces.ndim != 5:
             raise ValueError(f"Expected raw tactile force [B,T,F,P,C], got {forces.shape}.")
         if forces.shape[2:] != (self.num_fingers, self.num_points, self.dim_per_point):
@@ -374,7 +451,8 @@ class PlainRawTactileMLPTokenizer(nnx.Module):
             (batch_size, time_steps, self.num_fingers, self.output_dim),
         )
         tokens = tokens + finger_feature.astype(tokens.dtype)
-        tokens = self._add_time_type_embedding(tokens, times_seconds, future=future)
+        if include_temporal:
+            tokens = self._add_time_type_embedding(tokens, times_seconds, future=future)
         return self.norm(tokens)
 
     def encode_history(self, forces: jax.Array, times_seconds: jax.Array) -> jax.Array:
@@ -395,6 +473,21 @@ class PlainRawTactileMLPTokenizer(nnx.Module):
         weights = jax.nn.softmax(self.segment_pool_logits.value.astype(jnp.float32)).astype(tokens.dtype)
         pooled = jnp.einsum("p,bspfd->bsfd", weights, tokens)
         return einops.rearrange(pooled, "b s f d -> b (s f) d")
+
+    def patch_reconstruction_targets(self, forces: jax.Array) -> tuple[jax.Array, jax.Array, jax.Array]:
+        """Return patch targets for probing; the flattened MLP never receives patch IDs."""
+        return _patch_reconstruction_targets(
+            forces,
+            point_patch_ids=AdaptiveFingertipPatchTokenizer._official_xhand_patch_ids(
+                self.num_fingers, self.num_points
+            ),
+            num_fingers=self.num_fingers,
+            num_points=self.num_points,
+            dim_per_point=self.dim_per_point,
+            num_patches=5,
+            contact_threshold=self.contact_threshold,
+            contact_temperature=self.contact_temperature,
+        )
 
 
 class AdaptiveFingertipPatchTokenizer(RawTactileSpatialTokenizer):
@@ -715,45 +808,16 @@ class PatchInformedFingerTokenizer(RawTactileSpatialTokenizer):
           summary:      [B, T, F, R, 7] = mean_force(3), abs_max_force(3), strength(1)
           contact_mask: [B, T, F, R]
         """
-        if forces.ndim != 5:
-            raise ValueError(f"Expected raw tactile force [B,T,F,P,C], got {forces.shape}.")
-        if forces.shape[2:] != (self.num_fingers, self.num_points, self.dim_per_point):
-            raise ValueError(
-                "Expected raw tactile finger/point shape "
-                f"{(self.num_fingers, self.num_points, self.dim_per_point)}, got {forces.shape[2:]}."
-            )
-
-        forces_f32 = forces.astype(jnp.float32)
-        magnitude = jnp.linalg.norm(forces_f32, axis=-1)
-        temperature = jnp.asarray(max(self.contact_temperature, 1e-6), dtype=jnp.float32)
-        gate = jax.nn.sigmoid((magnitude - self.contact_threshold) / temperature)
-
-        patch_ids = jnp.asarray(self.point_patch_ids, dtype=jnp.int32)
-        patch_masks = jax.nn.one_hot(patch_ids, self.num_patches, dtype=jnp.float32)
-        patch_masks = einops.rearrange(patch_masks, "f p r -> f r p")
-
-        masked_gate = gate[:, :, :, None, :] * patch_masks[None, None, :, :, :]
-        gate_sum = jnp.sum(masked_gate, axis=-1)
-        gate_denom = jnp.maximum(gate_sum, 1e-6)
-        gated_force_mean = jnp.einsum("btfrp,btfpc->btfrc", masked_gate, forces_f32) / gate_denom[..., None]
-
-        abs_forces = jnp.abs(forces_f32)
-        patch_abs_max = jnp.max(
-            jnp.where(patch_masks[None, None, :, :, :, None] > 0, abs_forces[:, :, :, None, :, :], 0.0),
-            axis=-2,
+        return _patch_reconstruction_targets(
+            forces,
+            point_patch_ids=self.point_patch_ids,
+            num_fingers=self.num_fingers,
+            num_points=self.num_points,
+            dim_per_point=self.dim_per_point,
+            num_patches=self.num_patches,
+            contact_threshold=self.contact_threshold,
+            contact_temperature=self.contact_temperature,
         )
-        patch_strength = jnp.max(
-            jnp.where(patch_masks[None, None, :, :, :] > 0, magnitude[:, :, :, None, :], 0.0),
-            axis=-1,
-        )
-
-        contact_mask = patch_strength > jnp.asarray(self.contact_threshold, dtype=jnp.float32)
-        active_strength = jnp.where(contact_mask, patch_strength, 0.0)
-        strength_sum = jnp.sum(active_strength, axis=-1, keepdims=True)
-        uniform = jnp.full_like(active_strength, 1.0 / float(self.num_patches))
-        distribution = jnp.where(strength_sum > 1e-6, active_strength / jnp.maximum(strength_sum, 1e-6), uniform)
-        summary = jnp.concatenate([gated_force_mean, patch_abs_max, patch_strength[..., None]], axis=-1)
-        return distribution, summary, contact_mask.astype(jnp.float32)
 
     def patch_contact_distribution(self, forces: jax.Array) -> jax.Array:
         distribution, _, _ = self.patch_reconstruction_targets(forces)

@@ -750,6 +750,7 @@ class XHandPatchTactileEncoderPretrainConfig(_model.BaseModelConfig):
     tactile_sample_hz: float = 15.0
     tactile_tokenizer_dim: int = 256
     encoder_width: int = 1024
+    pretrain_tactile_encoder: Literal["patch_informed", "raw_spatial", "raw_mlp"] = "patch_informed"
     tactile_raw_contact_top_k: int = 16
     tactile_raw_contact_threshold: float = 0.5
     tactile_raw_contact_temperature: float = 0.5
@@ -776,6 +777,8 @@ class XHandPatchTactileEncoderPretrainConfig(_model.BaseModelConfig):
             raise ValueError(f"Expected effort_dim={expected_effort_dim}, got {self.effort_dim}.")
         if self.tactile_num_patches != 5:
             raise ValueError("Patch-informed XHand pretraining currently expects tactile_num_patches=5.")
+        if self.pretrain_tactile_encoder not in ("patch_informed", "raw_spatial", "raw_mlp"):
+            raise ValueError(f"Unsupported pretrain tactile encoder: {self.pretrain_tactile_encoder}")
         if self.tactile_raw_contact_temperature <= 0:
             raise ValueError("tactile_raw_contact_temperature must be positive.")
         if self.pretrain_history_time_samples < 0 or self.pretrain_future_time_samples < 0:
