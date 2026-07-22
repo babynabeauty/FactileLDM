@@ -822,6 +822,8 @@ class XHandPatchMeanForceEncoderPretrainConfig(XHandPatchTactileEncoderPretrainC
     patch_summary_loss_weight: float = 0.0
     patch_contact_loss_weight: float = 0.0
     patch_mean_force_loss_weight: float = 1.0
+    patch_mean_force_contact_loss_weight: float = 0.0
+    patch_mean_force_zero_loss_weight: float = 0.0
 
     @override
     def create(self, rng: at.KeyArrayLike):
