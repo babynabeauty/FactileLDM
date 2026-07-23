@@ -734,6 +734,55 @@ def _write_metrics(
         writer.writerows(rows)
 
 
+def _validate_offset_zero_consistency(
+    metrics: dict[str, float],
+    modes: tuple[EvalMode, ...],
+    *,
+    atol: float = 1e-8,
+) -> None:
+    """Verify that inference behaviors share the same initial prediction.
+
+    At offset zero, one-shot, fresh re-inference, and recursive ReTouch all use
+    ``one_hidden0`` and ``one_actions0``. Any difference therefore indicates
+    that the comparison did not come from one shared model/evaluation pass.
+    """
+    if len(modes) < 2:
+        return
+    reference_mode = modes[0]
+    checked = 0
+    mismatches: list[str] = []
+    for metric in ("latent_cosine", "action_mse"):
+        for scope in ("full", "suffix"):
+            prefix = f"{metric}/{scope}/{reference_mode}/0/"
+            phases = sorted(key.removeprefix(prefix) for key in metrics if key.startswith(prefix))
+            for phase in phases:
+                reference = metrics[f"{metric}/{scope}/{reference_mode}/0/{phase}"]
+                if not np.isfinite(reference):
+                    continue
+                for mode in modes[1:]:
+                    key = f"{metric}/{scope}/{mode}/0/{phase}"
+                    value = metrics.get(key)
+                    if value is None or not np.isfinite(value):
+                        continue
+                    checked += 1
+                    if not np.isclose(reference, value, rtol=0.0, atol=atol):
+                        mismatches.append(
+                            f"{metric}/{scope}/0/{phase}: "
+                            f"{reference_mode}={reference:.10g}, {mode}={value:.10g}"
+                        )
+    if mismatches:
+        details = "\n  ".join(mismatches)
+        raise RuntimeError(
+            "Offset-0 consistency check failed. A fair fixed-checkpoint comparison "
+            f"must produce identical initial predictions:\n  {details}"
+        )
+    logging.info(
+        "Offset-0 consistency check passed for modes=%s across %d comparisons.",
+        modes,
+        checked,
+    )
+
+
 def _plot_metric(
     output_dir: pathlib.Path,
     rows: list[dict[str, object]],
@@ -918,6 +967,7 @@ def main(args: Args) -> None:
                 "samples": count,
             }
         )
+    _validate_offset_zero_consistency(metrics, args.modes)
     _write_metrics(output_dir, rows, metrics, args, contact_summary)
     phases = PHASES if args.split_by_contact else ("overall",)
     for scope in ("full", "suffix"):
