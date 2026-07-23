@@ -482,6 +482,144 @@ def _plot_frame(
     plt.close(fig)
 
 
+def _save_individual_panels(
+    *,
+    raw_tactile: np.ndarray,
+    arrays: dict[str, np.ndarray],
+    frame_position: int,
+    actual_frame_index: int,
+    layout_dir: pathlib.Path,
+    output_dir: pathlib.Path,
+    raw_threshold: float,
+    raw_vmax: float,
+    strength_vmax: float,
+    dpi: int,
+) -> list[dict[str, object]]:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    panel_records: list[dict[str, object]] = []
+    panel_specs = (
+        ("raw_tactile", "Raw tactile"),
+        ("gt_strength_contact", "GT strength/contact"),
+        ("pred_strength_contact", "Predicted strength/contact"),
+        ("pred_distribution", "Predicted distribution"),
+    )
+
+    for finger_idx, finger_name in enumerate(FINGER_NAMES):
+        target_strength = arrays["target_strength"][frame_position, finger_idx]
+        target_contact = arrays["target_contact"][frame_position, finger_idx]
+        pred_strength = arrays["pred_strength"][frame_position, finger_idx]
+        pred_contact = arrays["pred_contact"][frame_position, finger_idx]
+        pred_distribution = arrays["pred_dist"][frame_position, finger_idx]
+        target_display_strength = np.where(
+            target_contact >= 0.5, np.maximum(target_strength, 0.0), 0.0
+        )
+        pred_display_strength = np.where(
+            pred_contact >= 0.5, np.maximum(pred_strength, 0.0), 0.0
+        )
+
+        for panel_index, (panel_name, panel_title) in enumerate(panel_specs):
+            fig, ax = plt.subplots(figsize=(3.0, 3.8), constrained_layout=True)
+            if panel_name == "raw_tactile":
+                _single_vis._draw_raw_taxel_force(
+                    ax,
+                    layout_dir=layout_dir,
+                    finger_idx=finger_idx,
+                    tactile=raw_tactile[frame_position],
+                    threshold=raw_threshold,
+                    cmap_name="turbo",
+                    vmax=raw_vmax,
+                    title=panel_title,
+                )
+                color_map = matplotlib.cm.ScalarMappable(
+                    cmap="turbo",
+                    norm=matplotlib.colors.Normalize(vmin=0.0, vmax=max(raw_vmax, 1e-6)),
+                )
+                color_label = "raw force magnitude"
+            elif panel_name == "gt_strength_contact":
+                _single_vis._draw_patch_values(
+                    ax,
+                    layout_dir=layout_dir,
+                    finger_idx=finger_idx,
+                    values=target_display_strength,
+                    cmap_name="turbo",
+                    vmin=0.0,
+                    vmax=strength_vmax,
+                    title=panel_title,
+                )
+                _annotate_patch_panel(
+                    ax,
+                    layout_dir=layout_dir,
+                    finger_idx=finger_idx,
+                    strength=target_strength,
+                    contact=target_contact,
+                    predicted=False,
+                )
+                color_map = matplotlib.cm.ScalarMappable(
+                    cmap="turbo",
+                    norm=matplotlib.colors.Normalize(vmin=0.0, vmax=max(strength_vmax, 1e-6)),
+                )
+                color_label = "contact-masked strength"
+            elif panel_name == "pred_strength_contact":
+                _single_vis._draw_patch_values(
+                    ax,
+                    layout_dir=layout_dir,
+                    finger_idx=finger_idx,
+                    values=pred_display_strength,
+                    cmap_name="turbo",
+                    vmin=0.0,
+                    vmax=strength_vmax,
+                    title=panel_title,
+                )
+                _annotate_patch_panel(
+                    ax,
+                    layout_dir=layout_dir,
+                    finger_idx=finger_idx,
+                    strength=pred_strength,
+                    contact=pred_contact,
+                    predicted=True,
+                )
+                color_map = matplotlib.cm.ScalarMappable(
+                    cmap="turbo",
+                    norm=matplotlib.colors.Normalize(vmin=0.0, vmax=max(strength_vmax, 1e-6)),
+                )
+                color_label = "contact-masked strength"
+            else:
+                _single_vis._draw_patch_values(
+                    ax,
+                    layout_dir=layout_dir,
+                    finger_idx=finger_idx,
+                    values=pred_distribution,
+                    cmap_name="viridis",
+                    vmin=0.0,
+                    vmax=1.0,
+                    title=panel_title,
+                )
+                color_map = matplotlib.cm.ScalarMappable(
+                    cmap="viridis",
+                    norm=matplotlib.colors.Normalize(vmin=0.0, vmax=1.0),
+                )
+                color_label = "patch distribution"
+
+            color_map.set_array([])
+            color_bar = fig.colorbar(color_map, ax=ax, fraction=0.052, pad=0.02)
+            color_bar.set_label(color_label, fontsize=7)
+            color_bar.ax.tick_params(labelsize=7)
+            fig.suptitle(f"{finger_name} | frame {actual_frame_index}", fontsize=10)
+            output_path = output_dir / f"{finger_idx:02d}_{finger_name}_{panel_index:02d}_{panel_name}.png"
+            fig.savefig(output_path, dpi=dpi, bbox_inches="tight", pad_inches=0.04)
+            plt.close(fig)
+            panel_records.append(
+                {
+                    "finger_index": finger_idx,
+                    "finger": finger_name,
+                    "panel": panel_name,
+                    "path": str(output_path),
+                }
+            )
+
+    return panel_records
+
+
 def _make_video(frames_dir: pathlib.Path, output_path: pathlib.Path, fps: float) -> bool:
     ffmpeg = shutil.which("ffmpeg")
     if ffmpeg is None:
@@ -523,6 +661,9 @@ def main() -> None:
     parser.add_argument("--output-dir", type=pathlib.Path, default=pathlib.Path("outputs/patch_reconstruction_visualization"))
     parser.add_argument("--layout-dir", type=pathlib.Path, default=_single_vis.DEFAULT_LAYOUT_DIR)
     parser.add_argument("--selection", choices=("first", "random", "max_contact"), default="max_contact")
+    parser.add_argument("--episode-index", type=int, default=None)
+    parser.add_argument("--frame-index", type=int, default=None)
+    parser.add_argument("--save-individual-panels", action="store_true")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--batch-size", type=int, default=256)
     parser.add_argument("--raw-contact-threshold", type=float, default=1.0)
@@ -534,6 +675,8 @@ def main() -> None:
 
     if args.batch_size <= 0 or args.frame_stride <= 0:
         raise ValueError("batch-size and frame-stride must be positive")
+    if args.frame_index is not None and args.episode_index is None:
+        raise ValueError("--frame-index requires --episode-index")
     repo = args.repo_id.expanduser().resolve()
     filter_path = args.filter_path.expanduser().resolve()
     params = args.params.expanduser().resolve()
@@ -541,15 +684,30 @@ def main() -> None:
     layout_dir = args.layout_dir.expanduser().resolve()
     asset_id = args.asset_id or repo.name
 
-    held_out = _load_episode_filter(filter_path)
+    held_out = {args.episode_index} if args.episode_index is not None else _load_episode_filter(filter_path)
     grouped = _task_metadata(repo, held_out)
-    selected = _select_episodes(
-        repo,
-        grouped,
-        selection=args.selection,
-        seed=args.seed,
-        raw_contact_threshold=args.raw_contact_threshold,
-    )
+    if args.episode_index is None:
+        selected = _select_episodes(
+            repo,
+            grouped,
+            selection=args.selection,
+            seed=args.seed,
+            raw_contact_threshold=args.raw_contact_threshold,
+        )
+    else:
+        selected = []
+        for task_key, item in grouped.items():
+            if args.episode_index in item["episodes"]:
+                selected.append(
+                    {
+                        "task_key": task_key,
+                        "task_name": item["task_name"],
+                        "episode_index": args.episode_index,
+                        "candidate_episodes": [args.episode_index],
+                        "contact_richness": None,
+                    }
+                )
+                break
     if not selected:
         raise RuntimeError("No validation episodes were selected")
 
@@ -563,6 +721,9 @@ def main() -> None:
         "filter_path": str(filter_path),
         "normalization": str(norm_path),
         "selection": args.selection,
+        "requested_episode_index": args.episode_index,
+        "requested_frame_index": args.frame_index,
+        "save_individual_panels": args.save_individual_panels,
         "seed": args.seed,
         "episodes": selected,
     }
@@ -604,14 +765,27 @@ def main() -> None:
         positive_strength = combined_strength[combined_strength > 0]
         strength_vmax = float(np.percentile(positive_strength, 99.0)) if positive_strength.size else 1.0
 
+        if args.frame_index is None:
+            frame_positions = list(range(0, raw_tactile.shape[0], args.frame_stride))
+        else:
+            matches = np.flatnonzero(frame_indices == args.frame_index)
+            if matches.size == 0:
+                raise ValueError(
+                    f"Frame index {args.frame_index} not found in episode {episode_index}; "
+                    f"available range is {int(frame_indices.min())}..{int(frame_indices.max())}."
+                )
+            frame_positions = [int(matches[0])]
+
         rendered = []
-        for output_frame, frame_position in enumerate(range(0, raw_tactile.shape[0], args.frame_stride)):
-            output_path = frames_dir / f"frame_{output_frame:06d}.png"
+        for output_frame, frame_position in enumerate(frame_positions):
+            actual_frame_index = int(frame_indices[frame_position])
+            output_name_index = actual_frame_index if args.frame_index is not None else output_frame
+            output_path = frames_dir / f"frame_{output_name_index:06d}.png"
             _plot_frame(
                 raw_tactile=raw_tactile,
                 arrays=arrays,
                 frame_position=frame_position,
-                actual_frame_index=int(frame_indices[frame_position]),
+                actual_frame_index=actual_frame_index,
                 timestamp=float(timestamps[frame_position]),
                 task_name=task_name,
                 episode_index=episode_index,
@@ -622,20 +796,56 @@ def main() -> None:
                 strength_vmax=strength_vmax,
                 dpi=args.dpi,
             )
+            panel_records = []
+            if args.save_individual_panels:
+                panel_records = _save_individual_panels(
+                    raw_tactile=raw_tactile,
+                    arrays=arrays,
+                    frame_position=frame_position,
+                    actual_frame_index=actual_frame_index,
+                    layout_dir=layout_dir,
+                    output_dir=episode_dir / "panels" / f"frame_{actual_frame_index:06d}",
+                    raw_threshold=args.raw_contact_threshold,
+                    raw_vmax=raw_vmax,
+                    strength_vmax=strength_vmax,
+                    dpi=args.dpi,
+                )
+                panel_data = {
+                    "episode_index": episode_index,
+                    "frame_index": actual_frame_index,
+                    "timestamp": float(timestamps[frame_position]),
+                    "finger_names": FINGER_NAMES,
+                    "target_strength": arrays["target_strength"][frame_position].tolist(),
+                    "target_contact": arrays["target_contact"][frame_position].tolist(),
+                    "predicted_strength": arrays["pred_strength"][frame_position].tolist(),
+                    "predicted_contact_probability": arrays["pred_contact"][frame_position].tolist(),
+                    "predicted_distribution": arrays["pred_dist"][frame_position].tolist(),
+                    "panels": panel_records,
+                }
+                panel_manifest = (
+                    episode_dir / "panels" / f"frame_{actual_frame_index:06d}" / "panel_manifest.json"
+                )
+                panel_manifest.write_text(json.dumps(panel_data, indent=2, ensure_ascii=False))
+
             rendered.append(
                 {
                     "output_frame": output_frame,
                     "source_position": frame_position,
-                    "frame_index": int(frame_indices[frame_position]),
+                    "frame_index": actual_frame_index,
                     "timestamp": float(timestamps[frame_position]),
                     "path": str(output_path),
+                    "panels": panel_records,
                 }
             )
             if output_frame == 0 or (output_frame + 1) % 50 == 0:
                 print(f"  rendered {output_frame + 1} frames", flush=True)
 
         video_path = episode_dir / "patch_reconstruction.mp4"
-        video_created = args.make_video and _make_video(frames_dir, video_path, args.fps / args.frame_stride)
+        video_created = (
+            args.make_video
+            and args.frame_index is None
+            and _make_video(frames_dir, video_path, args.fps / args.frame_stride)
+        )
         metadata = {
             **selected_item,
             "num_source_frames": int(raw_tactile.shape[0]),
