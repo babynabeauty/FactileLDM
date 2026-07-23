@@ -447,6 +447,7 @@ def _plot_frame(
     raw_threshold: float,
     raw_vmax: float,
     strength_vmax: float,
+    show_patch_labels: bool,
     patch_label_fontsize: float,
     dpi: int,
 ) -> None:
@@ -480,15 +481,16 @@ def _plot_frame(
             vmax=strength_vmax,
             title="",
         )
-        _annotate_patch_panel(
-            axes[finger_idx, 1],
-            layout_dir=layout_dir,
-            finger_idx=finger_idx,
-            strength=target_strength,
-            contact=target_contact,
-            predicted=False,
-            fontsize=patch_label_fontsize,
-        )
+        if show_patch_labels:
+            _annotate_patch_panel(
+                axes[finger_idx, 1],
+                layout_dir=layout_dir,
+                finger_idx=finger_idx,
+                strength=target_strength,
+                contact=target_contact,
+                predicted=False,
+                fontsize=patch_label_fontsize,
+            )
 
         _single_vis._draw_patch_values(
             axes[finger_idx, 2],
@@ -500,15 +502,16 @@ def _plot_frame(
             vmax=strength_vmax,
             title="",
         )
-        _annotate_patch_panel(
-            axes[finger_idx, 2],
-            layout_dir=layout_dir,
-            finger_idx=finger_idx,
-            strength=pred_strength,
-            contact=pred_contact,
-            predicted=True,
-            fontsize=patch_label_fontsize,
-        )
+        if show_patch_labels:
+            _annotate_patch_panel(
+                axes[finger_idx, 2],
+                layout_dir=layout_dir,
+                finger_idx=finger_idx,
+                strength=pred_strength,
+                contact=pred_contact,
+                predicted=True,
+                fontsize=patch_label_fontsize,
+            )
 
         _single_vis._draw_patch_values(
             axes[finger_idx, 3],
@@ -534,8 +537,8 @@ def _plot_frame(
         )
 
     axes[0, 0].set_title("Raw tactile\nheatmap", fontsize=10, fontweight="bold")
-    axes[0, 1].set_title("GT patch\nstrength/contact", fontsize=10, fontweight="bold")
-    axes[0, 2].set_title("Predicted patch\nstrength/contact", fontsize=10, fontweight="bold")
+    axes[0, 1].set_title("GT patch\nforce magnitude", fontsize=10, fontweight="bold")
+    axes[0, 2].set_title("Predicted patch\nforce magnitude", fontsize=10, fontweight="bold")
     axes[0, 3].set_title("Predicted patch\ndistribution", fontsize=10, fontweight="bold")
 
     raw_map = matplotlib.cm.ScalarMappable(
@@ -553,7 +556,7 @@ def _plot_frame(
     raw_bar = fig.colorbar(raw_map, ax=axes[:, 0], fraction=0.018, pad=0.01)
     raw_bar.set_label("raw force magnitude", fontsize=8)
     patch_bar = fig.colorbar(strength_map, ax=axes[:, 1:3], fraction=0.012, pad=0.01)
-    patch_bar.set_label("contact-masked normalized patch strength", fontsize=8)
+    patch_bar.set_label("contact-masked patch force magnitude", fontsize=8)
     distribution_bar = fig.colorbar(distribution_map, ax=axes[:, 3], fraction=0.018, pad=0.01)
     distribution_bar.set_label("predicted patch distribution", fontsize=8)
 
@@ -564,8 +567,7 @@ def _plot_frame(
     fig.text(
         0.5,
         0.002,
-        "GT: C = contact, - = no contact. Prediction: p = contact probability, s = ungated predicted "
-        "strength. Strength color is shown only when contact (GT C or predicted p >= 0.5).",
+        "Color encodes contact-masked patch force magnitude; dark patches indicate no contact or negligible force.",
         ha="center",
         fontsize=8,
     )
@@ -585,6 +587,7 @@ def _save_individual_panels(
     raw_threshold: float,
     raw_vmax: float,
     strength_vmax: float,
+    show_patch_labels: bool,
     patch_label_fontsize: float,
     dpi: int,
 ) -> list[dict[str, object]]:
@@ -592,8 +595,8 @@ def _save_individual_panels(
     panel_records: list[dict[str, object]] = []
     panel_specs = (
         ("raw_tactile", "Raw tactile"),
-        ("gt_strength_contact", "GT strength/contact"),
-        ("pred_strength_contact", "Predicted strength/contact"),
+        ("gt_strength_contact", "GT force magnitude"),
+        ("pred_strength_contact", "Predicted force magnitude"),
         ("pred_distribution", "Predicted distribution"),
     )
 
@@ -639,20 +642,21 @@ def _save_individual_panels(
                     vmax=strength_vmax,
                     title=panel_title,
                 )
-                _annotate_patch_panel(
-                    ax,
-                    layout_dir=layout_dir,
-                    finger_idx=finger_idx,
-                    strength=target_strength,
-                    contact=target_contact,
-                    predicted=False,
-                    fontsize=patch_label_fontsize,
-                )
+                if show_patch_labels:
+                    _annotate_patch_panel(
+                        ax,
+                        layout_dir=layout_dir,
+                        finger_idx=finger_idx,
+                        strength=target_strength,
+                        contact=target_contact,
+                        predicted=False,
+                        fontsize=patch_label_fontsize,
+                    )
                 color_map = matplotlib.cm.ScalarMappable(
                     cmap="magma",
                     norm=matplotlib.colors.Normalize(vmin=0.0, vmax=max(strength_vmax, 1e-6)),
                 )
-                color_label = "contact-masked strength"
+                color_label = "contact-masked force magnitude"
             elif panel_name == "pred_strength_contact":
                 _single_vis._draw_patch_values(
                     ax,
@@ -664,20 +668,21 @@ def _save_individual_panels(
                     vmax=strength_vmax,
                     title=panel_title,
                 )
-                _annotate_patch_panel(
-                    ax,
-                    layout_dir=layout_dir,
-                    finger_idx=finger_idx,
-                    strength=pred_strength,
-                    contact=pred_contact,
-                    predicted=True,
-                    fontsize=patch_label_fontsize,
-                )
+                if show_patch_labels:
+                    _annotate_patch_panel(
+                        ax,
+                        layout_dir=layout_dir,
+                        finger_idx=finger_idx,
+                        strength=pred_strength,
+                        contact=pred_contact,
+                        predicted=True,
+                        fontsize=patch_label_fontsize,
+                    )
                 color_map = matplotlib.cm.ScalarMappable(
                     cmap="magma",
                     norm=matplotlib.colors.Normalize(vmin=0.0, vmax=max(strength_vmax, 1e-6)),
                 )
-                color_label = "contact-masked strength"
+                color_label = "contact-masked force magnitude"
             else:
                 _single_vis._draw_patch_values(
                     ax,
@@ -765,10 +770,15 @@ def main() -> None:
     parser.add_argument("--frame-stride", type=int, default=1)
     parser.add_argument("--dpi", type=int, default=150)
     parser.add_argument(
+        "--show-patch-labels",
+        action="store_true",
+        help="Overlay per-patch C/p and force values; disabled by default for a cleaner heatmap.",
+    )
+    parser.add_argument(
         "--patch-label-fontsize",
         type=float,
         default=8.0,
-        help="Font size for per-patch C/p and s annotations (default: 8.0; previously 5.4).",
+        help="Font size used when --show-patch-labels is enabled (default: 8.0).",
     )
     parser.add_argument("--fps", type=float, default=15.0)
     parser.add_argument("--make-video", action="store_true")
@@ -895,6 +905,7 @@ def main() -> None:
                 raw_threshold=args.raw_contact_threshold,
                 raw_vmax=raw_vmax,
                 strength_vmax=strength_vmax,
+                show_patch_labels=args.show_patch_labels,
                 patch_label_fontsize=args.patch_label_fontsize,
                 dpi=args.dpi,
             )
@@ -910,6 +921,7 @@ def main() -> None:
                     raw_threshold=args.raw_contact_threshold,
                     raw_vmax=raw_vmax,
                     strength_vmax=strength_vmax,
+                    show_patch_labels=args.show_patch_labels,
                     patch_label_fontsize=args.patch_label_fontsize,
                     dpi=args.dpi,
                 )
@@ -959,6 +971,7 @@ def main() -> None:
             "raw_contact_threshold": args.raw_contact_threshold,
             "raw_vmax": raw_vmax,
             "normalized_strength_vmax": strength_vmax,
+            "show_patch_labels": args.show_patch_labels,
             "patch_label_fontsize": args.patch_label_fontsize,
             "gt_color_value": "where(target_contact >= 0.5, max(target_strength, 0), 0)",
             "predicted_color_value": "where(predicted_contact_probability >= 0.5, max(predicted_strength, 0), 0)",
