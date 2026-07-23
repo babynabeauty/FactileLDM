@@ -33,6 +33,7 @@ import numpy as np
 import pyarrow.parquet as pq
 
 from openpi.models import model as _model
+from openpi.models import pi0_config
 from openpi.shared import normalize as _normalize
 from openpi.training import config as _config
 from openpi.training.data_loader import _arrow_column_to_numpy
@@ -246,6 +247,17 @@ def _infer_checkpoint_encoder_type(params) -> str | None:
     return None
 
 
+def _infer_checkpoint_head_type(params) -> str | None:
+    paths = ["/".join(path) for path, _ in _iter_tree_leaves(params)]
+    if any("patch_force_mean_head/" in path for path in paths):
+        return "mean_force"
+    if any("patch_strength_head/" in path for path in paths):
+        return "strength"
+    if any("patch_distribution_head/" in path for path in paths):
+        return "full_heads"
+    return None
+
+
 def _load_model(config_name: str, params: pathlib.Path):
     config = _config.get_config(config_name)
     restored = _model.restore_params(params, restore_type=np.ndarray)
@@ -262,6 +274,25 @@ def _load_model(config_name: str, params: pathlib.Path):
             f"but --config-name={config_name!r} builds {expected_type!r}. "
             f"Use --config-name {config_by_type[checkpoint_type]}."
         )
+    checkpoint_head_type = _infer_checkpoint_head_type(restored)
+    config_head_type = (
+        "mean_force"
+        if isinstance(config.model, pi0_config.XHandPatchMeanForceEncoderPretrainConfig)
+        else "strength"
+        if isinstance(config.model, pi0_config.XHandPatchStrengthEncoderPretrainConfig)
+        else "full_heads"
+    )
+    if checkpoint_head_type is not None and checkpoint_head_type != config_head_type:
+        config_by_head_type = {
+            "mean_force": "xhand_patch_mean_force_contact_distribution_encoder_pretrain",
+            "strength": "xhand_patch_strength_contact_encoder_pretrain",
+            "full_heads": "xhand_patch_tactile_encoder_pretrain",
+        }
+        raise ValueError(
+            f"Decoder checkpoint/config mismatch: checkpoint contains {checkpoint_head_type!r} heads, "
+            f"but --config-name={config_name!r} builds {config_head_type!r} heads. "
+            f"Use --config-name {config_by_head_type[checkpoint_head_type]}."
+        )
     model = config.model.load(restored)
     model.eval()
     return model
@@ -273,14 +304,40 @@ def _model_batch(model, normalized_tactile: jax.Array) -> dict[str, jax.Array]:
     tokens = model.patch_encoder._encode_steps(effort, times, future=False, include_temporal=False)
     target_dist, target_summary, target_contact = model.patch_encoder.patch_reconstruction_targets(effort)
 
-    pred_dist = jax.nn.softmax(model.patch_distribution_head(tokens).astype(jnp.float32), axis=-1)
-    pred_summary = einops.rearrange(
-        model.patch_summary_head(tokens),
-        "b t f (r c) -> b t f r c",
-        r=model.num_patches,
-        c=model.summary_dim,
-    ).astype(jnp.float32)
-    pred_contact = jax.nn.sigmoid(model.patch_contact_head(tokens).astype(jnp.float32))
+    if hasattr(model, "patch_force_mean_head"):
+        pred_force = einops.rearrange(
+            model.patch_force_mean_head(tokens),
+            "b t f (r c) -> b t f r c",
+            r=model.num_patches,
+            c=model.dim_per_point,
+        ).astype(jnp.float32)
+        pred_strength = jnp.linalg.norm(pred_force, axis=-1)
+        pred_dist = pred_strength / jnp.maximum(jnp.sum(pred_strength, axis=-1, keepdims=True), 1e-6)
+        pred_contact = jax.nn.sigmoid(
+            (pred_strength - model.contact_threshold) / max(model.contact_temperature, 1e-6)
+        )
+        pred_summary = jnp.concatenate(
+            [pred_force, jnp.abs(pred_force), pred_strength[..., None]],
+            axis=-1,
+        )
+    elif hasattr(model, "patch_strength_head"):
+        pred_strength = jax.nn.softplus(model.patch_strength_head(tokens).astype(jnp.float32))
+        pred_dist = pred_strength / jnp.maximum(jnp.sum(pred_strength, axis=-1, keepdims=True), 1e-6)
+        pred_contact = jax.nn.sigmoid(
+            (pred_strength - model.contact_threshold) / max(model.contact_temperature, 1e-6)
+        )
+        zeros = jnp.zeros((*pred_strength.shape, 2 * model.dim_per_point), dtype=jnp.float32)
+        pred_summary = jnp.concatenate([zeros, pred_strength[..., None]], axis=-1)
+    else:
+        pred_dist = jax.nn.softmax(model.patch_distribution_head(tokens).astype(jnp.float32), axis=-1)
+        pred_summary = einops.rearrange(
+            model.patch_summary_head(tokens),
+            "b t f (r c) -> b t f r c",
+            r=model.num_patches,
+            c=model.summary_dim,
+        ).astype(jnp.float32)
+        pred_contact = jax.nn.sigmoid(model.patch_contact_head(tokens).astype(jnp.float32))
+        pred_strength = pred_summary[..., -1]
     return {
         "target_dist": target_dist[:, 0].astype(jnp.float32),
         "target_summary": target_summary[:, 0].astype(jnp.float32),
@@ -289,7 +346,7 @@ def _model_batch(model, normalized_tactile: jax.Array) -> dict[str, jax.Array]:
         "pred_dist": pred_dist[:, 0],
         "pred_summary": pred_summary[:, 0],
         "pred_contact": pred_contact[:, 0],
-        "pred_strength": pred_summary[:, 0, ..., -1],
+        "pred_strength": pred_strength[:, 0],
     }
 
 
