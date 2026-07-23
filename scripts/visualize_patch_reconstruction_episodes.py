@@ -458,7 +458,7 @@ def _plot_frame(
             finger_idx=finger_idx,
             tactile=raw_tactile[frame_position],
             threshold=raw_threshold,
-            cmap_name="turbo",
+            cmap_name="magma",
             vmax=raw_vmax,
             title="",
         )
@@ -475,7 +475,7 @@ def _plot_frame(
             layout_dir=layout_dir,
             finger_idx=finger_idx,
             values=target_display_strength,
-            cmap_name="turbo",
+            cmap_name="magma",
             vmin=0.0,
             vmax=strength_vmax,
             title="",
@@ -495,7 +495,7 @@ def _plot_frame(
             layout_dir=layout_dir,
             finger_idx=finger_idx,
             values=pred_display_strength,
-            cmap_name="turbo",
+            cmap_name="magma",
             vmin=0.0,
             vmax=strength_vmax,
             title="",
@@ -539,10 +539,10 @@ def _plot_frame(
     axes[0, 3].set_title("Predicted patch\ndistribution", fontsize=10, fontweight="bold")
 
     raw_map = matplotlib.cm.ScalarMappable(
-        cmap="turbo", norm=matplotlib.colors.Normalize(vmin=0.0, vmax=max(raw_vmax, 1e-6))
+        cmap="magma", norm=matplotlib.colors.Normalize(vmin=0.0, vmax=max(raw_vmax, 1e-6))
     )
     strength_map = matplotlib.cm.ScalarMappable(
-        cmap="turbo", norm=matplotlib.colors.Normalize(vmin=0.0, vmax=max(strength_vmax, 1e-6))
+        cmap="magma", norm=matplotlib.colors.Normalize(vmin=0.0, vmax=max(strength_vmax, 1e-6))
     )
     distribution_map = matplotlib.cm.ScalarMappable(
         cmap="viridis", norm=matplotlib.colors.Normalize(vmin=0.0, vmax=1.0)
@@ -619,12 +619,12 @@ def _save_individual_panels(
                     finger_idx=finger_idx,
                     tactile=raw_tactile[frame_position],
                     threshold=raw_threshold,
-                    cmap_name="turbo",
+                    cmap_name="magma",
                     vmax=raw_vmax,
                     title=panel_title,
                 )
                 color_map = matplotlib.cm.ScalarMappable(
-                    cmap="turbo",
+                    cmap="magma",
                     norm=matplotlib.colors.Normalize(vmin=0.0, vmax=max(raw_vmax, 1e-6)),
                 )
                 color_label = "raw force magnitude"
@@ -634,7 +634,7 @@ def _save_individual_panels(
                     layout_dir=layout_dir,
                     finger_idx=finger_idx,
                     values=target_display_strength,
-                    cmap_name="turbo",
+                    cmap_name="magma",
                     vmin=0.0,
                     vmax=strength_vmax,
                     title=panel_title,
@@ -649,7 +649,7 @@ def _save_individual_panels(
                     fontsize=patch_label_fontsize,
                 )
                 color_map = matplotlib.cm.ScalarMappable(
-                    cmap="turbo",
+                    cmap="magma",
                     norm=matplotlib.colors.Normalize(vmin=0.0, vmax=max(strength_vmax, 1e-6)),
                 )
                 color_label = "contact-masked strength"
@@ -659,7 +659,7 @@ def _save_individual_panels(
                     layout_dir=layout_dir,
                     finger_idx=finger_idx,
                     values=pred_display_strength,
-                    cmap_name="turbo",
+                    cmap_name="magma",
                     vmin=0.0,
                     vmax=strength_vmax,
                     title=panel_title,
@@ -674,7 +674,7 @@ def _save_individual_panels(
                     fontsize=patch_label_fontsize,
                 )
                 color_map = matplotlib.cm.ScalarMappable(
-                    cmap="turbo",
+                    cmap="magma",
                     norm=matplotlib.colors.Normalize(vmin=0.0, vmax=max(strength_vmax, 1e-6)),
                 )
                 color_label = "contact-masked strength"

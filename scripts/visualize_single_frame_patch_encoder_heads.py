@@ -304,7 +304,7 @@ def _draw_raw_taxel_force(
     try:
         hull = scipy.spatial.ConvexHull(coords)
         hull_pts = coords[hull.vertices]
-        ax.fill(hull_pts[:, 0], hull_pts[:, 1], color="#06115a", zorder=0)
+        ax.fill(hull_pts[:, 0], hull_pts[:, 1], color=plt.get_cmap(cmap_name)(0.0), zorder=0)
     except Exception:
         pass
 
@@ -429,7 +429,7 @@ def _plot_paper_summary(
         finger_idx=finger_idx,
         tactile=tactile,
         threshold=raw_threshold,
-        cmap_name="turbo",
+        cmap_name="magma",
         vmax=raw_vmax,
         title="Raw taxel force",
     )
@@ -452,7 +452,7 @@ def _plot_paper_summary(
         values=strength,
         text_values=strength,
         text_format="{:.1f}",
-        cmap_name="turbo",
+        cmap_name="magma",
         vmin=0.0,
         vmax=strength_vmax,
         title="Patch strength\nabsolute force",
@@ -469,7 +469,7 @@ def _plot_paper_summary(
     cbar.ax.tick_params(labelsize=7)
 
     sm_strength = matplotlib.cm.ScalarMappable(
-        cmap="turbo",
+        cmap="magma",
         norm=matplotlib.colors.Normalize(vmin=0.0, vmax=max(strength_vmax, 1e-6)),
     )
     sm_strength.set_array([])
@@ -499,7 +499,7 @@ def _plot_heads(
     rows = [
         ("Patch distribution", dist, "viridis", 0.0, 1.0),
         ("Patch contact", contact, "magma", 0.0, 1.0),
-        ("Patch strength", strength, "turbo", 0.0, strength_vmax),
+        ("Patch strength", strength, "magma", 0.0, strength_vmax),
     ]
 
     fig, axes = plt.subplots(3, 5, figsize=(12.5, 7.4), constrained_layout=True)
@@ -555,14 +555,14 @@ def _plot_comparison(
         (
             "GT strength",
             "target_strength",
-            "turbo",
+            "magma",
             0.0,
             float(max(np.max(arrays["target_strength"]), np.max(arrays["pred_strength"]), 1e-6)),
         ),
         (
             "Pred strength",
             "pred_strength",
-            "turbo",
+            "magma",
             0.0,
             float(max(np.max(arrays["target_strength"]), np.max(arrays["pred_strength"]), 1e-6)),
         ),
