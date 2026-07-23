@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Evaluate the patch mean-force XHand tactile encoder pretraining checkpoint.
 
-This evaluator is for `xhand_patch_mean_force_encoder_pretrain`, whose only
+This evaluator is for the patch mean-force pretraining variants, whose only
 decoder head predicts per-finger, per-patch mean 3D force:
 
   raw tactile [B, 5, 120, 3] -> finger token -> [B, 5 fingers, 5 patches, 3]
@@ -225,6 +225,22 @@ def _eval_batch(model, tactile: jax.Array) -> dict[str, jax.Array]:
     target_contact = target_mag > threshold
     active = target_contact.astype(jnp.float32)
 
+    target_active_mag = target_mag * active
+    target_distribution = target_active_mag / jnp.maximum(
+        jnp.sum(target_active_mag, axis=-1, keepdims=True),
+        1e-6,
+    )
+    pred_distribution = pred_mag / jnp.maximum(
+        jnp.sum(pred_mag, axis=-1, keepdims=True),
+        1e-6,
+    )
+    has_distribution = jnp.sum(target_active_mag, axis=-1) > 1e-6
+    distribution_l1 = jnp.sum(jnp.abs(pred_distribution - target_distribution), axis=-1)
+    distribution_cross_entropy = -jnp.sum(
+        target_distribution * jnp.log(jnp.maximum(pred_distribution, 1e-6)),
+        axis=-1,
+    )
+
     vector_error = jnp.linalg.norm(pred_patch_force - target_patch_force, axis=-1)
     cosine = jnp.sum(pred_patch_force * target_patch_force, axis=-1) / jnp.maximum(pred_mag * target_mag, 1e-6)
 
@@ -237,6 +253,8 @@ def _eval_batch(model, tactile: jax.Array) -> dict[str, jax.Array]:
         "active_force_vector_l2": _masked_mean(vector_error, active),
         "active_magnitude_mae": _masked_mean(jnp.abs(pred_mag - target_mag), active),
         "active_vector_cosine": _masked_mean(cosine, active),
+        "active_distribution_l1": _masked_mean(distribution_l1, has_distribution),
+        "active_distribution_cross_entropy": _masked_mean(distribution_cross_entropy, has_distribution),
         "pred_contact_ratio": jnp.mean(pred_contact.astype(jnp.float32)),
         "target_contact_ratio": jnp.mean(target_contact.astype(jnp.float32)),
         "pred_magnitude_mean": jnp.mean(pred_mag),

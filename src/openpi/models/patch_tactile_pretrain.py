@@ -242,6 +242,9 @@ class XHandPatchMeanForceEncoderPretrain(nnx.Module):
         self.patch_mean_force_loss_weight = float(config.patch_mean_force_loss_weight)
         self.patch_mean_force_contact_loss_weight = float(config.patch_mean_force_contact_loss_weight)
         self.patch_mean_force_zero_loss_weight = float(config.patch_mean_force_zero_loss_weight)
+        self.patch_mean_force_distribution_loss_weight = float(
+            config.patch_mean_force_distribution_loss_weight
+        )
         self.pretrain_history_time_samples = int(config.pretrain_history_time_samples)
         self.pretrain_future_time_samples = int(config.pretrain_future_time_samples)
         self.history_times = tuple(
@@ -362,10 +365,32 @@ class XHandPatchMeanForceEncoderPretrain(nnx.Module):
         inactive_mask = 1.0 - jax.lax.stop_gradient(target_contact.astype(jnp.float32))
         inactive_denom = jnp.maximum(jnp.sum(inactive_mask, axis=(1, 2, 3)), 1.0)
         zero_patch_loss = jnp.sum(pred_mag * inactive_mask, axis=(1, 2, 3)) / inactive_denom
+
+        # Supervise the relative load location without adding an independent
+        # decoder head. Both distributions are derived from the same patch
+        # mean-force vectors, so force and distribution predictions cannot
+        # contradict each other. Frames/fingers with no active patch have no
+        # meaningful distribution and are excluded from this loss.
+        target_active_mag = target_mag * jax.lax.stop_gradient(target_contact.astype(jnp.float32))
+        target_mag_sum = jnp.sum(target_active_mag, axis=-1, keepdims=True)
+        target_distribution = target_active_mag / jnp.maximum(target_mag_sum, 1e-6)
+        pred_distribution = pred_mag / jnp.maximum(jnp.sum(pred_mag, axis=-1, keepdims=True), 1e-6)
+        distribution_cross_entropy = -jnp.sum(
+            jax.lax.stop_gradient(target_distribution)
+            * jnp.log(jnp.maximum(pred_distribution, 1e-6)),
+            axis=-1,
+        )
+        has_distribution = (target_mag_sum[..., 0] > 1e-6).astype(jnp.float32)
+        distribution_denom = jnp.maximum(jnp.sum(has_distribution, axis=(1, 2)), 1.0)
+        distribution_loss = (
+            jnp.sum(distribution_cross_entropy * has_distribution, axis=(1, 2))
+            / distribution_denom
+        )
         total = (
             self.patch_mean_force_loss_weight * patch_force_loss
             + self.patch_mean_force_contact_loss_weight * contact_loss
             + self.patch_mean_force_zero_loss_weight * zero_patch_loss
+            + self.patch_mean_force_distribution_loss_weight * distribution_loss
         )
 
         pred_contact = pred_mag > contact_threshold
@@ -375,6 +400,7 @@ class XHandPatchMeanForceEncoderPretrain(nnx.Module):
             "loss/patch_mean_force": patch_force_loss,
             "loss/contact_from_force": contact_loss,
             "loss/zero_patch_suppression": zero_patch_loss,
+            "loss/distribution_from_force": distribution_loss,
             "loss/total": total,
             "metric/contact_accuracy_from_force": contact_accuracy,
             "metric/pred_contact_ratio_from_force": jnp.mean(pred_contact.astype(jnp.float32), axis=(1, 2, 3)),
