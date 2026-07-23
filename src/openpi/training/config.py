@@ -1845,6 +1845,7 @@ _CONFIGS = [
             patch_distribution_loss_weight=1.0,
             patch_summary_loss_weight=1.0,
             patch_contact_loss_weight=0.5,
+            patch_inactive_force_loss_weight=0.1,
         ),
         data=LeRobotXHandPatchTactilePretrainDataConfig(
             repo_id="grasp_pipette_and_press_button",

@@ -313,9 +313,13 @@ def _model_batch(model, normalized_tactile: jax.Array) -> dict[str, jax.Array]:
     times = jnp.zeros((1,), dtype=jnp.float32)
     tokens = model.patch_encoder._encode_steps(effort, times, future=False, include_temporal=False)
     target_dist, target_summary, target_contact = model.patch_encoder.patch_reconstruction_targets(effort)
+    force_only_summary = getattr(model, "force_only_summary", False)
+    target_force = target_summary[..., : model.dim_per_point]
+    if force_only_summary:
+        target_force = target_force * target_contact[..., None]
     target_strength = (
-        jnp.linalg.norm(target_summary[..., : model.dim_per_point], axis=-1)
-        if getattr(model, "force_only_summary", False)
+        jnp.linalg.norm(target_force, axis=-1)
+        if force_only_summary
         else target_summary[..., -1]
     )
 
@@ -357,15 +361,23 @@ def _model_batch(model, normalized_tactile: jax.Array) -> dict[str, jax.Array]:
             if getattr(model, "force_only_summary", False)
             else pred_summary[..., -1]
         )
+    pred_force = pred_summary[..., : model.dim_per_point]
+    target_summary_output = (
+        target_force
+        if force_only_summary
+        else target_summary
+    )
     return {
         "target_dist": target_dist[:, 0].astype(jnp.float32),
-        "target_summary": target_summary[:, 0].astype(jnp.float32),
+        "target_summary": target_summary_output[:, 0].astype(jnp.float32),
         "target_contact": target_contact[:, 0].astype(jnp.float32),
         "target_strength": target_strength[:, 0].astype(jnp.float32),
+        "target_force": target_force[:, 0].astype(jnp.float32),
         "pred_dist": pred_dist[:, 0],
         "pred_summary": pred_summary[:, 0],
         "pred_contact": pred_contact[:, 0],
         "pred_strength": pred_strength[:, 0],
+        "pred_force": pred_force[:, 0],
     }
 
 
@@ -893,9 +905,11 @@ def main() -> None:
                     "finger_names": FINGER_NAMES,
                     "target_strength": arrays["target_strength"][frame_position].tolist(),
                     "target_contact": arrays["target_contact"][frame_position].tolist(),
+                    "target_force_xyz": arrays["target_force"][frame_position].tolist(),
                     "predicted_strength": arrays["pred_strength"][frame_position].tolist(),
                     "predicted_contact_probability": arrays["pred_contact"][frame_position].tolist(),
                     "predicted_distribution": arrays["pred_dist"][frame_position].tolist(),
+                    "predicted_force_xyz": arrays["pred_force"][frame_position].tolist(),
                     "panels": panel_records,
                 }
                 panel_manifest = (
@@ -933,6 +947,8 @@ def main() -> None:
             "gt_color_value": "where(target_contact >= 0.5, max(target_strength, 0), 0)",
             "predicted_color_value": "where(predicted_contact_probability >= 0.5, max(predicted_strength, 0), 0)",
             "distribution_color_value": "softmax patch distribution in [0, 1]",
+            "force_array_shape": "[frames, fingers, patches, xyz]",
+            "force_array_keys": ["target_force", "pred_force"],
             "normalization": str(norm_path),
             "frames": rendered,
             "video": str(video_path) if video_created else None,

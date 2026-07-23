@@ -760,6 +760,7 @@ class XHandPatchTactileEncoderPretrainConfig(_model.BaseModelConfig):
     patch_summary_loss_weight: float = 1.0
     patch_contact_loss_weight: float = 0.5
     patch_force_only_summary: bool = False
+    patch_inactive_force_loss_weight: float = 0.1
 
     @property
     @override
@@ -823,6 +824,7 @@ class XHandPatchForceThreeHeadEncoderPretrainConfig(XHandPatchTactileEncoderPret
     """Three-head pretraining with a compact per-patch 3D-force middle head."""
 
     patch_force_only_summary: bool = True
+    patch_inactive_force_loss_weight: float = 0.1
 
 
 @dataclasses.dataclass(frozen=True)

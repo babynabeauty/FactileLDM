@@ -182,13 +182,22 @@ def _predict_heads(model, tactile: np.ndarray) -> dict[str, np.ndarray]:
     pred_contact = jax.nn.sigmoid(contact_logits.astype(jnp.float32))
 
     pred_summary_np = np.asarray(pred_summary[0, 0], dtype=np.float32)
+    pred_strength = (
+        np.linalg.norm(pred_summary_np, axis=-1)
+        if getattr(model, "force_only_summary", False)
+        else pred_summary_np[..., -1]
+    )
     return {
         "pred_dist": np.asarray(pred_dist[0, 0], dtype=np.float32),
         "pred_contact": np.asarray(pred_contact[0, 0], dtype=np.float32),
         "pred_summary": pred_summary_np,
-        "pred_strength": pred_summary_np[..., -1],
+        "pred_strength": pred_strength,
         "pred_mean_force": pred_summary_np[..., :3],
-        "pred_abs_max_force": pred_summary_np[..., 3:6],
+        "pred_abs_max_force": (
+            pred_summary_np[..., 3:6]
+            if not getattr(model, "force_only_summary", False)
+            else np.abs(pred_summary_np)
+        ),
     }
 
 

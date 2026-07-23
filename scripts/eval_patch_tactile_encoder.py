@@ -162,32 +162,53 @@ def _iter_tactile_batches(args: Args):
     effort_mean, effort_std = _load_effort_norm(args)
     logging.info("Reading %d parquet episodes from %s", len(files), repo)
 
-    rng = np.random.default_rng(args.seed)
-    frame_count = 0
+    sampled_positions: dict[pathlib.Path, np.ndarray] | None = None
+    if args.max_frames is not None:
+        frame_counts = np.asarray(
+            [
+                (pq.ParquetFile(path).metadata.num_rows + args.frame_stride - 1)
+                // args.frame_stride
+                for path in files
+            ],
+            dtype=np.int64,
+        )
+        total_available = int(np.sum(frame_counts))
+        sample_count = min(args.max_frames, total_available)
+        if sample_count < total_available:
+            rng = np.random.default_rng(args.seed)
+            sampled_global = np.sort(rng.choice(total_available, size=sample_count, replace=False))
+            offsets = np.concatenate([np.zeros(1, dtype=np.int64), np.cumsum(frame_counts)])
+            sampled_positions = {}
+            for file_index, path in enumerate(files):
+                in_file = sampled_global[
+                    (sampled_global >= offsets[file_index])
+                    & (sampled_global < offsets[file_index + 1])
+                ]
+                if in_file.size:
+                    sampled_positions[path] = in_file - offsets[file_index]
+            logging.info(
+                "Uniformly sampled %d of %d held-out frames across %d episodes.",
+                sample_count,
+                total_available,
+                len(files),
+            )
+
     buffer = []
     for parquet_file in files:
+        if sampled_positions is not None and parquet_file not in sampled_positions:
+            continue
         table = pq.read_table(parquet_file, columns=["observation.state"])
         states = _arrow_column_to_numpy(table["observation.state"]).astype(np.float32)
-        if args.frame_stride > 1:
-            states = states[:: args.frame_stride]
+        states = states[:: args.frame_stride]
+        if sampled_positions is not None:
+            states = states[sampled_positions[parquet_file]]
         tactile = _extract_raw_tactile_from_state(states)
         tactile = _normalize_tactile(tactile, effort_mean, effort_std)
-        if args.max_frames is not None and frame_count + tactile.shape[0] > args.max_frames:
-            remaining = args.max_frames - frame_count
-            if remaining <= 0:
-                break
-            # Sample within the final episode rather than taking only its prefix.
-            indices = np.sort(rng.choice(tactile.shape[0], size=remaining, replace=False))
-            tactile = tactile[indices]
-        frame_count += tactile.shape[0]
-
         for frame in tactile:
             buffer.append(frame)
             if len(buffer) == args.batch_size:
                 yield np.stack(buffer, axis=0)
                 buffer = []
-        if args.max_frames is not None and frame_count >= args.max_frames:
-            break
     if buffer:
         yield np.stack(buffer, axis=0)
 
@@ -314,6 +335,40 @@ def _add_global_aggregate_stats(
         metrics[f"_aggregate/{prefix}/strength/{name}"] = value
 
 
+def _add_force_aggregate_stats(
+    metrics: dict[str, jax.Array],
+    prefix: str,
+    pred_force: jax.Array,
+    target_force: jax.Array,
+    target_contact: jax.Array,
+) -> None:
+    active = target_contact >= 0.5
+    inactive = jnp.logical_not(active)
+    vector_error = jnp.linalg.norm(pred_force - target_force, axis=-1)
+    pred_magnitude = jnp.linalg.norm(pred_force, axis=-1)
+    target_magnitude = jnp.linalg.norm(target_force, axis=-1)
+    direction_valid = jnp.logical_and(active, target_magnitude > 1e-6)
+    cosine = jnp.sum(pred_force * target_force, axis=-1) / jnp.maximum(
+        pred_magnitude * target_magnitude,
+        1e-6,
+    )
+    abs_axis_error = jnp.abs(pred_force - target_force)
+    base = f"_aggregate/{prefix}/force"
+    metrics[f"{base}/count"] = jnp.asarray(vector_error.size, dtype=jnp.float32)
+    metrics[f"{base}/vector_l2_sum"] = jnp.sum(vector_error)
+    metrics[f"{base}/active_count"] = jnp.sum(active)
+    metrics[f"{base}/active_vector_l2_sum"] = jnp.sum(jnp.where(active, vector_error, 0.0))
+    metrics[f"{base}/direction_count"] = jnp.sum(direction_valid)
+    metrics[f"{base}/direction_cosine_sum"] = jnp.sum(jnp.where(direction_valid, cosine, 0.0))
+    metrics[f"{base}/inactive_count"] = jnp.sum(inactive)
+    metrics[f"{base}/inactive_magnitude_sum"] = jnp.sum(jnp.where(inactive, pred_magnitude, 0.0))
+    for axis, axis_name in enumerate(("x", "y", "z")):
+        metrics[f"{base}/{axis_name}_abs_sum"] = jnp.sum(abs_axis_error[..., axis])
+        metrics[f"{base}/active_{axis_name}_abs_sum"] = jnp.sum(
+            jnp.where(active, abs_axis_error[..., axis], 0.0)
+        )
+
+
 def _eval_batch(model, tactile: jax.Array) -> dict[str, jax.Array]:
     effort = tactile[:, None, ...].astype(jnp.float32)  # [B,1,5,120,3]
     times = jnp.zeros((1,), dtype=jnp.float32)
@@ -323,13 +378,14 @@ def _eval_batch(model, tactile: jax.Array) -> dict[str, jax.Array]:
     target_dist = target_dist.astype(jnp.float32)
     target_summary = target_summary.astype(jnp.float32)
     target_contact = target_contact.astype(jnp.float32)
-    target_strength = (
-        jnp.linalg.norm(target_summary[..., : model.dim_per_point], axis=-1)
-        if getattr(model, "force_only_summary", False)
-        else target_summary[..., -1]
-    )
+    target_force = target_summary[..., : model.dim_per_point] * target_contact[..., None]
+    target_strength = jnp.linalg.norm(target_force, axis=-1)
+    eps = 1e-6
 
     if hasattr(model, "patch_strength_head"):
+        # Legacy scalar-strength objective. It has no 3D-force prediction, but
+        # remains supported by this evaluator for backwards compatibility.
+        target_strength = target_summary[..., -1]
         pred_strength = jax.nn.softplus(model.patch_strength_head(tokens).astype(jnp.float32))
         threshold = jnp.asarray(model.contact_threshold, dtype=jnp.float32)
         temperature = jnp.asarray(max(model.contact_temperature, 1e-6), dtype=jnp.float32)
@@ -355,7 +411,25 @@ def _eval_batch(model, tactile: jax.Array) -> dict[str, jax.Array]:
             "target_strength_mean": jnp.mean(target_strength),
             **contact,
         }
+    elif hasattr(model, "patch_force_mean_head"):
+        # Mean-force family: contact and distribution are derived from the
+        # single 3D-force decoder rather than predicted by independent heads.
+        pred_force = einops.rearrange(
+            model.patch_force_mean_head(tokens),
+            "b t f (r c) -> b t f r c",
+            r=model.num_patches,
+            c=model.dim_per_point,
+        ).astype(jnp.float32)
+        pred_strength = jnp.linalg.norm(pred_force, axis=-1)
+        threshold = jnp.asarray(model.contact_threshold, dtype=jnp.float32)
+        temperature = jnp.asarray(max(model.contact_temperature, 1e-6), dtype=jnp.float32)
+        contact_logits = (pred_strength - threshold) / temperature
+        pred_contact = jax.nn.sigmoid(contact_logits)
+        pred_dist = pred_strength / jnp.maximum(jnp.sum(pred_strength, axis=-1, keepdims=True), eps)
+        summary_smooth_l1 = jnp.mean(_smooth_l1(pred_force, target_force))
     else:
+        # Full-head and compact force-three-head families both expose three
+        # independent heads. Their middle head always starts with mean XYZ.
         dist_logits = model.patch_distribution_head(tokens)
         pred_dist = jax.nn.softmax(dist_logits.astype(jnp.float32), axis=-1)
 
@@ -366,36 +440,59 @@ def _eval_batch(model, tactile: jax.Array) -> dict[str, jax.Array]:
             r=model.num_patches,
             c=model.summary_dim,
         ).astype(jnp.float32)
+        pred_force = summary_pred[..., : model.dim_per_point]
+        contact_logits = model.patch_contact_head(tokens).astype(jnp.float32)
+        pred_contact = jax.nn.sigmoid(contact_logits)
+        pred_strength = jnp.linalg.norm(pred_force, axis=-1)
         target_summary_for_loss = (
-            target_summary[..., : model.dim_per_point]
+            target_force
             if getattr(model, "force_only_summary", False)
             else target_summary
         )
+        summary_smooth_l1 = jnp.mean(_smooth_l1(summary_pred, target_summary_for_loss))
 
-        contact_logits = model.patch_contact_head(tokens).astype(jnp.float32)
-        pred_contact = jax.nn.sigmoid(contact_logits)
-        eps = 1e-6
+    if not hasattr(model, "patch_strength_head"):
+        pred_force_dist = pred_strength / jnp.maximum(
+            jnp.sum(pred_strength, axis=-1, keepdims=True),
+            eps,
+        )
+        target_force_sum = jnp.sum(target_strength, axis=-1, keepdims=True)
+        uniform = jnp.full_like(target_strength, 1.0 / float(model.num_patches))
+        target_force_dist = jnp.where(
+            target_force_sum > eps,
+            target_strength / jnp.maximum(target_force_sum, eps),
+            uniform,
+        )
         dist_ce = -jnp.mean(jnp.sum(target_dist * jnp.log(jnp.maximum(pred_dist, eps)), axis=-1))
         dist_kl = jnp.mean(
             jnp.sum(
-                target_dist * (jnp.log(jnp.maximum(target_dist, eps)) - jnp.log(jnp.maximum(pred_dist, eps))),
+                target_dist
+                * (jnp.log(jnp.maximum(target_dist, eps)) - jnp.log(jnp.maximum(pred_dist, eps))),
                 axis=-1,
             )
         )
+        force_dist_kl_per_item = jnp.sum(
+            target_force_dist
+            * (
+                jnp.log(jnp.maximum(target_force_dist, eps))
+                - jnp.log(jnp.maximum(pred_force_dist, eps))
+            ),
+            axis=-1,
+        )
+        has_force_distribution = (target_force_sum[..., 0] > eps).astype(jnp.float32)
+        force_dist_kl = (
+            jnp.sum(force_dist_kl_per_item * has_force_distribution)
+            / jnp.maximum(jnp.sum(has_force_distribution), 1.0)
+        )
         contact_bce = jnp.mean(_sigmoid_bce_with_logits(contact_logits, target_contact))
         contact = _contact_stats(pred_contact, target_contact)
-        pred_strength = (
-            jnp.linalg.norm(summary_pred, axis=-1)
-            if getattr(model, "force_only_summary", False)
-            else summary_pred[..., -1]
-        )
         strength_mae = jnp.mean(jnp.abs(pred_strength - target_strength))
         strength_smooth_l1 = jnp.mean(_smooth_l1(pred_strength, target_strength))
-        summary_smooth_l1 = jnp.mean(_smooth_l1(summary_pred, target_summary_for_loss))
         strength_corr = _pearson(pred_strength, target_strength)
         metrics = {
             "distribution_ce": dist_ce,
             "distribution_kl": dist_kl,
+            "force_distribution_kl": force_dist_kl,
             "contact_bce": contact_bce,
             "strength_mae": strength_mae,
             "strength_smooth_l1": strength_smooth_l1,
@@ -407,6 +504,17 @@ def _eval_batch(model, tactile: jax.Array) -> dict[str, jax.Array]:
             "target_strength_mean": jnp.mean(target_strength),
             **contact,
         }
+        metrics["_aggregate/global/distribution/force_kl_sum"] = jnp.sum(
+            force_dist_kl_per_item * has_force_distribution
+        )
+        metrics["_aggregate/global/distribution/force_count"] = jnp.sum(has_force_distribution)
+        _add_force_aggregate_stats(
+            metrics,
+            "global",
+            pred_force,
+            target_force,
+            target_contact,
+        )
 
     for finger_idx, finger_name in enumerate(FINGER_NAMES):
         finger_contact = _contact_stats(pred_contact[:, :, finger_idx], target_contact[:, :, finger_idx])
@@ -427,6 +535,14 @@ def _eval_batch(model, tactile: jax.Array) -> dict[str, jax.Array]:
             pred_strength[:, :, finger_idx],
             target_strength[:, :, finger_idx],
         )
+        if not hasattr(model, "patch_strength_head"):
+            _add_force_aggregate_stats(
+                metrics,
+                f"finger/{finger_name}",
+                pred_force[:, :, finger_idx],
+                target_force[:, :, finger_idx],
+                target_contact[:, :, finger_idx],
+            )
     _add_global_aggregate_stats(
         metrics,
         "global",
@@ -463,6 +579,26 @@ def _finalize_pearson(aggregate: dict[str, float], prefix: str) -> float:
     variance_x = max(aggregate[f"{base}/sum_x2"] - sum_x * sum_x / max(n, 1.0), 0.0)
     variance_y = max(aggregate[f"{base}/sum_y2"] - sum_y * sum_y / max(n, 1.0), 0.0)
     return covariance / max(np.sqrt(variance_x * variance_y), 1e-12)
+
+
+def _finalize_force_metrics(aggregate: dict[str, float], prefix: str) -> dict[str, float]:
+    base = f"_aggregate/{prefix}/force"
+    count = max(aggregate[f"{base}/count"], 1.0)
+    active_count = max(aggregate[f"{base}/active_count"], 1.0)
+    direction_count = max(aggregate[f"{base}/direction_count"], 1.0)
+    inactive_count = max(aggregate[f"{base}/inactive_count"], 1.0)
+    return {
+        "force_vector_l2": aggregate[f"{base}/vector_l2_sum"] / count,
+        "active_force_vector_l2": aggregate[f"{base}/active_vector_l2_sum"] / active_count,
+        "active_force_direction_cosine": aggregate[f"{base}/direction_cosine_sum"] / direction_count,
+        "force_x_mae": aggregate[f"{base}/x_abs_sum"] / count,
+        "force_y_mae": aggregate[f"{base}/y_abs_sum"] / count,
+        "force_z_mae": aggregate[f"{base}/z_abs_sum"] / count,
+        "active_force_x_mae": aggregate[f"{base}/active_x_abs_sum"] / active_count,
+        "active_force_y_mae": aggregate[f"{base}/active_y_abs_sum"] / active_count,
+        "active_force_z_mae": aggregate[f"{base}/active_z_abs_sum"] / active_count,
+        "inactive_force_magnitude_mean": aggregate[f"{base}/inactive_magnitude_sum"] / inactive_count,
+    }
 
 
 def _write_outputs(output_dir: pathlib.Path, args: Args, metrics: dict[str, float]) -> None:
@@ -505,6 +641,8 @@ def main(args: Args) -> None:
         raise ValueError("--batch-size must be positive.")
     if args.frame_stride <= 0:
         raise ValueError("--frame-stride must be positive.")
+    if args.max_frames is not None and args.max_frames <= 0:
+        raise ValueError("--max-frames must be positive when provided.")
 
     output_dir = pathlib.Path(args.output_dir).expanduser().resolve()
     logging.info("Loading patch encoder checkpoint: %s", args.params)
@@ -536,6 +674,14 @@ def main(args: Args) -> None:
     metrics = {key: value / total_frames for key, value in sorted(sums.items())}
     metrics.update(_finalize_contact_metrics(aggregate, "global"))
     metrics["strength_pearson"] = _finalize_pearson(aggregate, "global")
+    force_dist_count_key = "_aggregate/global/distribution/force_count"
+    if force_dist_count_key in aggregate:
+        metrics["force_distribution_kl"] = (
+            aggregate["_aggregate/global/distribution/force_kl_sum"]
+            / max(aggregate[force_dist_count_key], 1.0)
+        )
+    if "_aggregate/global/force/count" in aggregate:
+        metrics.update(_finalize_force_metrics(aggregate, "global"))
     for finger_name in FINGER_NAMES:
         finger_contact = _finalize_contact_metrics(aggregate, f"finger/{finger_name}")
         for metric_name, value in finger_contact.items():
@@ -543,6 +689,12 @@ def main(args: Args) -> None:
         metrics[f"finger/{finger_name}/strength_pearson"] = _finalize_pearson(
             aggregate, f"finger/{finger_name}"
         )
+        if f"_aggregate/finger/{finger_name}/force/count" in aggregate:
+            for metric_name, value in _finalize_force_metrics(
+                aggregate,
+                f"finger/{finger_name}",
+            ).items():
+                metrics[f"finger/{finger_name}/{metric_name}"] = value
     metrics["eval_frames"] = float(total_frames)
     metrics["eval_batches"] = float(batches)
     _write_outputs(output_dir, args, metrics)
@@ -562,6 +714,17 @@ def main(args: Args) -> None:
     )
     if "distribution_kl" in metrics:
         logging.info("Distribution KL: %.4f", metrics["distribution_kl"])
+    if "active_force_vector_l2" in metrics:
+        logging.info(
+            "3D force: active_vector_l2=%.4f direction_cosine=%.4f "
+            "active_xyz_mae=(%.4f, %.4f, %.4f) inactive_magnitude=%.4f",
+            metrics["active_force_vector_l2"],
+            metrics["active_force_direction_cosine"],
+            metrics["active_force_x_mae"],
+            metrics["active_force_y_mae"],
+            metrics["active_force_z_mae"],
+            metrics["inactive_force_magnitude_mean"],
+        )
 
 
 if __name__ == "__main__":
