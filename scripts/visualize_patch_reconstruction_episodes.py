@@ -14,6 +14,7 @@ metadata.json.
 from __future__ import annotations
 
 import argparse
+import collections.abc
 import json
 import pathlib
 import random
@@ -213,9 +214,54 @@ def _load_effort_norm(assets_dir: pathlib.Path, asset_id: str) -> tuple[np.ndarr
     return np.asarray(effort.mean), np.asarray(effort.std), norm_dir / "norm_stats.json"
 
 
+def _iter_tree_leaves(tree, path=()):
+    if isinstance(tree, collections.abc.Mapping):
+        for key, value in tree.items():
+            yield from _iter_tree_leaves(value, (*path, str(key)))
+    elif isinstance(tree, (list, tuple)):
+        for index, value in enumerate(tree):
+            yield from _iter_tree_leaves(value, (*path, str(index)))
+    else:
+        yield path, tree
+
+
+def _infer_checkpoint_encoder_type(params) -> str | None:
+    leaves = list(_iter_tree_leaves(params))
+    paths = ("/".join(path) for path, _ in leaves)
+    if any("patch_encoder/patch_stat_proj_in" in path for path in paths):
+        return "patch_informed"
+
+    paths = ("/".join(path) for path, _ in leaves)
+    if any("patch_encoder/point_score" in path for path in paths):
+        return "raw_spatial"
+
+    for path, value in leaves:
+        if "patch_encoder/force_proj_in/kernel" not in "/".join(path):
+            continue
+        shape = getattr(value, "shape", ())
+        if shape and int(shape[0]) == 3:
+            return "raw_spatial"
+        if shape and int(shape[0]) > 3:
+            return "raw_mlp"
+    return None
+
+
 def _load_model(config_name: str, params: pathlib.Path):
     config = _config.get_config(config_name)
     restored = _model.restore_params(params, restore_type=np.ndarray)
+    expected_type = getattr(config.model, "pretrain_tactile_encoder", None)
+    checkpoint_type = _infer_checkpoint_encoder_type(restored)
+    if expected_type is not None and checkpoint_type is not None and expected_type != checkpoint_type:
+        config_by_type = {
+            "patch_informed": "xhand_patch_tactile_encoder_pretrain",
+            "raw_spatial": "xhand_raw_spatial_tactile_encoder_pretrain",
+            "raw_mlp": "xhand_raw_mlp_tactile_encoder_pretrain",
+        }
+        raise ValueError(
+            f"Encoder checkpoint/config mismatch: checkpoint contains {checkpoint_type!r} parameters, "
+            f"but --config-name={config_name!r} builds {expected_type!r}. "
+            f"Use --config-name {config_by_type[checkpoint_type]}."
+        )
     model = config.model.load(restored)
     model.eval()
     return model
@@ -314,7 +360,7 @@ def _plot_frame(
     strength_vmax: float,
     dpi: int,
 ) -> None:
-    fig, axes = plt.subplots(5, 3, figsize=(8.8, 12.4), constrained_layout=True)
+    fig, axes = plt.subplots(5, 4, figsize=(11.4, 12.4), constrained_layout=True)
     for finger_idx, finger_name in enumerate(FINGER_NAMES):
         _single_vis._draw_raw_taxel_force(
             axes[finger_idx, 0],
@@ -330,12 +376,15 @@ def _plot_frame(
         target_contact = arrays["target_contact"][frame_position, finger_idx]
         pred_strength = arrays["pred_strength"][frame_position, finger_idx]
         pred_contact = arrays["pred_contact"][frame_position, finger_idx]
+        pred_distribution = arrays["pred_dist"][frame_position, finger_idx]
+        target_display_strength = np.where(target_contact >= 0.5, np.maximum(target_strength, 0.0), 0.0)
+        pred_display_strength = np.where(pred_contact >= 0.5, np.maximum(pred_strength, 0.0), 0.0)
 
         _single_vis._draw_patch_values(
             axes[finger_idx, 1],
             layout_dir=layout_dir,
             finger_idx=finger_idx,
-            values=np.maximum(target_strength, 0.0),
+            values=target_display_strength,
             cmap_name="turbo",
             vmin=0.0,
             vmax=strength_vmax,
@@ -354,7 +403,7 @@ def _plot_frame(
             axes[finger_idx, 2],
             layout_dir=layout_dir,
             finger_idx=finger_idx,
-            values=np.maximum(pred_strength, 0.0),
+            values=pred_display_strength,
             cmap_name="turbo",
             vmin=0.0,
             vmax=strength_vmax,
@@ -367,6 +416,17 @@ def _plot_frame(
             strength=pred_strength,
             contact=pred_contact,
             predicted=True,
+        )
+
+        _single_vis._draw_patch_values(
+            axes[finger_idx, 3],
+            layout_dir=layout_dir,
+            finger_idx=finger_idx,
+            values=pred_distribution,
+            cmap_name="viridis",
+            vmin=0.0,
+            vmax=1.0,
+            title="",
         )
 
         axes[finger_idx, 0].text(
@@ -384,6 +444,7 @@ def _plot_frame(
     axes[0, 0].set_title("Raw tactile\nheatmap", fontsize=10, fontweight="bold")
     axes[0, 1].set_title("GT patch\nstrength/contact", fontsize=10, fontweight="bold")
     axes[0, 2].set_title("Predicted patch\nstrength/contact", fontsize=10, fontweight="bold")
+    axes[0, 3].set_title("Predicted patch\ndistribution", fontsize=10, fontweight="bold")
 
     raw_map = matplotlib.cm.ScalarMappable(
         cmap="turbo", norm=matplotlib.colors.Normalize(vmin=0.0, vmax=max(raw_vmax, 1e-6))
@@ -391,12 +452,18 @@ def _plot_frame(
     strength_map = matplotlib.cm.ScalarMappable(
         cmap="turbo", norm=matplotlib.colors.Normalize(vmin=0.0, vmax=max(strength_vmax, 1e-6))
     )
+    distribution_map = matplotlib.cm.ScalarMappable(
+        cmap="viridis", norm=matplotlib.colors.Normalize(vmin=0.0, vmax=1.0)
+    )
     raw_map.set_array([])
     strength_map.set_array([])
+    distribution_map.set_array([])
     raw_bar = fig.colorbar(raw_map, ax=axes[:, 0], fraction=0.018, pad=0.01)
     raw_bar.set_label("raw force magnitude", fontsize=8)
-    patch_bar = fig.colorbar(strength_map, ax=axes[:, 1:], fraction=0.012, pad=0.01)
-    patch_bar.set_label("normalized patch strength", fontsize=8)
+    patch_bar = fig.colorbar(strength_map, ax=axes[:, 1:3], fraction=0.012, pad=0.01)
+    patch_bar.set_label("contact-masked normalized patch strength", fontsize=8)
+    distribution_bar = fig.colorbar(distribution_map, ax=axes[:, 3], fraction=0.018, pad=0.01)
+    distribution_bar.set_label("predicted patch distribution", fontsize=8)
 
     fig.suptitle(
         f"{task_name}\nepisode {episode_index}, frame {actual_frame_index}, t={timestamp:.2f}s",
@@ -405,7 +472,8 @@ def _plot_frame(
     fig.text(
         0.5,
         0.002,
-        "GT: C = contact, - = no contact. Prediction: p = contact probability, s = patch strength.",
+        "GT: C = contact, - = no contact. Prediction: p = contact probability, s = ungated predicted "
+        "strength. Strength color is shown only when contact (GT C or predicted p >= 0.5).",
         ha="center",
         fontsize=8,
     )
@@ -524,8 +592,14 @@ def main() -> None:
         raw_magnitude = np.linalg.norm(raw_tactile, axis=-1)
         active_raw = raw_magnitude[raw_magnitude > args.raw_contact_threshold]
         raw_vmax = float(np.percentile(active_raw, 99.0)) if active_raw.size else 1.0
+        target_display_strength = np.where(
+            arrays["target_contact"] >= 0.5, np.maximum(arrays["target_strength"], 0.0), 0.0
+        )
+        pred_display_strength = np.where(
+            arrays["pred_contact"] >= 0.5, np.maximum(arrays["pred_strength"], 0.0), 0.0
+        )
         combined_strength = np.concatenate(
-            [np.maximum(arrays["target_strength"], 0.0).reshape(-1), np.maximum(arrays["pred_strength"], 0.0).reshape(-1)]
+            [target_display_strength.reshape(-1), pred_display_strength.reshape(-1)]
         )
         positive_strength = combined_strength[combined_strength > 0]
         strength_vmax = float(np.percentile(positive_strength, 99.0)) if positive_strength.size else 1.0
@@ -570,6 +644,9 @@ def main() -> None:
             "raw_contact_threshold": args.raw_contact_threshold,
             "raw_vmax": raw_vmax,
             "normalized_strength_vmax": strength_vmax,
+            "gt_color_value": "where(target_contact >= 0.5, max(target_strength, 0), 0)",
+            "predicted_color_value": "where(predicted_contact_probability >= 0.5, max(predicted_strength, 0), 0)",
+            "distribution_color_value": "softmax patch distribution in [0, 1]",
             "normalization": str(norm_path),
             "frames": rendered,
             "video": str(video_path) if video_created else None,

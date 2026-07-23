@@ -20,10 +20,10 @@ def _parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def _plot(frame: pd.DataFrame, output: pathlib.Path, metric: str, phase: str) -> None:
+def _plot(frame: pd.DataFrame, output: pathlib.Path, metric: str, scope: str, phase: str) -> None:
     selected = frame[
         (frame["metric"] == metric)
-        & (frame["scope"] == "suffix")
+        & (frame["scope"] == scope)
         & (frame["phase"] == phase)
         & (frame["samples"] > 0)
     ]
@@ -36,11 +36,11 @@ def _plot(frame: pd.DataFrame, output: pathlib.Path, metric: str, phase: str) ->
         ax.plot(group["offset"], group["value"], marker="o", linewidth=1.8, label=model)
     ax.set_xlabel("execution offset k")
     direction = "higher is better" if metric == "latent_cosine" else "lower is better"
-    ax.set_ylabel(f"{metric.replace('_', ' ')} ({phase}, {direction})")
+    ax.set_ylabel(f"{metric.replace('_', ' ')} ({scope}, {phase}, {direction})")
     ax.grid(True, alpha=0.25)
     ax.legend(frameon=False, fontsize=7)
     fig.tight_layout()
-    fig.savefig(output / f"{metric}_suffix_{phase}_checkpoint_comparison.png")
+    fig.savefig(output / f"{metric}_{scope}_{phase}_checkpoint_comparison.png")
     plt.close(fig)
 
 
@@ -61,18 +61,30 @@ def main() -> None:
     combined = pd.concat(frames, ignore_index=True)
     combined.to_csv(output_dir / "suite_metrics_long.csv", index=False)
 
-    for phase in ("overall", "pre_contact", "post_contact", "no_contact"):
-        _plot(combined, output_dir, "latent_cosine", phase)
-        _plot(combined, output_dir, "action_mse", phase)
+    for scope in ("full", "suffix"):
+        for phase in ("overall", "pre_contact", "post_contact", "no_contact"):
+            _plot(combined, output_dir, "latent_cosine", scope, phase)
+            _plot(combined, output_dir, "action_mse", scope, phase)
 
-    summary = combined[
-        (combined["scope"] == "suffix")
-        & (combined["phase"].isin(("overall", "pre_contact", "post_contact")))
-    ].copy()
-    summary = summary[
-        ["model", "mode", "metric", "phase", "offset", "value", "samples", "result_dir"]
-    ].sort_values(["metric", "phase", "offset", "model"])
-    summary.to_csv(output_dir / "suite_summary.csv", index=False)
+    summary_columns = [
+        "model",
+        "mode",
+        "metric",
+        "phase",
+        "offset",
+        "value",
+        "samples",
+        "result_dir",
+    ]
+    for scope in ("full", "suffix"):
+        summary = combined[
+            (combined["scope"] == scope)
+            & (combined["phase"].isin(("overall", "pre_contact", "post_contact")))
+        ].copy()
+        summary = summary[summary_columns].sort_values(["metric", "phase", "offset", "model"])
+        summary.to_csv(output_dir / f"suite_summary_{scope}.csv", index=False)
+        if scope == "suffix":
+            summary.to_csv(output_dir / "suite_summary.csv", index=False)
     print(f"Combined {len(metric_files)} runs into {output_dir}", flush=True)
 
 

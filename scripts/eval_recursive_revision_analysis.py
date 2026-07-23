@@ -920,28 +920,29 @@ def main(args: Args) -> None:
         )
     _write_metrics(output_dir, rows, metrics, args, contact_summary)
     phases = PHASES if args.split_by_contact else ("overall",)
-    for phase in phases:
-        suffix = "" if phase == "overall" else f"_{phase}"
-        _plot_metric(
-            output_dir,
-            rows,
-            metric="latent_cosine",
-            scope="suffix",
-            phase=phase,
-            modes=args.modes,
-            ylabel=f"latent cosine ({phase}, higher is better)",
-            filename=f"latent_cosine_suffix{suffix}.png",
-        )
-        _plot_metric(
-            output_dir,
-            rows,
-            metric="action_mse",
-            scope="suffix",
-            phase=phase,
-            modes=args.modes,
-            ylabel=f"physical action suffix MSE ({phase}, lower is better)",
-            filename=f"action_mse_suffix{suffix}.png",
-        )
+    for scope in ("full", "suffix"):
+        for phase in phases:
+            phase_suffix = "" if phase == "overall" else f"_{phase}"
+            _plot_metric(
+                output_dir,
+                rows,
+                metric="latent_cosine",
+                scope=scope,
+                phase=phase,
+                modes=args.modes,
+                ylabel=f"latent cosine ({scope}, {phase}, higher is better)",
+                filename=f"latent_cosine_{scope}{phase_suffix}.png",
+            )
+            _plot_metric(
+                output_dir,
+                rows,
+                metric="action_mse",
+                scope=scope,
+                phase=phase,
+                modes=args.modes,
+                ylabel=f"physical action {scope} MSE ({phase}, lower is better)",
+                filename=f"action_mse_{scope}{phase_suffix}.png",
+            )
     logging.info("Saved recursive revision metrics to %s", output_dir)
 
 

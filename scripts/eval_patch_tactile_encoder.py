@@ -21,6 +21,7 @@ Example:
 from __future__ import annotations
 
 import csv
+import collections.abc
 import dataclasses
 import json
 import logging
@@ -191,9 +192,54 @@ def _iter_tactile_batches(args: Args):
         yield np.stack(buffer, axis=0)
 
 
+def _iter_tree_leaves(tree, path=()):
+    if isinstance(tree, collections.abc.Mapping):
+        for key, value in tree.items():
+            yield from _iter_tree_leaves(value, (*path, str(key)))
+    elif isinstance(tree, (list, tuple)):
+        for index, value in enumerate(tree):
+            yield from _iter_tree_leaves(value, (*path, str(index)))
+    else:
+        yield path, tree
+
+
+def _infer_checkpoint_encoder_type(params) -> str | None:
+    leaves = list(_iter_tree_leaves(params))
+    paths = ("/".join(path) for path, _ in leaves)
+    if any("patch_encoder/patch_stat_proj_in" in path for path in paths):
+        return "patch_informed"
+
+    paths = ("/".join(path) for path, _ in leaves)
+    if any("patch_encoder/point_score" in path for path in paths):
+        return "raw_spatial"
+
+    for path, value in leaves:
+        if "patch_encoder/force_proj_in/kernel" not in "/".join(path):
+            continue
+        shape = getattr(value, "shape", ())
+        if shape and int(shape[0]) == 3:
+            return "raw_spatial"
+        if shape and int(shape[0]) > 3:
+            return "raw_mlp"
+    return None
+
+
 def _load_model(config_name: str, params_path: str):
     train_config = _config.get_config(config_name)
     params = _model.restore_params(pathlib.Path(params_path).expanduser(), restore_type=np.ndarray)
+    expected_type = getattr(train_config.model, "pretrain_tactile_encoder", None)
+    checkpoint_type = _infer_checkpoint_encoder_type(params)
+    if expected_type is not None and checkpoint_type is not None and expected_type != checkpoint_type:
+        config_by_type = {
+            "patch_informed": "xhand_patch_tactile_encoder_pretrain",
+            "raw_spatial": "xhand_raw_spatial_tactile_encoder_pretrain",
+            "raw_mlp": "xhand_raw_mlp_tactile_encoder_pretrain",
+        }
+        raise ValueError(
+            f"Encoder checkpoint/config mismatch: checkpoint contains {checkpoint_type!r} parameters, "
+            f"but --config-name={config_name!r} builds {expected_type!r}. "
+            f"Use --config-name {config_by_type[checkpoint_type]}."
+        )
     return train_config.model.load(params)
 
 
