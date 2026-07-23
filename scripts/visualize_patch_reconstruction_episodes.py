@@ -410,6 +410,7 @@ def _annotate_patch_panel(
     strength: np.ndarray,
     contact: np.ndarray,
     predicted: bool,
+    fontsize: float,
 ) -> None:
     centers, _ = _patch_centers(layout_dir, finger_idx)
     for patch_id, center in enumerate(centers):
@@ -424,10 +425,10 @@ def _annotate_patch_panel(
             text,
             ha="center",
             va="center",
-            fontsize=5.4,
+            fontsize=fontsize,
             color="white",
             fontweight="bold",
-            bbox={"boxstyle": "round,pad=0.12", "facecolor": "black", "edgecolor": "none", "alpha": 0.45},
+            bbox={"boxstyle": "round,pad=0.16", "facecolor": "black", "edgecolor": "none", "alpha": 0.62},
             zorder=8,
         )
 
@@ -446,6 +447,7 @@ def _plot_frame(
     raw_threshold: float,
     raw_vmax: float,
     strength_vmax: float,
+    patch_label_fontsize: float,
     dpi: int,
 ) -> None:
     fig, axes = plt.subplots(5, 4, figsize=(11.4, 12.4), constrained_layout=True)
@@ -485,6 +487,7 @@ def _plot_frame(
             strength=target_strength,
             contact=target_contact,
             predicted=False,
+            fontsize=patch_label_fontsize,
         )
 
         _single_vis._draw_patch_values(
@@ -504,6 +507,7 @@ def _plot_frame(
             strength=pred_strength,
             contact=pred_contact,
             predicted=True,
+            fontsize=patch_label_fontsize,
         )
 
         _single_vis._draw_patch_values(
@@ -581,6 +585,7 @@ def _save_individual_panels(
     raw_threshold: float,
     raw_vmax: float,
     strength_vmax: float,
+    patch_label_fontsize: float,
     dpi: int,
 ) -> list[dict[str, object]]:
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -641,6 +646,7 @@ def _save_individual_panels(
                     strength=target_strength,
                     contact=target_contact,
                     predicted=False,
+                    fontsize=patch_label_fontsize,
                 )
                 color_map = matplotlib.cm.ScalarMappable(
                     cmap="turbo",
@@ -665,6 +671,7 @@ def _save_individual_panels(
                     strength=pred_strength,
                     contact=pred_contact,
                     predicted=True,
+                    fontsize=patch_label_fontsize,
                 )
                 color_map = matplotlib.cm.ScalarMappable(
                     cmap="turbo",
@@ -757,12 +764,18 @@ def main() -> None:
     parser.add_argument("--raw-contact-threshold", type=float, default=1.0)
     parser.add_argument("--frame-stride", type=int, default=1)
     parser.add_argument("--dpi", type=int, default=150)
+    parser.add_argument(
+        "--patch-label-fontsize",
+        type=float,
+        default=8.0,
+        help="Font size for per-patch C/p and s annotations (default: 8.0; previously 5.4).",
+    )
     parser.add_argument("--fps", type=float, default=15.0)
     parser.add_argument("--make-video", action="store_true")
     args = parser.parse_args()
 
-    if args.batch_size <= 0 or args.frame_stride <= 0:
-        raise ValueError("batch-size and frame-stride must be positive")
+    if args.batch_size <= 0 or args.frame_stride <= 0 or args.patch_label_fontsize <= 0:
+        raise ValueError("batch-size, frame-stride, and patch-label-fontsize must be positive")
     if args.frame_index is not None and args.episode_index is None:
         raise ValueError("--frame-index requires --episode-index")
     repo = args.repo_id.expanduser().resolve()
@@ -882,6 +895,7 @@ def main() -> None:
                 raw_threshold=args.raw_contact_threshold,
                 raw_vmax=raw_vmax,
                 strength_vmax=strength_vmax,
+                patch_label_fontsize=args.patch_label_fontsize,
                 dpi=args.dpi,
             )
             panel_records = []
@@ -896,6 +910,7 @@ def main() -> None:
                     raw_threshold=args.raw_contact_threshold,
                     raw_vmax=raw_vmax,
                     strength_vmax=strength_vmax,
+                    patch_label_fontsize=args.patch_label_fontsize,
                     dpi=args.dpi,
                 )
                 panel_data = {
@@ -944,6 +959,7 @@ def main() -> None:
             "raw_contact_threshold": args.raw_contact_threshold,
             "raw_vmax": raw_vmax,
             "normalized_strength_vmax": strength_vmax,
+            "patch_label_fontsize": args.patch_label_fontsize,
             "gt_color_value": "where(target_contact >= 0.5, max(target_strength, 0), 0)",
             "predicted_color_value": "where(predicted_contact_probability >= 0.5, max(predicted_strength, 0), 0)",
             "distribution_color_value": "softmax patch distribution in [0, 1]",
