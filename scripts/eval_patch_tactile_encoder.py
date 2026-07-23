@@ -358,6 +358,12 @@ def _add_force_aggregate_stats(
     metrics[f"{base}/vector_l2_sum"] = jnp.sum(vector_error)
     metrics[f"{base}/active_count"] = jnp.sum(active)
     metrics[f"{base}/active_vector_l2_sum"] = jnp.sum(jnp.where(active, vector_error, 0.0))
+    metrics[f"{base}/active_pred_magnitude_sum"] = jnp.sum(
+        jnp.where(active, pred_magnitude, 0.0)
+    )
+    metrics[f"{base}/active_target_magnitude_sum"] = jnp.sum(
+        jnp.where(active, target_magnitude, 0.0)
+    )
     metrics[f"{base}/direction_count"] = jnp.sum(direction_valid)
     metrics[f"{base}/direction_cosine_sum"] = jnp.sum(jnp.where(direction_valid, cosine, 0.0))
     metrics[f"{base}/inactive_count"] = jnp.sum(inactive)
@@ -587,9 +593,16 @@ def _finalize_force_metrics(aggregate: dict[str, float], prefix: str) -> dict[st
     active_count = max(aggregate[f"{base}/active_count"], 1.0)
     direction_count = max(aggregate[f"{base}/direction_count"], 1.0)
     inactive_count = max(aggregate[f"{base}/inactive_count"], 1.0)
+    active_pred_magnitude_mean = aggregate[f"{base}/active_pred_magnitude_sum"] / active_count
+    active_target_magnitude_mean = aggregate[f"{base}/active_target_magnitude_sum"] / active_count
     return {
         "force_vector_l2": aggregate[f"{base}/vector_l2_sum"] / count,
         "active_force_vector_l2": aggregate[f"{base}/active_vector_l2_sum"] / active_count,
+        "active_pred_force_magnitude_mean": active_pred_magnitude_mean,
+        "active_target_force_magnitude_mean": active_target_magnitude_mean,
+        "active_force_magnitude_ratio": (
+            active_pred_magnitude_mean / max(active_target_magnitude_mean, 1e-12)
+        ),
         "active_force_direction_cosine": aggregate[f"{base}/direction_cosine_sum"] / direction_count,
         "force_x_mae": aggregate[f"{base}/x_abs_sum"] / count,
         "force_y_mae": aggregate[f"{base}/y_abs_sum"] / count,
@@ -717,9 +730,13 @@ def main(args: Args) -> None:
     if "active_force_vector_l2" in metrics:
         logging.info(
             "3D force: active_vector_l2=%.4f direction_cosine=%.4f "
+            "active_magnitude=(pred=%.4f, target=%.4f, ratio=%.4f) "
             "active_xyz_mae=(%.4f, %.4f, %.4f) inactive_magnitude=%.4f",
             metrics["active_force_vector_l2"],
             metrics["active_force_direction_cosine"],
+            metrics["active_pred_force_magnitude_mean"],
+            metrics["active_target_force_magnitude_mean"],
+            metrics["active_force_magnitude_ratio"],
             metrics["active_force_x_mae"],
             metrics["active_force_y_mae"],
             metrics["active_force_z_mae"],

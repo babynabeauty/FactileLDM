@@ -71,6 +71,9 @@ class XHandPatchTactileEncoderPretrain(nnx.Module):
         self.distribution_loss_weight = float(config.patch_distribution_loss_weight)
         self.summary_loss_weight = float(config.patch_summary_loss_weight)
         self.contact_loss_weight = float(config.patch_contact_loss_weight)
+        self.active_force_magnitude_loss_weight = float(
+            config.patch_active_force_magnitude_loss_weight
+        )
         self.inactive_force_loss_weight = float(config.patch_inactive_force_loss_weight)
         self.pretrain_history_time_samples = int(config.pretrain_history_time_samples)
         self.pretrain_future_time_samples = int(config.pretrain_future_time_samples)
@@ -188,8 +191,27 @@ class XHandPatchTactileEncoderPretrain(nnx.Module):
             active_mask = jax.lax.stop_gradient(target_contact.astype(jnp.float32))[..., None]
             inactive_mask = 1.0 - active_mask
             inactive_zero_error = _smooth_l1(summary_pred, jnp.zeros_like(summary_pred))
+            pred_force_magnitude = jnp.sqrt(
+                jnp.sum(jnp.square(summary_pred.astype(jnp.float32)), axis=-1) + 1e-8
+            )
+            target_force_magnitude = jnp.sqrt(
+                jnp.sum(
+                    jnp.square(jax.lax.stop_gradient(target_summary.astype(jnp.float32))),
+                    axis=-1,
+                )
+                + 1e-8
+            )
+            active_patch_mask = active_mask[..., 0]
+            active_magnitude_error = _smooth_l1(
+                pred_force_magnitude,
+                target_force_magnitude,
+            )
             active_denom = jnp.maximum(
                 jnp.sum(active_mask, axis=(1, 2, 3, 4)) * self.dim_per_point,
+                1.0,
+            )
+            active_patch_denom = jnp.maximum(
+                jnp.sum(active_patch_mask, axis=(1, 2, 3)),
                 1.0,
             )
             inactive_denom = jnp.maximum(
@@ -200,15 +222,34 @@ class XHandPatchTactileEncoderPretrain(nnx.Module):
                 jnp.sum(summary_error * active_mask, axis=(1, 2, 3, 4))
                 / active_denom
             )
+            active_force_magnitude_loss = (
+                jnp.sum(active_magnitude_error * active_patch_mask, axis=(1, 2, 3))
+                / active_patch_denom
+            )
             inactive_force_loss = (
                 jnp.sum(inactive_zero_error * inactive_mask, axis=(1, 2, 3, 4))
                 / inactive_denom
             )
-            summary_loss = active_force_loss + self.inactive_force_loss_weight * inactive_force_loss
+            summary_loss = (
+                active_force_loss
+                + self.active_force_magnitude_loss_weight * active_force_magnitude_loss
+                + self.inactive_force_loss_weight * inactive_force_loss
+            )
+            active_pred_force_magnitude = (
+                jnp.sum(pred_force_magnitude * active_patch_mask, axis=(1, 2, 3))
+                / active_patch_denom
+            )
+            active_target_force_magnitude = (
+                jnp.sum(target_force_magnitude * active_patch_mask, axis=(1, 2, 3))
+                / active_patch_denom
+            )
         else:
             summary_loss = jnp.mean(summary_error, axis=(1, 2, 3, 4))
             active_force_loss = jnp.zeros_like(summary_loss)
+            active_force_magnitude_loss = jnp.zeros_like(summary_loss)
             inactive_force_loss = jnp.zeros_like(summary_loss)
+            active_pred_force_magnitude = jnp.zeros_like(summary_loss)
+            active_target_force_magnitude = jnp.zeros_like(summary_loss)
         contact_loss = jnp.mean(
             _sigmoid_bce_with_logits(contact_logits, jax.lax.stop_gradient(target_contact)),
             axis=(1, 2, 3),
@@ -226,9 +267,12 @@ class XHandPatchTactileEncoderPretrain(nnx.Module):
             "loss/patch_distribution": dist_loss,
             "loss/patch_summary": summary_loss,
             "loss/active_patch_force": active_force_loss,
+            "loss/active_patch_force_magnitude": active_force_magnitude_loss,
             "loss/inactive_patch_force": inactive_force_loss,
             "loss/patch_contact": contact_loss,
             "loss/total": total,
+            "metric/active_pred_force_magnitude": active_pred_force_magnitude,
+            "metric/active_target_force_magnitude": active_target_force_magnitude,
             "metric/contact_accuracy": contact_accuracy,
             "metric/pred_contact_ratio": jnp.mean(pred_contact.astype(jnp.float32), axis=(1, 2, 3)),
             "metric/target_contact_ratio": jnp.mean(target_contact, axis=(1, 2, 3)),

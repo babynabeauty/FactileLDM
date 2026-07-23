@@ -760,6 +760,7 @@ class XHandPatchTactileEncoderPretrainConfig(_model.BaseModelConfig):
     patch_summary_loss_weight: float = 1.0
     patch_contact_loss_weight: float = 0.5
     patch_force_only_summary: bool = False
+    patch_active_force_magnitude_loss_weight: float = 0.0
     patch_inactive_force_loss_weight: float = 0.1
 
     @property
@@ -785,6 +786,10 @@ class XHandPatchTactileEncoderPretrainConfig(_model.BaseModelConfig):
             raise ValueError("tactile_raw_contact_temperature must be positive.")
         if self.pretrain_history_time_samples < 0 or self.pretrain_future_time_samples < 0:
             raise ValueError("pretrain time sample counts must be non-negative.")
+        if self.patch_active_force_magnitude_loss_weight < 0:
+            raise ValueError("patch_active_force_magnitude_loss_weight must be non-negative.")
+        if self.patch_inactive_force_loss_weight < 0:
+            raise ValueError("patch_inactive_force_loss_weight must be non-negative.")
 
     @override
     def create(self, rng: at.KeyArrayLike):
@@ -824,7 +829,8 @@ class XHandPatchForceThreeHeadEncoderPretrainConfig(XHandPatchTactileEncoderPret
     """Three-head pretraining with a compact per-patch 3D-force middle head."""
 
     patch_force_only_summary: bool = True
-    patch_inactive_force_loss_weight: float = 0.1
+    patch_active_force_magnitude_loss_weight: float = 0.5
+    patch_inactive_force_loss_weight: float = 0.25
 
 
 @dataclasses.dataclass(frozen=True)
