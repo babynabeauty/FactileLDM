@@ -57,6 +57,10 @@ RESUME="${RESUME:-0}"
 SWEEP_GROUP="${SWEEP_GROUP:-objectives}"
 
 case "$SWEEP_GROUP" in
+  force_three_head)
+    CONFIGS=("xhand_patch_force_three_head_encoder_pretrain")
+    LABELS=("force_three_head")
+    ;;
   objectives)
     CONFIGS=(
       "xhand_patch_tactile_encoder_pretrain"
@@ -85,7 +89,7 @@ case "$SWEEP_GROUP" in
     )
     ;;
   *)
-    echo "ERROR: SWEEP_GROUP must be objectives, nonpatch, or all; got: $SWEEP_GROUP" >&2
+    echo "ERROR: SWEEP_GROUP must be force_three_head, objectives, nonpatch, or all; got: $SWEEP_GROUP" >&2
     exit 2
     ;;
 esac

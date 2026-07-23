@@ -66,7 +66,8 @@ class XHandPatchTactileEncoderPretrain(nnx.Module):
         self.dim_per_point = int(config.tactile_dim_per_finger)
         self.num_patches = int(config.tactile_num_patches)
         self.encoder_width = int(config.encoder_width)
-        self.summary_dim = 2 * self.dim_per_point + 1
+        self.force_only_summary = bool(config.patch_force_only_summary)
+        self.summary_dim = self.dim_per_point if self.force_only_summary else 2 * self.dim_per_point + 1
         self.distribution_loss_weight = float(config.patch_distribution_loss_weight)
         self.summary_loss_weight = float(config.patch_summary_loss_weight)
         self.contact_loss_weight = float(config.patch_contact_loss_weight)
@@ -164,6 +165,8 @@ class XHandPatchTactileEncoderPretrain(nnx.Module):
         tokens = self._encode_all_steps(history_effort, future_effort, history_times, future_times)
 
         target_dist, target_summary, target_contact = self.patch_encoder.patch_reconstruction_targets(effort)
+        if self.force_only_summary:
+            target_summary = target_summary[..., : self.dim_per_point]
         dist_logits = self.patch_distribution_head(tokens)
         summary_pred = self.patch_summary_head(tokens)
         summary_pred = einops.rearrange(

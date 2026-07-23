@@ -323,7 +323,11 @@ def _eval_batch(model, tactile: jax.Array) -> dict[str, jax.Array]:
     target_dist = target_dist.astype(jnp.float32)
     target_summary = target_summary.astype(jnp.float32)
     target_contact = target_contact.astype(jnp.float32)
-    target_strength = target_summary[..., -1]
+    target_strength = (
+        jnp.linalg.norm(target_summary[..., : model.dim_per_point], axis=-1)
+        if getattr(model, "force_only_summary", False)
+        else target_summary[..., -1]
+    )
 
     if hasattr(model, "patch_strength_head"):
         pred_strength = jax.nn.softplus(model.patch_strength_head(tokens).astype(jnp.float32))
@@ -362,6 +366,11 @@ def _eval_batch(model, tactile: jax.Array) -> dict[str, jax.Array]:
             r=model.num_patches,
             c=model.summary_dim,
         ).astype(jnp.float32)
+        target_summary_for_loss = (
+            target_summary[..., : model.dim_per_point]
+            if getattr(model, "force_only_summary", False)
+            else target_summary
+        )
 
         contact_logits = model.patch_contact_head(tokens).astype(jnp.float32)
         pred_contact = jax.nn.sigmoid(contact_logits)
@@ -375,10 +384,14 @@ def _eval_batch(model, tactile: jax.Array) -> dict[str, jax.Array]:
         )
         contact_bce = jnp.mean(_sigmoid_bce_with_logits(contact_logits, target_contact))
         contact = _contact_stats(pred_contact, target_contact)
-        pred_strength = summary_pred[..., -1]
+        pred_strength = (
+            jnp.linalg.norm(summary_pred, axis=-1)
+            if getattr(model, "force_only_summary", False)
+            else summary_pred[..., -1]
+        )
         strength_mae = jnp.mean(jnp.abs(pred_strength - target_strength))
         strength_smooth_l1 = jnp.mean(_smooth_l1(pred_strength, target_strength))
-        summary_smooth_l1 = jnp.mean(_smooth_l1(summary_pred, target_summary))
+        summary_smooth_l1 = jnp.mean(_smooth_l1(summary_pred, target_summary_for_loss))
         strength_corr = _pearson(pred_strength, target_strength)
         metrics = {
             "distribution_ce": dist_ce,

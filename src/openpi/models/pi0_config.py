@@ -759,6 +759,7 @@ class XHandPatchTactileEncoderPretrainConfig(_model.BaseModelConfig):
     patch_distribution_loss_weight: float = 1.0
     patch_summary_loss_weight: float = 1.0
     patch_contact_loss_weight: float = 0.5
+    patch_force_only_summary: bool = False
 
     @property
     @override
@@ -815,6 +816,13 @@ class XHandPatchTactileEncoderPretrainConfig(_model.BaseModelConfig):
         return observation_spec, jax.ShapeDtypeStruct(
             [batch_size, self.action_horizon, self.action_dim], jnp.float32
         )
+
+
+@dataclasses.dataclass(frozen=True)
+class XHandPatchForceThreeHeadEncoderPretrainConfig(XHandPatchTactileEncoderPretrainConfig):
+    """Three-head pretraining with a compact per-patch 3D-force middle head."""
+
+    patch_force_only_summary: bool = True
 
 
 @dataclasses.dataclass(frozen=True)

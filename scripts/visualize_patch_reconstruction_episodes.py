@@ -248,11 +248,18 @@ def _infer_checkpoint_encoder_type(params) -> str | None:
 
 
 def _infer_checkpoint_head_type(params) -> str | None:
-    paths = ["/".join(path) for path, _ in _iter_tree_leaves(params)]
+    leaves = list(_iter_tree_leaves(params))
+    paths = ["/".join(path) for path, _ in leaves]
     if any("patch_force_mean_head/" in path for path in paths):
         return "mean_force"
     if any("patch_strength_head/" in path for path in paths):
         return "strength"
+    for path, value in leaves:
+        if "patch_summary_head/kernel" not in "/".join(path):
+            continue
+        shape = getattr(value, "shape", ())
+        if shape and int(shape[-1]) == 15:
+            return "force_three_head"
     if any("patch_distribution_head/" in path for path in paths):
         return "full_heads"
     return None
@@ -280,12 +287,15 @@ def _load_model(config_name: str, params: pathlib.Path):
         if isinstance(config.model, pi0_config.XHandPatchMeanForceEncoderPretrainConfig)
         else "strength"
         if isinstance(config.model, pi0_config.XHandPatchStrengthEncoderPretrainConfig)
+        else "force_three_head"
+        if isinstance(config.model, pi0_config.XHandPatchForceThreeHeadEncoderPretrainConfig)
         else "full_heads"
     )
     if checkpoint_head_type is not None and checkpoint_head_type != config_head_type:
         config_by_head_type = {
             "mean_force": "xhand_patch_mean_force_contact_distribution_encoder_pretrain",
             "strength": "xhand_patch_strength_contact_encoder_pretrain",
+            "force_three_head": "xhand_patch_force_three_head_encoder_pretrain",
             "full_heads": "xhand_patch_tactile_encoder_pretrain",
         }
         raise ValueError(
@@ -303,6 +313,11 @@ def _model_batch(model, normalized_tactile: jax.Array) -> dict[str, jax.Array]:
     times = jnp.zeros((1,), dtype=jnp.float32)
     tokens = model.patch_encoder._encode_steps(effort, times, future=False, include_temporal=False)
     target_dist, target_summary, target_contact = model.patch_encoder.patch_reconstruction_targets(effort)
+    target_strength = (
+        jnp.linalg.norm(target_summary[..., : model.dim_per_point], axis=-1)
+        if getattr(model, "force_only_summary", False)
+        else target_summary[..., -1]
+    )
 
     if hasattr(model, "patch_force_mean_head"):
         pred_force = einops.rearrange(
@@ -337,12 +352,16 @@ def _model_batch(model, normalized_tactile: jax.Array) -> dict[str, jax.Array]:
             c=model.summary_dim,
         ).astype(jnp.float32)
         pred_contact = jax.nn.sigmoid(model.patch_contact_head(tokens).astype(jnp.float32))
-        pred_strength = pred_summary[..., -1]
+        pred_strength = (
+            jnp.linalg.norm(pred_summary, axis=-1)
+            if getattr(model, "force_only_summary", False)
+            else pred_summary[..., -1]
+        )
     return {
         "target_dist": target_dist[:, 0].astype(jnp.float32),
         "target_summary": target_summary[:, 0].astype(jnp.float32),
         "target_contact": target_contact[:, 0].astype(jnp.float32),
-        "target_strength": target_summary[:, 0, ..., -1].astype(jnp.float32),
+        "target_strength": target_strength[:, 0].astype(jnp.float32),
         "pred_dist": pred_dist[:, 0],
         "pred_summary": pred_summary[:, 0],
         "pred_contact": pred_contact[:, 0],
