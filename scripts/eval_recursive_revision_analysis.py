@@ -468,7 +468,73 @@ def _physical_actions(model, actions: at.Array) -> at.Array:
     return jnp.concatenate([actions[..., : model.arm_action_dim], actions[..., hand_slice]], axis=-1)
 
 
-def _action_mse(
+def _action_group(model, actions: at.Array, group: Literal["all", "arm", "hand"]) -> at.Array:
+    if group == "arm":
+        return actions[..., : model.arm_action_dim]
+    hand_slice = slice(model.hand_action_start, model.hand_action_start + model.hand_action_dim)
+    if group == "hand":
+        return actions[..., hand_slice]
+    if group == "all":
+        return _physical_actions(model, actions)
+    raise ValueError(f"Unsupported action group: {group}")
+
+
+def _action_stats_group(
+    model,
+    values: at.Array,
+    group: Literal["all", "arm", "hand"],
+) -> at.Array:
+    """Select stats packed as contiguous [arm, hand] physical dimensions."""
+    if group == "arm":
+        return values[..., : model.arm_action_dim]
+    if group == "hand":
+        start = model.arm_action_dim
+        return values[..., start : start + model.hand_action_dim]
+    if group == "all":
+        return values
+    raise ValueError(f"Unsupported action group: {group}")
+
+
+def _masked_action_mse(
+    prediction: at.Array,
+    target: at.Array,
+    offset: at.Array,
+    action_horizon: int,
+    *,
+    suffix_only: bool,
+) -> at.Array:
+    """Compute per-sample MSE on already-selected action dimensions."""
+    sq = jnp.square(prediction - target)
+    if not suffix_only:
+        return jnp.mean(sq, axis=(1, 2))
+    mask = (
+        jnp.arange(action_horizon, dtype=jnp.int32)[None, :, None]
+        >= jnp.asarray(offset, dtype=jnp.int32)
+    ).astype(sq.dtype)
+    return jnp.sum(sq * mask, axis=(1, 2)) / jnp.maximum(jnp.sum(mask) * sq.shape[-1], 1.0)
+
+
+def _normalized_action_mse(
+    model,
+    prediction: at.Array,
+    target: at.Array,
+    offset: at.Array,
+    *,
+    group: Literal["all", "arm", "hand"] = "all",
+    suffix_only: bool,
+) -> at.Array:
+    prediction_normalized = _action_group(model, prediction, group)
+    target_normalized = _action_group(model, target, group)
+    return _masked_action_mse(
+        prediction_normalized,
+        target_normalized,
+        offset,
+        model.action_horizon,
+        suffix_only=suffix_only,
+    )
+
+
+def _physical_action_mse(
     model,
     prediction: at.Array,
     target: at.Array,
@@ -476,18 +542,22 @@ def _action_mse(
     action_center: at.Array,
     action_scale: at.Array,
     *,
+    group: Literal["all", "arm", "hand"] = "all",
     suffix_only: bool,
 ) -> at.Array:
-    pred = _physical_actions(model, prediction) * action_scale + action_center
-    tgt = _physical_actions(model, target) * action_scale + action_center
-    sq = jnp.square(pred - tgt)
-    if not suffix_only:
-        return jnp.mean(sq, axis=(1, 2))
-    mask = (
-        jnp.arange(model.action_horizon, dtype=jnp.int32)[None, :, None]
-        >= jnp.asarray(offset, dtype=jnp.int32)
-    ).astype(sq.dtype)
-    return jnp.sum(sq * mask, axis=(1, 2)) / jnp.maximum(jnp.sum(mask) * sq.shape[-1], 1.0)
+    prediction_normalized = _action_group(model, prediction, group)
+    target_normalized = _action_group(model, target, group)
+    group_center = _action_stats_group(model, action_center, group)
+    group_scale = _action_stats_group(model, action_scale, group)
+    prediction_physical = prediction_normalized * group_scale + group_center
+    target_physical = target_normalized * group_scale + group_center
+    return _masked_action_mse(
+        prediction_physical,
+        target_physical,
+        offset,
+        model.action_horizon,
+        suffix_only=suffix_only,
+    )
 
 
 def _eval_batch(
@@ -663,7 +733,9 @@ def _eval_batch(
                 teacher_hidden,
                 suffix_token_mask,
             )
-            results[f"action_mse/full/{mode}/{offset_int}"] = _action_mse(
+            # Keep the historical ``action_mse`` key for backward
+            # compatibility. It denotes MSE after inverse normalization.
+            results[f"action_mse/full/{mode}/{offset_int}"] = _physical_action_mse(
                 model,
                 action_by_mode[mode],
                 target_actions,
@@ -672,7 +744,7 @@ def _eval_batch(
                 action_scale,
                 suffix_only=False,
             )
-            results[f"action_mse/suffix/{mode}/{offset_int}"] = _action_mse(
+            results[f"action_mse/suffix/{mode}/{offset_int}"] = _physical_action_mse(
                 model,
                 action_by_mode[mode],
                 target_actions,
@@ -681,6 +753,57 @@ def _eval_batch(
                 action_scale,
                 suffix_only=True,
             )
+            results[f"action_mse_normalized/full/{mode}/{offset_int}"] = _normalized_action_mse(
+                model,
+                action_by_mode[mode],
+                target_actions,
+                offset,
+                suffix_only=False,
+            )
+            results[f"action_mse_normalized/suffix/{mode}/{offset_int}"] = _normalized_action_mse(
+                model,
+                action_by_mode[mode],
+                target_actions,
+                offset,
+                suffix_only=True,
+            )
+            for group in ("arm", "hand"):
+                results[f"action_mse_{group}/full/{mode}/{offset_int}"] = _physical_action_mse(
+                    model,
+                    action_by_mode[mode],
+                    target_actions,
+                    offset,
+                    action_center,
+                    action_scale,
+                    group=group,
+                    suffix_only=False,
+                )
+                results[f"action_mse_{group}/suffix/{mode}/{offset_int}"] = _physical_action_mse(
+                    model,
+                    action_by_mode[mode],
+                    target_actions,
+                    offset,
+                    action_center,
+                    action_scale,
+                    group=group,
+                    suffix_only=True,
+                )
+                results[f"action_mse_normalized_{group}/full/{mode}/{offset_int}"] = _normalized_action_mse(
+                    model,
+                    action_by_mode[mode],
+                    target_actions,
+                    offset,
+                    group=group,
+                    suffix_only=False,
+                )
+                results[f"action_mse_normalized_{group}/suffix/{mode}/{offset_int}"] = _normalized_action_mse(
+                    model,
+                    action_by_mode[mode],
+                    target_actions,
+                    offset,
+                    group=group,
+                    suffix_only=True,
+                )
 
     return results
 
@@ -751,7 +874,15 @@ def _validate_offset_zero_consistency(
     reference_mode = modes[0]
     checked = 0
     mismatches: list[str] = []
-    for metric in ("latent_cosine", "action_mse"):
+    for metric in (
+        "latent_cosine",
+        "action_mse",
+        "action_mse_arm",
+        "action_mse_hand",
+        "action_mse_normalized",
+        "action_mse_normalized_arm",
+        "action_mse_normalized_hand",
+    ):
         for scope in ("full", "suffix"):
             prefix = f"{metric}/{scope}/{reference_mode}/0/"
             phases = sorted(key.removeprefix(prefix) for key in metrics if key.startswith(prefix))
@@ -983,16 +1114,25 @@ def main(args: Args) -> None:
                 ylabel=f"latent cosine ({scope}, {phase}, higher is better)",
                 filename=f"latent_cosine_{scope}{phase_suffix}.png",
             )
-            _plot_metric(
-                output_dir,
-                rows,
-                metric="action_mse",
-                scope=scope,
-                phase=phase,
-                modes=args.modes,
-                ylabel=f"physical action {scope} MSE ({phase}, lower is better)",
-                filename=f"action_mse_{scope}{phase_suffix}.png",
+            action_metric_specs = (
+                ("action_mse", "physical action"),
+                ("action_mse_arm", "physical arm action"),
+                ("action_mse_hand", "physical hand action"),
+                ("action_mse_normalized", "normalized action"),
+                ("action_mse_normalized_arm", "normalized arm action"),
+                ("action_mse_normalized_hand", "normalized hand action"),
             )
+            for metric, label in action_metric_specs:
+                _plot_metric(
+                    output_dir,
+                    rows,
+                    metric=metric,
+                    scope=scope,
+                    phase=phase,
+                    modes=args.modes,
+                    ylabel=f"{label} {scope} MSE ({phase}, lower is better)",
+                    filename=f"{metric}_{scope}{phase_suffix}.png",
+                )
     logging.info("Saved recursive revision metrics to %s", output_dir)
 
 

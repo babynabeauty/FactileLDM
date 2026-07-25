@@ -64,7 +64,15 @@ def main() -> None:
     for scope in ("full", "suffix"):
         for phase in ("overall", "pre_contact", "post_contact", "no_contact"):
             _plot(combined, output_dir, "latent_cosine", scope, phase)
-            _plot(combined, output_dir, "action_mse", scope, phase)
+            for metric in (
+                "action_mse",
+                "action_mse_arm",
+                "action_mse_hand",
+                "action_mse_normalized",
+                "action_mse_normalized_arm",
+                "action_mse_normalized_hand",
+            ):
+                _plot(combined, output_dir, metric, scope, phase)
 
     summary_columns = [
         "model",
