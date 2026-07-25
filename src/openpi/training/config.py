@@ -2550,7 +2550,7 @@ _CONFIGS.extend(
             "pi0_xhand_dual_patch_f8_h16_async",
             future_tactile_segments=8,
             async_enabled=True,
-            async_fast_offsets=(2, 4, 6, 8, 10),
+            async_fast_offsets=(2, 4, 6, 8, 10, 12),
         ),
     ]
 )

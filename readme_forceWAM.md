@@ -501,31 +501,37 @@ env/.venv/bin/python scripts/eval_patch_tactile_encoder.py \
 # 验证未来触觉预测
 cd /workspace/mnt/sqzhang26/FactileLDM
 
-export HF_LEROBOT_HOME=$PWD
-export HF_HUB_OFFLINE=1
+CHECKPOINT="checkpoints/你的新ckpt目录/step"
+MODEL_LABEL="new_retouch_checkpoint"
+OUTPUT_DIR="outputs/task_test_recursive_revision_new_ckpt"
 
-DATA_REPO=data/task12345-2
-ASSET_ID=$(basename "$DATA_REPO")
-POLICY_PARAMS=checkpoints/pi0_xhand_dual_patch_pretrained_f8_h16_async/pi0_xhand_dual_patch_pretrained_f8_h16_async_task12345_2_patch_pretrain_f8_0711_1607/59999/params
+mkdir -p "$OUTPUT_DIR" logs
 
 CUDA_VISIBLE_DEVICES=0,1,2,3 \
 XLA_PYTHON_CLIENT_PREALLOCATE=false \
+HF_LEROBOT_HOME="$PWD" \
+HF_HUB_OFFLINE=1 \
 env/.venv/bin/python scripts/eval_recursive_revision_analysis.py \
-  --config-name pi0_xhand_dual_patch_f8_h16_async \
-  --pretrained-params "$POLICY_PARAMS" \
-  --repo-id "$DATA_REPO" \
-  --asset-id "$ASSET_ID" \
+  --config-name pi0_xhand_dual_patch_pretrained_f8_h16_async \
+  --pretrained-params "$CHECKPOINT" \
+  --model-label "$MODEL_LABEL" \
+  --modes one_shot fresh_reinfer retouch \
+  --repo-id data/task-test \
+  --asset-id taskall-2 \
   --assets-dir assets/pi0_xhand_tactile_structured_raw_dual_ae \
-  --output-dir outputs/recursive_revision/task12345_2_f8_main \
-  --filter-path outputs/episode_splits/task12345-2_recursive_revision/val_episodes.json \
+  --output-dir "$OUTPUT_DIR" \
   --batch-size 4 \
   --fsdp-devices 4 \
   --num-workers 2 \
-  --max-batches 100 \
+  --max-batches 0 \
+  --seed 42 \
   --num-steps 10 \
-  --offsets 0 2 4 6 8 10 12 14
-
-
+  --offsets 0 4 8 12 \
+  --latent-action-condition zero \
+  --contact-threshold 1.0 \
+  --contact-min-taxels 1 \
+  --contact-min-consecutive-frames 1 \
+  2>&1 | tee "$OUTPUT_DIR/eval.log"
 # 可视化 PatchTactileEncoder的结果
 cd /workspace/mnt/sqzhang26/FactileLDM
 
