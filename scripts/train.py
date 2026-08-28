@@ -230,9 +230,14 @@ def train_step(
     ):
         if has_loss_stats:
             if getattr(model, "uses_train_progress", False):
-                chunked_loss, loss_stats = model.compute_loss_with_stats(
-                    rng, observation, actions, train=True, train_progress=train_progress
-                )
+                if getattr(model, "sequence_training", False):
+                    chunked_loss, loss_stats = model.compute_sequence_loss_with_stats(
+                        rng, observation, actions, train=True, train_progress=train_progress
+                    )
+                else:
+                    chunked_loss, loss_stats = model.compute_loss_with_stats(
+                        rng, observation, actions, train=True, train_progress=train_progress
+                    )
             else:
                 chunked_loss, loss_stats = model.compute_loss_with_stats(rng, observation, actions, train=True)
             # Keep aux stats scalar-friendly for logging.
@@ -312,9 +317,14 @@ def eval_step(
 
     if has_loss_stats:
         if getattr(model, "uses_train_progress", False):
-            chunked_loss, loss_stats = model.compute_loss_with_stats(
-                eval_rng, observation, actions, train=False, train_progress=eval_progress
-            )
+            if getattr(model, "sequence_training", False):
+                chunked_loss, loss_stats = model.compute_sequence_loss_with_stats(
+                    eval_rng, observation, actions, train=False, train_progress=eval_progress
+                )
+            else:
+                chunked_loss, loss_stats = model.compute_loss_with_stats(
+                    eval_rng, observation, actions, train=False, train_progress=eval_progress
+                )
         else:
             chunked_loss, loss_stats = model.compute_loss_with_stats(eval_rng, observation, actions, train=False)
         info = {"loss": jnp.mean(chunked_loss)}

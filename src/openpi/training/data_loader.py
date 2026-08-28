@@ -397,6 +397,68 @@ class TransformedDataset(Dataset[T_co]):
         return len(self._dataset.hf_dataset) if self._dataset.hf_dataset is not None else self._dataset.meta.total_frames
 
 
+class EpisodeChunkSequenceDataset(Dataset):
+    """Stacks ordered action-chunk anchors and pads episodes to one static length."""
+
+    def __init__(self, dataset: Dataset, sequences: Sequence[Sequence[int]]):
+        self._dataset = dataset
+        self._sequences = [tuple(int(index) for index in sequence) for sequence in sequences]
+        self._max_length = max(len(sequence) for sequence in self._sequences)
+
+    def __getitem__(self, index: SupportsIndex):
+        sequence = self._sequences[int(index)]
+        items = [self._dataset[item_index] for item_index in sequence]
+        mask = np.zeros((self._max_length,), dtype=np.float32)
+        mask[: len(items)] = 1.0
+        items.extend([items[-1]] * (self._max_length - len(items)))
+        stacked = jax.tree.map(lambda *values: np.stack([np.asarray(value) for value in values]), *items)
+        stacked["sequence_mask"] = mask
+        return stacked
+
+    def __len__(self) -> int:
+        return len(self._sequences)
+
+
+def _frame_metadata(dataset: Dataset) -> tuple[np.ndarray, np.ndarray]:
+    """Read episode/frame columns without decoding videos."""
+    if isinstance(dataset, TransformedDataset):
+        return _frame_metadata(dataset._dataset)  # noqa: SLF001
+    if isinstance(dataset, EpisodeSubsetDataset):
+        episodes, frames = _frame_metadata(dataset._dataset)  # noqa: SLF001
+        indices = np.asarray(dataset._indices, dtype=np.int64)  # noqa: SLF001
+        return episodes[indices], frames[indices]
+    if isinstance(dataset, LocalParquetStateActionOnlyDataset | StateActionOnlyDataset):
+        return dataset._episode_index, dataset._frame_index  # noqa: SLF001
+    if isinstance(dataset, lerobot_dataset.LeRobotDataset):
+        episodes = _column_to_numpy(dataset.hf_dataset["episode_index"])
+        if "frame_index" in set(dataset.hf_dataset.column_names):
+            frames = _column_to_numpy(dataset.hf_dataset["frame_index"])
+        else:
+            frames = np.zeros_like(episodes)
+            for episode in np.unique(episodes):
+                rows = np.nonzero(episodes == episode)[0]
+                frames[rows] = np.arange(len(rows), dtype=np.int64)
+        return episodes, frames
+    raise TypeError(f"Cannot obtain episode metadata from {type(dataset).__name__}.")
+
+
+def _episode_chunk_sequences(dataset: Dataset, *, stride: int, action_horizon: int) -> list[list[int]]:
+    episodes, frames = _frame_metadata(dataset)
+    sequences = []
+    for episode in np.unique(episodes):
+        rows = np.nonzero(episodes == episode)[0]
+        rows = rows[np.argsort(frames[rows])]
+        episode_frames = frames[rows]
+        last_anchor = int(episode_frames[-1]) - int(action_horizon) + 1
+        anchors = rows[(episode_frames - int(episode_frames[0])) % int(stride) == 0]
+        anchors = anchors[frames[anchors] <= last_anchor]
+        if len(anchors) > 0:
+            sequences.append(anchors.tolist())
+    if not sequences:
+        raise ValueError("No complete TactileTTT action chunks were found in the selected episodes.")
+    return sequences
+
+
 class IterableTransformedDataset(IterableDataset[T_co]):
     def __init__(
         self,
@@ -688,7 +750,16 @@ def create_torch_data_loader(
         seed: The seed to use for shuffling the data.
     """
     dataset = create_torch_dataset(data_config, action_horizon, model_config)
+    episode_sequences = None
+    if bool(getattr(model_config, "tactile_ttt_enabled", False)):
+        episode_sequences = _episode_chunk_sequences(
+            dataset,
+            stride=action_horizon,
+            action_horizon=action_horizon,
+        )
     dataset = transform_dataset(dataset, data_config, skip_norm_stats=skip_norm_stats)
+    if episode_sequences is not None:
+        dataset = EpisodeChunkSequenceDataset(dataset, episode_sequences)
 
     # Use TorchDataLoader for both frameworks
     # For PyTorch DDP, create DistributedSampler and divide batch size by world size

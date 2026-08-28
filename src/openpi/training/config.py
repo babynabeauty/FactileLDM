@@ -2264,6 +2264,127 @@ _CONFIGS.extend(
 )
 
 
+def _pi05_tactile_ttt_v0_config(source_name: str, new_name: str) -> TrainConfig:
+    """Minimal Pi0.5 + patch TPE + one tactile fast-memory experiment."""
+    source = next(config for config in _CONFIGS if config.name == source_name)
+    return dataclasses.replace(
+        source,
+        name=new_name,
+        model=dataclasses.replace(
+            source.model,
+            action_horizon=16,
+            force_input_frames=16,
+            tactile_history_offsets=tuple(range(-15, 1)),
+            future_tactile_segments=4,
+            future_steps_per_segment=4,
+            pool_tactile_history=False,
+            disable_future_tactile=True,
+            tactile_ttt_enabled=True,
+            tactile_ttt_memory_dim=256,
+            tactile_ttt_inner_lr=0.1,
+            tactile_ttt_write_segments=4,
+            use_future_flow=False,
+            tactile_refiner_enabled=False,
+            async_tactile_refiner_enabled=False,
+            async_tactile_flow_refiner_enabled=False,
+            cached_vlm_async_ae_enabled=False,
+            pi05=True,
+            max_token_len=200,
+            discrete_state_input=True,
+        ),
+        data=dataclasses.replace(
+            source.data,
+            repo_id="data/press_button_4_times/press_button_0",
+            state_delta_timestamps=tuple(range(-15, 1)),
+            future_flow_key=None,
+            future_wrist_flow_key=None,
+        ),
+        weight_loader=weight_loaders.Pi0WithPatchTactileEncoderWeightLoader(
+            pi0_params_path="checkpoints/pi05_base/params",
+            encoder_params_path=None,
+        ),
+        batch_size=1,
+        num_workers=0,
+        ema_decay=None,
+    )
+
+
+_CONFIGS.extend(
+    [
+        _pi05_tactile_ttt_v0_config(
+            "pi0_xhand_tactile_structured_patch_informed_raw_dual_ae",
+            "pi05_tactile_ttt_v0",
+        ),
+    ]
+)
+
+
+def _pi05_direct_tactile_config(
+    source_name: str,
+    new_name: str,
+    *,
+    history_offsets: tuple[int, ...],
+    history_segments: int = 0,
+) -> TrainConfig:
+    """Pi0.5 + patch TPE without fast memory or future-tactile prediction."""
+    source = next(config for config in _CONFIGS if config.name == source_name)
+    return dataclasses.replace(
+        source,
+        name=new_name,
+        model=dataclasses.replace(
+            source.model,
+            action_horizon=16,
+            force_input_frames=len(history_offsets),
+            tactile_history_offsets=history_offsets,
+            tactile_history_segments=history_segments,
+            future_tactile_segments=4,
+            future_steps_per_segment=4,
+            pool_tactile_history=False,
+            disable_future_tactile=True,
+            tactile_ttt_enabled=False,
+            use_future_flow=False,
+            tactile_refiner_enabled=False,
+            async_tactile_refiner_enabled=False,
+            async_tactile_flow_refiner_enabled=False,
+            cached_vlm_async_ae_enabled=False,
+            pi05=True,
+            max_token_len=200,
+            discrete_state_input=True,
+        ),
+        data=dataclasses.replace(
+            source.data,
+            repo_id="data/press_button_4_times/press_button_0",
+            state_delta_timestamps=history_offsets,
+            future_flow_key=None,
+            future_wrist_flow_key=None,
+        ),
+        weight_loader=weight_loaders.Pi0WithPatchTactileEncoderWeightLoader(
+            pi0_params_path="checkpoints/pi05_base/params",
+            encoder_params_path=None,
+        ),
+        batch_size=1,
+        num_workers=0,
+        ema_decay=None,
+    )
+
+
+_CONFIGS.extend(
+    [
+        _pi05_direct_tactile_config(
+            "pi0_xhand_tactile_structured_patch_informed_raw_dual_ae",
+            "pi05_tactile_current",
+            history_offsets=(0,),
+        ),
+        _pi05_direct_tactile_config(
+            "pi0_xhand_tactile_structured_patch_informed_raw_dual_ae",
+            "pi05_tactile_direct16",
+            history_offsets=tuple(range(-15, 1)),
+            history_segments=4,
+        ),
+    ]
+)
+
+
 def _history_future_tactile_pooled_config(source_name: str, new_name: str) -> TrainConfig:
     """Pool both tactile history and all 32 future steps along time.
 

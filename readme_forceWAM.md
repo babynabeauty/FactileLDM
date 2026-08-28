@@ -463,14 +463,14 @@ aws s3 cp s3://sqzhang26-2/path/to/folder ./folder \
   --endpoint-url https://eos-huhehaote-1.cmecloud.cn
 
 #上载整个目录
-aws s3 cp /Users/babyna/Downloads/0627_grasp_cob s3://sqzhang26-2/0627_grasp_cob  \
+aws s3 cp /Users/babyna/FactileLDM/data/press_button_4_times s3://sqzhang26-2/press_button_4_times  \
   --recursive \
   --endpoint-url https://eos-huhehaote-1.cmecloud.cn
 
 
 # 大文件上传  mac支持\
-s3cmd put /Users/babyna/Downloads/grasp_pipette_and_press_w_force_w_depth_0615_good_tactile_26ep.zip \
-  s3://sqzhang26-2/grasp_pipette_and_press_w_force_w_depth_0615_good_tactile_26ep.zip
+s3cmd put //Users/babyna/FactileLDM/data/press_button_4_times.zip  \
+  s3://sqzhang26-2/press_button_4_times.zip
 
 
 

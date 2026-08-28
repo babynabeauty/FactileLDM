@@ -134,6 +134,8 @@ class Observation(Generic[ArrayT]):
     token_loss_mask: at.Bool[ArrayT, "*b l"] | None = None
     
     is_contact: ArrayT | None = None
+    # Optional [B, S] mask used by episode/chunk sequence training.
+    sequence_mask: ArrayT | None = None
 
     @classmethod
     def from_dict(cls, data: at.PyTree[ArrayT]) -> "Observation[ArrayT]":
@@ -171,6 +173,7 @@ class Observation(Generic[ArrayT]):
             token_ar_mask=data.get("token_ar_mask"),
             token_loss_mask=data.get("token_loss_mask"),
             is_contact=data.get("is_contact"),
+            sequence_mask=data.get("sequence_mask"),
         )
 
     def to_dict(self) -> at.PyTree[ArrayT]:
@@ -278,6 +281,7 @@ def preprocess_observation(
         token_ar_mask=observation.token_ar_mask,
         token_loss_mask=observation.token_loss_mask,
         is_contact=observation.is_contact,
+        sequence_mask=observation.sequence_mask,
     )
 
 

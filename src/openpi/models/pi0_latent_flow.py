@@ -17,6 +17,7 @@ from openpi.models.tactile_tokenizer import DexterousForceTokenizer
 from openpi.models.tactile_tokenizer import PatchInformedFingerTokenizer
 from openpi.models.tactile_tokenizer import PlainRawTactileMLPTokenizer
 from openpi.models.tactile_tokenizer import RawTactileSpatialTokenizer
+from openpi.models.tactile_ttt import TactileTTTMemory
 from openpi.shared import array_typing as at
 
 
@@ -149,6 +150,9 @@ class Pi0LatentFlow(_model.BaseModel):
         self.effort_dim_in = int(effort_dim_in)
         self.effort_dim = int(config.effort_dim if config.effort_dim is not None else self.effort_dim_in)
         self.pi05 = config.pi05
+        # Pi0.5 serializes proprioception into the language prompt.  Keep the
+        # continuous state token only for Pi0, matching the base Pi0/Pi0.5 model.
+        self.state_token_count = 0 if self.pi05 else 1
         self.effort_type = config.effort_type
 
         self.force_input_frames = int(config.force_input_frames)
@@ -159,6 +163,7 @@ class Pi0LatentFlow(_model.BaseModel):
         self.future_tactile_segments = int(config.future_tactile_segments)
         self.future_steps_per_segment = int(config.future_steps_per_segment)
         self.pool_tactile_history = bool(getattr(config, "pool_tactile_history", False))
+        self.tactile_history_segments = int(getattr(config, "tactile_history_segments", 0))
         self.cached_vlm_async_ae_enabled = bool(getattr(config, "cached_vlm_async_ae_enabled", False))
         self.cached_vlm_async_offsets = tuple(
             int(offset) for offset in getattr(config, "cached_vlm_async_offsets", (0, 4, 8, 12))
@@ -180,6 +185,9 @@ class Pi0LatentFlow(_model.BaseModel):
         self.tactile_raw_mlp_tokenizer = bool(getattr(config, "tactile_raw_mlp_tokenizer", False))
         self.disable_future_tactile = bool(getattr(config, "disable_future_tactile", False))
         self.direct_future_tactile_align = bool(getattr(config, "direct_future_tactile_align", False))
+        self.tactile_ttt_enabled = bool(getattr(config, "tactile_ttt_enabled", False))
+        self.tactile_ttt_write_segments = int(getattr(config, "tactile_ttt_write_segments", 4))
+        self.sequence_training = self.tactile_ttt_enabled
         self.use_teacher_ae = not (self.disable_future_tactile or self.direct_future_tactile_align)
         self.tactile_patch_fingers = tuple(int(finger) for finger in getattr(config, "tactile_patch_fingers", (0, 1, 2)))
         self.tactile_num_patches = int(getattr(config, "tactile_num_patches", 5))
@@ -190,17 +198,19 @@ class Pi0LatentFlow(_model.BaseModel):
         self.future_force_token_count = 0 if self.disable_future_tactile else (
             self.future_tactile_segments * self.tactile_tokens_per_step if self.structured_tactile else 1
         )
-        self.history_force_token_count = (
-            (
-                2 * self.tactile_tokens_per_step
-                if self.pool_tactile_history and self.cached_vlm_async_history_mode == "pooled_current"
-                else self.tactile_tokens_per_step
-                if self.pool_tactile_history
-                else self.force_input_frames * self.tactile_tokens_per_step
-            )
-            if self.structured_tactile
-            else 1
-        )
+        if self.tactile_ttt_enabled:
+            self.history_force_token_count = self.tactile_num_fingers
+        elif self.structured_tactile:
+            if self.tactile_history_segments:
+                self.history_force_token_count = self.tactile_history_segments * self.tactile_tokens_per_step
+            elif self.pool_tactile_history and self.cached_vlm_async_history_mode == "pooled_current":
+                self.history_force_token_count = 2 * self.tactile_tokens_per_step
+            elif self.pool_tactile_history:
+                self.history_force_token_count = self.tactile_tokens_per_step
+            else:
+                self.history_force_token_count = self.force_input_frames * self.tactile_tokens_per_step
+        else:
+            self.history_force_token_count = 1
         self.history_times = tuple(
             float(offset) / float(config.tactile_sample_hz) for offset in config.tactile_history_offsets
         )
@@ -276,7 +286,11 @@ class Pi0LatentFlow(_model.BaseModel):
             if config.distill_projector_hidden_dim is not None
             else teacher_config.width
         )
-        llm_configs = [paligemma_config, student_config, teacher_config]
+        llm_configs = (
+            [paligemma_config, student_config]
+            if not self.use_teacher_ae
+            else [paligemma_config, student_config, teacher_config]
+        )
 
         llm = nnx_bridge.ToNNX(
             _gemma.Module(
@@ -402,6 +416,16 @@ class Pi0LatentFlow(_model.BaseModel):
                             rngs.params(), (2, teacher_config.width), dtype=jnp.float32
                         )
                     )
+            if self.tactile_ttt_enabled:
+                self.tactile_ttt = TactileTTTMemory(
+                    token_dim=student_config.width,
+                    memory_dim=config.tactile_ttt_memory_dim,
+                    inner_lr=config.tactile_ttt_inner_lr,
+                    contact_top_k=config.tactile_raw_contact_top_k,
+                    contact_threshold=config.tactile_raw_contact_threshold,
+                    contact_temperature=config.tactile_raw_contact_temperature,
+                    rngs=rngs,
+                )
         else:
             history_dim = self.force_input_frames * self.effort_dim_in
             future_dim = config.action_horizon * self.effort_dim_in
@@ -586,14 +610,14 @@ class Pi0LatentFlow(_model.BaseModel):
         student: at.Array | None,
         teacher: at.Array | None,
     ) -> list[at.Array | None]:
-        return [prefix, student, teacher]
+        return [prefix, student] if not self.use_teacher_ae else [prefix, student, teacher]
 
     def _llm_adarms(
         self,
         student: at.Array | None,
         teacher: at.Array | None,
     ) -> list[at.Array | None]:
-        return [None, student, teacher]
+        return [None, student] if not self.use_teacher_ae else [None, student, teacher]
 
     def _pad_or_crop_effort(
         self,
@@ -682,6 +706,13 @@ class Pi0LatentFlow(_model.BaseModel):
         self, history_effort: at.Array
     ) -> at.Array:
         if self.structured_tactile:
+            if self.tactile_history_segments:
+                return self.student_force_tokenizer.encode_temporal_segments(
+                    history_effort,
+                    jnp.asarray(self.history_times, dtype=jnp.float32),
+                    num_segments=self.tactile_history_segments,
+                    future=False,
+                )
             tokens = self.student_force_tokenizer.encode_history(
                 history_effort, jnp.asarray(self.history_times, dtype=jnp.float32)
             )
@@ -695,6 +726,42 @@ class Pi0LatentFlow(_model.BaseModel):
             return self._pool_history_tokens(tokens, logits)
         hidden = self.history_force_proj_student(einops.rearrange(history_effort, "b h e -> b (h e)"))
         return hidden[:, None, :]
+
+    def initial_tactile_ttt_state(self, batch_size: int, *, dtype: jnp.dtype = jnp.float32) -> at.Array:
+        if not self.tactile_ttt_enabled:
+            raise ValueError("This model was not configured with TactileTTT.")
+        return self.tactile_ttt.initial_state(batch_size, dtype=dtype)
+
+    def _tactile_ttt_step(
+        self,
+        history_effort: at.Array,
+        fast_weight: at.Array | None,
+        *,
+        active: at.Array | None = None,
+    ) -> tuple[at.Array, at.Array, dict[str, at.Array]]:
+        if not self.tactile_ttt_enabled:
+            raise ValueError("This model was not configured with TactileTTT.")
+        if fast_weight is None:
+            fast_weight = self.initial_tactile_ttt_state(history_effort.shape[0])
+
+        history_times = jnp.asarray(self.history_times, dtype=jnp.float32)
+        write_tokens = self.student_force_tokenizer.encode_temporal_segments(
+            history_effort,
+            history_times,
+            num_segments=self.tactile_ttt_write_segments,
+            future=False,
+        )
+        current_tokens = self.student_force_tokenizer.encode_history(
+            history_effort[:, -1:, ...],
+            history_times[-1:],
+        )
+        return self.tactile_ttt.step(
+            fast_weight,
+            write_tokens,
+            current_tokens,
+            history_effort,
+            active=active,
+        )
 
     def _project_history_force_teacher(
         self, history_effort: at.Array
@@ -954,7 +1021,7 @@ class Pi0LatentFlow(_model.BaseModel):
         """Return semantic token slices for the configured suffix ordering."""
         if not self.structured_tactile:
             raise ValueError("Semantic suffix slices require structured tactile tokens.")
-        observation_end = 1 + self.history_force_token_count
+        observation_end = self.state_token_count + self.history_force_token_count
         active_flow_count = self.flow_token_count if self.use_future_flow else 0
 
         if self.arm_hand_mask_attention:
@@ -1012,7 +1079,10 @@ class Pi0LatentFlow(_model.BaseModel):
             raise ValueError("Tactile refiner requires arm_hand_mask_attention=True.")
 
         slices = self._suffix_slices(self.action_horizon)
-        history_slice = slice(1, 1 + self.history_force_token_count)
+        history_slice = slice(
+            self.state_token_count,
+            self.state_token_count + self.history_force_token_count,
+        )
         hand_hidden = hidden[:, slices["hand"]]
         arm_hidden = hidden[:, slices["arm"]]
         history_hidden = hidden[:, history_slice]
@@ -1466,7 +1536,7 @@ class Pi0LatentFlow(_model.BaseModel):
     def _build_suffix_ar_mask(self, action_len: int) -> at.Bool[at.Array, " s"]:
         active_flow_token_count = self.flow_token_count if self.use_future_flow else 0
         if self.structured_tactile:
-            observation_count = 1 + self.history_force_token_count
+            observation_count = self.state_token_count + self.history_force_token_count
             future_count = self.future_force_token_count + active_flow_token_count
             observation_mask = [True] + [False] * (observation_count - 1)
             future_mask = ([True] + [False] * (future_count - 1)) if future_count > 0 else []
@@ -1483,9 +1553,12 @@ class Pi0LatentFlow(_model.BaseModel):
                 + future_mask
                 + action_mask
             )
-        return jnp.array(
-            [False, False] + [True] + ([False] * active_flow_token_count) + [True] + ([False] * (action_len - 1))
-        )
+        observation_count = self.history_force_token_count + self.state_token_count
+        future_count = self.future_force_token_count + active_flow_token_count
+        observation_mask = [False] * observation_count
+        future_mask = ([True] + [False] * (future_count - 1)) if future_count > 0 else []
+        action_mask = [True] + [False] * (action_len - 1)
+        return jnp.array(observation_mask + future_mask + action_mask)
 
     @staticmethod
     def _restore_aux_images(
@@ -1653,6 +1726,7 @@ class Pi0LatentFlow(_model.BaseModel):
         train_progress: at.Float[at.Array, ""] | float | None = None,
         query_noise_scale: at.Float[at.Array, ""] | float | None = None,
         future_force_query_override: at.Array | None = None,
+        history_token_override: at.Array | None = None,
         async_offset: at.Array | None = None,
     ) -> tuple[
         at.Float[at.Array, "b s emb"],
@@ -1663,7 +1737,11 @@ class Pi0LatentFlow(_model.BaseModel):
         at.Bool[at.Array, "b n"],
         at.Float[at.Array, "b"],
     ]:
-        history_token = self._project_history_force_student(history_effort)
+        history_token = (
+            self._project_history_force_student(history_effort)
+            if history_token_override is None
+            else jnp.asarray(history_token_override)
+        )
         future_force_query, future_flow_queries, force_clean_mask, flow_clean_mask, noised_token_rate = self._student_future_query_tokens(
             obs.state.shape[0],
             history_token.dtype,
@@ -1680,7 +1758,11 @@ class Pi0LatentFlow(_model.BaseModel):
             ]
             history_token = history_token + offset_embedding[None, None, :]
             future_force_query = future_force_query + offset_embedding[None, None, :]
-        state_token = self.state_proj_student(obs.state)[:, None, :]
+        state_token = (
+            jnp.zeros((obs.state.shape[0], 0, self.student_width), dtype=history_token.dtype)
+            if self.pi05
+            else self.state_proj_student(obs.state)[:, None, :]
+        )
         if self.arm_hand_mask_attention:
             arm_actions, hand_actions = self._split_action_inputs(noisy_actions)
             arm_tokens, adarms_cond = self._embed_action_tokens(arm_actions, timestep, expert="student")
@@ -1725,7 +1807,11 @@ class Pi0LatentFlow(_model.BaseModel):
         history_token = self._project_history_force_teacher(history_effort)
         future_force_token = self._project_future_force_teacher(future_effort)
         future_flow_tokens = self._compress_future_flows(obs)
-        state_token = self.state_proj_teacher(obs.state)[:, None, :]
+        state_token = (
+            jnp.zeros((obs.state.shape[0], 0, self.teacher_width), dtype=history_token.dtype)
+            if self.pi05
+            else self.state_proj_teacher(obs.state)[:, None, :]
+        )
         if self.arm_hand_mask_attention:
             arm_actions, hand_actions = self._split_action_inputs(noisy_actions)
             arm_tokens, adarms_cond = self._embed_action_tokens(arm_actions, timestep, expert="teacher")
@@ -1878,7 +1964,7 @@ class Pi0LatentFlow(_model.BaseModel):
         student_layer_hiddens = tuple(layer[1] for layer in selected_layers)
         return student_out, student_layer_hiddens
 
-    def compute_loss_with_stats(
+    def _compute_chunk_loss_with_stats(
         self,
         rng: at.KeyArrayLike,
         observation: _model.Observation,
@@ -1886,7 +1972,9 @@ class Pi0LatentFlow(_model.BaseModel):
         *,
         train: bool = False,
         train_progress: at.Float[at.Array, ""] | float | None = None,
-    ) -> tuple[at.Float[at.Array, "*b"], dict[str, at.Array]]:
+        tactile_ttt_state: at.Array | None = None,
+        sequence_active: at.Array | None = None,
+    ) -> tuple[at.Float[at.Array, "*b"], dict[str, at.Array], at.Array | None]:
         (
             preprocess_rng,
             noise_rng,
@@ -1912,9 +2000,22 @@ class Pi0LatentFlow(_model.BaseModel):
             original_future_wrist_rgb_img,
             original_scene_flow,
         )
-        history_effort, future_effort = self._split_effort(observation, require_future=True, dtype=actions.dtype)
-        if future_effort is None:
+        history_effort, future_effort = self._split_effort(
+            observation,
+            require_future=self.use_teacher_ae,
+            dtype=actions.dtype,
+        )
+        if self.use_teacher_ae and future_effort is None:
             raise ValueError("Pi0MORDualAlignForceFlow teacher training requires future effort.")
+
+        tactile_ttt_stats: dict[str, at.Array] = {}
+        history_token_override = None
+        if self.tactile_ttt_enabled:
+            history_token_override, tactile_ttt_state, tactile_ttt_stats = self._tactile_ttt_step(
+                history_effort,
+                tactile_ttt_state,
+                active=sequence_active,
+            )
 
         batch_shape = actions.shape[:-2]
         noise = jax.random.normal(noise_rng, actions.shape)
@@ -1940,6 +2041,7 @@ class Pi0LatentFlow(_model.BaseModel):
             train=train,
             noise_rng=query_noise_rng,
             train_progress=train_progress,
+            history_token_override=history_token_override,
         )
         if self.use_teacher_ae:
             teacher_tokens, teacher_mask, teacher_ar_mask, teacher_adarms = self.embed_teacher_suffix(
@@ -2001,7 +2103,7 @@ class Pi0LatentFlow(_model.BaseModel):
             future_force_slice = suffix_slices["future_force"]
             flow_slice = suffix_slices["future_flow"]
         else:
-            future_force_start = 2
+            future_force_start = self.history_force_token_count + self.state_token_count
             future_force_slice = slice(future_force_start, future_force_start + self.future_force_token_count)
             flow_start = future_force_start + self.future_force_token_count
             flow_slice = slice(flow_start, flow_start + self.flow_token_count)
@@ -2260,7 +2362,100 @@ class Pi0LatentFlow(_model.BaseModel):
             "noise/student_future_query_scale": self._student_query_noise_scale(train_progress),
             "loss/total": total_loss,
         }
-        return total_loss, stats
+        if self.tactile_ttt_enabled:
+            stats.update(
+                {
+                    "tactile_ttt/contact_gate": tactile_ttt_stats["contact_gate"],
+                    "tactile_ttt/reconstruction": tactile_ttt_stats["reconstruction"],
+                    "tactile_ttt/fast_weight_norm": tactile_ttt_stats["fast_weight_norm"],
+                }
+            )
+        return total_loss, stats, tactile_ttt_state
+
+    def compute_loss_with_stats(
+        self,
+        rng: at.KeyArrayLike,
+        observation: _model.Observation,
+        actions: _model.Actions,
+        *,
+        train: bool = False,
+        train_progress: at.Float[at.Array, ""] | float | None = None,
+    ) -> tuple[at.Float[at.Array, "*b"], dict[str, at.Array]]:
+        loss, stats, _ = self._compute_chunk_loss_with_stats(
+            rng,
+            observation,
+            actions,
+            train=train,
+            train_progress=train_progress,
+        )
+        return loss, stats
+
+    def compute_sequence_loss_with_stats(
+        self,
+        rng: at.KeyArrayLike,
+        observation: _model.Observation,
+        actions: _model.Actions,
+        *,
+        train: bool = False,
+        train_progress: at.Float[at.Array, ""] | float | None = None,
+    ) -> tuple[jax.Array, dict[str, at.Array]]:
+        """Train on ordered action chunks with one fast memory per episode."""
+        if not self.tactile_ttt_enabled:
+            raise ValueError("Sequence loss is only defined for the TactileTTT configuration.")
+        if actions.ndim != 4:
+            raise ValueError(f"Expected sequence actions [B,S,H,A], got {actions.shape}.")
+
+        batch_size, sequence_length = actions.shape[:2]
+        sequence_mask = observation.sequence_mask
+        if sequence_mask is None:
+            sequence_mask = jnp.ones((batch_size, sequence_length), dtype=jnp.float32)
+        else:
+            sequence_mask = jnp.asarray(sequence_mask, dtype=jnp.float32)
+
+        fast_weight = self.initial_tactile_ttt_state(batch_size)
+        losses = []
+        per_step_stats: list[dict[str, at.Array]] = []
+        step_rngs = jax.random.split(rng, sequence_length)
+        for step_index in range(sequence_length):
+            step_observation = jax.tree.map(
+                lambda value, index=step_index: value[:, index],
+                observation,
+            )
+            step_observation = step_observation.replace(sequence_mask=None)
+            active = sequence_mask[:, step_index]
+            step_loss, step_stats, fast_weight = self._compute_chunk_loss_with_stats(
+                step_rngs[step_index],
+                step_observation,
+                actions[:, step_index],
+                train=train,
+                train_progress=train_progress,
+                tactile_ttt_state=fast_weight,
+                sequence_active=active,
+            )
+            losses.append(step_loss)
+            per_step_stats.append(step_stats)
+
+        stacked_losses = jnp.stack(losses, axis=1)
+        denominator = jnp.maximum(jnp.sum(sequence_mask, axis=1), 1.0)
+        sequence_loss = jnp.sum(stacked_losses * sequence_mask, axis=1) / denominator
+
+        reduced_stats = {}
+        for key in per_step_stats[0]:
+            values = []
+            for step_stats in per_step_stats:
+                value = jnp.asarray(step_stats[key])
+                if value.ndim == 0:
+                    value = jnp.broadcast_to(value, (batch_size,))
+                values.append(value)
+            stacked = jnp.stack(values, axis=1)
+            mask = sequence_mask
+            while mask.ndim < stacked.ndim:
+                mask = mask[..., None]
+            denom = denominator
+            while denom.ndim < stacked.ndim - 1:
+                denom = denom[..., None]
+            reduced_stats[key] = jnp.sum(stacked * mask, axis=1) / denom
+        return sequence_loss, reduced_stats
 
     def compute_loss(
         self,
@@ -2283,6 +2478,15 @@ class Pi0LatentFlow(_model.BaseModel):
         noise: at.Float[at.Array, "b ah ad"] | None = None,
         debug_query_noise_scale: float | None = None,
     ) -> _model.Actions:
+        if self.tactile_ttt_enabled:
+            actions, _, _ = self.sample_actions_with_tactile_memory(
+                rng,
+                observation,
+                self.initial_tactile_ttt_state(observation.state.shape[0]),
+                num_steps=num_steps,
+                noise=noise,
+            )
+            return actions
         original_flow_img = observation.flow_img
         original_wrist_flow_img = observation.wrist_flow_img
         original_future_rgb_img = observation.future_rgb_img
@@ -2349,6 +2553,74 @@ class Pi0LatentFlow(_model.BaseModel):
 
         x_0, _, _ = jax.lax.while_loop(cond, step, (noise, 1.0, query_noise_rng))
         return x_0
+
+    def sample_actions_with_tactile_memory(
+        self,
+        rng: at.KeyArrayLike,
+        observation: _model.Observation,
+        tactile_ttt_state: at.Array,
+        *,
+        num_steps: int | at.Int[at.Array, ""] = 10,
+        noise: at.Float[at.Array, "b ah ad"] | None = None,
+    ) -> tuple[_model.Actions, at.Array, dict[str, at.Array]]:
+        """Sample one action chunk and carry the updated fast tactile memory."""
+        if not self.tactile_ttt_enabled:
+            raise ValueError("This model was not configured with TactileTTT.")
+
+        observation = _model.preprocess_observation(None, observation, train=False, effort_type=self.effort_type)
+        history_effort, _ = self._split_effort(observation, require_future=False, dtype=jnp.float32)
+        history_tokens, tactile_ttt_state, tactile_ttt_stats = self._tactile_ttt_step(
+            history_effort,
+            tactile_ttt_state,
+        )
+
+        dt = -1.0 / num_steps
+        batch_size = observation.state.shape[0]
+        action_noise_rng, query_noise_rng = jax.random.split(rng)
+        if noise is None:
+            noise = jax.random.normal(action_noise_rng, (batch_size, self.action_horizon, self.action_dim))
+
+        prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(observation)
+        prefix_attn_mask = make_attn_mask(prefix_mask, prefix_ar_mask)
+        prefix_positions = jnp.cumsum(prefix_mask, axis=1) - 1
+        _, kv_cache = self.PaliGemma.llm(
+            self._llm_streams(prefix_tokens, None, None),
+            mask=prefix_attn_mask,
+            positions=prefix_positions,
+            adarms_cond=self._llm_adarms(None, None),
+        )
+
+        def step(carry):
+            x_t, time = carry
+            student_tokens, student_mask, student_ar_mask, student_adarms, *_ = self.embed_student_suffix(
+                observation,
+                history_effort,
+                x_t,
+                jnp.broadcast_to(time, batch_size),
+                train=False,
+                noise_rng=query_noise_rng,
+                history_token_override=history_tokens,
+            )
+            student_attn_mask = make_attn_mask(student_mask, student_ar_mask)
+            prefix_to_student = einops.repeat(prefix_mask, "b p -> b s p", s=student_tokens.shape[1])
+            full_attn_mask = jnp.concatenate([prefix_to_student, student_attn_mask], axis=-1)
+            positions = jnp.sum(prefix_mask, axis=-1)[:, None] + jnp.cumsum(student_mask, axis=-1) - 1
+            outputs, _ = self.PaliGemma.llm(
+                self._llm_streams(None, student_tokens, None),
+                mask=full_attn_mask,
+                positions=positions,
+                kv_cache=kv_cache,
+                adarms_cond=self._llm_adarms(student_adarms, None),
+            )
+            velocity = self._decode_action_velocity(outputs[1], expert="student")
+            return x_t + dt * velocity, time + dt
+
+        def cond(carry):
+            _, time = carry
+            return time >= -dt / 2
+
+        actions, _ = jax.lax.while_loop(cond, step, (noise, 1.0))
+        return actions, tactile_ttt_state, tactile_ttt_stats
 
     def _cached_vlm_async_denoise_with_prefix_cache(
         self,

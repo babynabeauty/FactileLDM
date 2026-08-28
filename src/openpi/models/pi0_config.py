@@ -254,6 +254,7 @@ class Pi0LatentFlowConfig(Pi0Config):
     structured_tactile: bool = False
     tactile_history_offsets: tuple[int, ...] = tuple(range(-9, 1))
     pool_tactile_history: bool = False
+    tactile_history_segments: int = 0
     future_tactile_segments: int = 8
     future_steps_per_segment: int = 4
     tactile_tokenizer_dim: int = 256
@@ -269,6 +270,10 @@ class Pi0LatentFlowConfig(Pi0Config):
     tactile_patch_aux_loss_weight: float = 0.0
     disable_future_tactile: bool = False
     direct_future_tactile_align: bool = False
+    tactile_ttt_enabled: bool = False
+    tactile_ttt_memory_dim: int = 256
+    tactile_ttt_inner_lr: float = 0.1
+    tactile_ttt_write_segments: int = 4
     future_tactile_align_layer: int = 12
     tactile_sample_hz: float = 15.0
     arm_hand_mask_attention: bool = False
@@ -331,6 +336,19 @@ class Pi0LatentFlowConfig(Pi0Config):
                 )
             if len(self.tactile_history_offsets) != self.force_input_frames:
                 raise ValueError("tactile_history_offsets length must equal force_input_frames.")
+            if self.tactile_history_segments < 0:
+                raise ValueError("tactile_history_segments must be non-negative.")
+            if self.tactile_history_segments:
+                if self.pool_tactile_history:
+                    raise ValueError(
+                        "Segmented tactile history and pool_tactile_history are mutually exclusive."
+                    )
+                if not self.tactile_patch_informed_tokenizer:
+                    raise ValueError(
+                        "Segmented tactile history requires tactile_patch_informed_tokenizer=True."
+                    )
+                if self.tactile_history_segments * self.future_steps_per_segment != self.force_input_frames:
+                    raise ValueError("Tactile history segments must exactly cover force_input_frames.")
             if self.future_tactile_segments * self.future_steps_per_segment != self.action_horizon:
                 raise ValueError("Future tactile segments must exactly cover action_horizon.")
             if self.tactile_sample_hz <= 0:
@@ -374,6 +392,21 @@ class Pi0LatentFlowConfig(Pi0Config):
                 object.__setattr__(self, "future_flow_align_loss_weight", 0.0)
                 object.__setattr__(self, "teacher_action_loss_weight", 0.0)
                 object.__setattr__(self, "cached_vlm_async_future_align_loss_weight", 0.0)
+            if self.tactile_ttt_enabled:
+                if not self.tactile_patch_informed_tokenizer:
+                    raise ValueError("tactile_ttt_enabled requires tactile_patch_informed_tokenizer=True.")
+                if not self.disable_future_tactile:
+                    raise ValueError("The first TactileTTT model requires disable_future_tactile=True.")
+                if self.force_input_frames != self.action_horizon:
+                    raise ValueError("TactileTTT requires force_input_frames == action_horizon.")
+                if self.tactile_ttt_write_segments * self.future_steps_per_segment != self.force_input_frames:
+                    raise ValueError("TactileTTT write segments must exactly cover force_input_frames.")
+                if self.tactile_ttt_memory_dim <= 0 or self.tactile_ttt_inner_lr <= 0:
+                    raise ValueError("TactileTTT memory_dim and inner_lr must be positive.")
+                if self.tactile_raw_contact_top_k <= 0:
+                    raise ValueError("TactileTTT requires tactile_raw_contact_top_k > 0.")
+                if self.cached_vlm_async_ae_enabled or self.async_tactile_refiner_enabled:
+                    raise ValueError("The first TactileTTT model does not use asynchronous action refinement.")
             object.__setattr__(self, "distill_layer_indices", (self.future_tactile_align_layer,))
         if self.arm_hand_mask_attention:
             if not self.structured_tactile:
@@ -510,11 +543,16 @@ class Pi0LatentFlowConfig(Pi0Config):
     def inputs_spec(self, *, batch_size: int = 1):
         image_spec = jax.ShapeDtypeStruct([batch_size, *_model.IMAGE_RESOLUTION, 3], jnp.float32)
         image_mask_spec = jax.ShapeDtypeStruct([batch_size], jnp.bool_)
+        tactile_steps = (
+            self.force_input_frames
+            if self.disable_future_tactile
+            else self.force_input_frames + self.action_horizon
+        )
         effort_shape = (
             (
                 [
                     batch_size,
-                    self.force_input_frames + self.action_horizon,
+                    tactile_steps,
                     self.tactile_num_fingers,
                     self.tactile_points_per_finger,
                     self.tactile_dim_per_finger,
@@ -522,13 +560,13 @@ class Pi0LatentFlowConfig(Pi0Config):
                 if self.tactile_points_per_finger > 1
                 else [
                     batch_size,
-                    self.force_input_frames + self.action_horizon,
+                    tactile_steps,
                     self.tactile_num_fingers,
                     self.tactile_dim_per_finger,
                 ]
             )
             if self.structured_tactile
-            else [batch_size, self.force_input_frames + self.action_horizon, int(self.effort_dim)]
+            else [batch_size, tactile_steps, int(self.effort_dim)]
         )
         with at.disable_typechecking():
             observation_spec = _model_tavla.Observation(

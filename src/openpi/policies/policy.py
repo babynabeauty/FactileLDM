@@ -129,7 +129,27 @@ class Policy(BasePolicy):
                 if hasattr(model, "sample_actions_cached_vlm_async_ae_fast")
                 else None
             )
+            self._sample_actions_tactile_ttt = (
+                nnx_utils.module_jit(model.sample_actions_with_tactile_memory)
+                if bool(getattr(model, "tactile_ttt_enabled", False))
+                else None
+            )
+            self._tactile_ttt_state = (
+                model.initial_tactile_ttt_state(1)
+                if self._sample_actions_tactile_ttt is not None
+                else None
+            )
             self._rng = rng or jax.random.key(0)
+
+    def reset(self) -> None:
+        """Reset episode-scoped caches, including TactileTTT fast weights."""
+        self._async_input_cache.clear()
+        self._async_noise_cache.clear()
+        self._async_prefix_kv_cache.clear()
+        self._async_prefix_mask_cache.clear()
+        self._async_future_hidden_cache.clear()
+        if not self._is_pytorch_model and getattr(self, "_sample_actions_tactile_ttt", None) is not None:
+            self._tactile_ttt_state = self._model.initial_tactile_ttt_state(1)
 
     def _async_chunk_id_int(self, async_chunk_id: Any) -> int:
         try:
@@ -160,6 +180,11 @@ class Policy(BasePolicy):
     def infer(self, obs: dict, *, noise: np.ndarray | None = None) -> dict:  # type: ignore[misc]
         # Make a copy since transformations may modify the inputs in place.
         debug_index = self._debug_infer_count
+        reset_tactile_memory = bool(
+            np.asarray(obs.get("reset_tactile_memory", obs.get("episode_start", False))).item()
+        )
+        if reset_tactile_memory:
+            self.reset()
         async_mode = obs.get("async_mode", obs.get("mode"))
         if isinstance(async_mode, np.ndarray):
             async_mode = str(async_mode.item())
@@ -170,6 +195,8 @@ class Policy(BasePolicy):
         async_requested = async_mode in {"slow", "fast", "slow_and_fast"}
         fast_minimal = async_mode == "fast" and bool(np.asarray(obs.get("fast_minimal", False)).item())
         inputs = jax.tree.map(lambda x: x, obs)
+        inputs.pop("reset_tactile_memory", None)
+        inputs.pop("episode_start", None)
         if debug_index < DEBUG_INFER_PRINT_LIMIT:
             _debug_print_tree("SERVER RAW OBS FROM CLIENT", inputs, infer_index=debug_index)
         if fast_minimal:
@@ -258,8 +285,8 @@ class Policy(BasePolicy):
             if noise.ndim == 2:  # If noise is (action_horizon, action_dim), add batch dimension
                 noise = noise[None, ...]  # Make it (1, action_horizon, action_dim)
             sample_kwargs["noise"] = noise
-        
-        if "effort" in inputs.keys():
+
+        if "effort" in inputs:
             observation = _model_tavla.Observation.from_dict(inputs)
         else:
             observation = _model.Observation.from_dict(inputs)
@@ -280,13 +307,20 @@ class Policy(BasePolicy):
                 **sample_kwargs,
             )
             self._async_future_hidden_cache[async_chunk_id_int] = future_hidden
+        elif not self._is_pytorch_model and self._sample_actions_tactile_ttt is not None:
+            actions, self._tactile_ttt_state, _ = self._sample_actions_tactile_ttt(
+                sample_rng_or_pytorch_device,
+                observation,
+                self._tactile_ttt_state,
+                **sample_kwargs,
+            )
         else:
             actions = sample_fn(sample_rng_or_pytorch_device, observation, **sample_kwargs)
         outputs = {
             "state": output_inputs["state"],
             "actions": actions,
         }
-        if "effort" in inputs.keys():
+        if "effort" in inputs:
             outputs["effort"] = output_inputs["effort"]
         model_time = time.monotonic() - start_time
         if self._is_pytorch_model:

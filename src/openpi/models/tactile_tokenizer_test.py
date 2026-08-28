@@ -3,6 +3,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from openpi.models.tactile_tokenizer import DexterousForceTokenizer
+from openpi.models.tactile_tokenizer import RawTactileSpatialTokenizer
 from openpi.shared.normalize import NormStats
 from openpi.transforms import Normalize
 
@@ -76,3 +77,29 @@ def test_structured_effort_normalization_preserves_per_finger_stats():
 
     assert normalized.shape == (1, 5, 3)
     assert np.allclose(normalized, 0)
+
+
+def test_raw_tactile_can_pool_causal_sixteen_frames_to_twenty_tokens():
+    tokenizer = RawTactileSpatialTokenizer(
+        output_dim=32,
+        hidden_dim=16,
+        num_fingers=5,
+        num_points=8,
+        dim_per_point=3,
+        future_segments=4,
+        future_steps_per_segment=4,
+        contact_top_k=4,
+        contact_threshold=1.0,
+        contact_temperature=0.5,
+        rngs=nnx.Rngs(0),
+    )
+    tactile = jnp.zeros((2, 16, 5, 8, 3), dtype=jnp.float32)
+
+    tokens = tokenizer.encode_temporal_segments(
+        tactile,
+        jnp.arange(-15, 1) / 15.0,
+        num_segments=4,
+        future=False,
+    )
+
+    assert tokens.shape == (2, 20, 32)

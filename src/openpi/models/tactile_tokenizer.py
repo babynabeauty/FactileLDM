@@ -332,20 +332,36 @@ class RawTactileSpatialTokenizer(nnx.Module):
         tokens = self._encode_steps(forces, times_seconds, future=False)
         return einops.rearrange(tokens, "b t f d -> b (t f) d")
 
-    def encode_future(self, forces: jax.Array, times_seconds: jax.Array) -> jax.Array:
-        expected_steps = self.future_segments * self.future_steps_per_segment
+    def encode_temporal_segments(
+        self,
+        forces: jax.Array,
+        times_seconds: jax.Array,
+        *,
+        num_segments: int,
+        future: bool,
+    ) -> jax.Array:
+        """Pool equal temporal segments while preserving one token per finger."""
+        expected_steps = int(num_segments) * self.future_steps_per_segment
         if forces.shape[1] != expected_steps:
-            raise ValueError(f"Expected {expected_steps} future tactile steps, got {forces.shape[1]}.")
-        tokens = self._encode_steps(forces, times_seconds, future=True)
+            raise ValueError(f"Expected {expected_steps} tactile steps, got {forces.shape[1]}.")
+        tokens = self._encode_steps(forces, times_seconds, future=future)
         tokens = einops.rearrange(
             tokens,
             "b (s p) f d -> b s p f d",
-            s=self.future_segments,
+            s=int(num_segments),
             p=self.future_steps_per_segment,
         )
         weights = jax.nn.softmax(self.segment_pool_logits.value.astype(jnp.float32)).astype(tokens.dtype)
         pooled = jnp.einsum("p,bspfd->bsfd", weights, tokens)
         return einops.rearrange(pooled, "b s f d -> b (s f) d")
+
+    def encode_future(self, forces: jax.Array, times_seconds: jax.Array) -> jax.Array:
+        return self.encode_temporal_segments(
+            forces,
+            times_seconds,
+            num_segments=self.future_segments,
+            future=True,
+        )
 
     def patch_reconstruction_targets(self, forces: jax.Array) -> tuple[jax.Array, jax.Array, jax.Array]:
         """Return patch targets for probing; the encoder itself never uses this map."""
