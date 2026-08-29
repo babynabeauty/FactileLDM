@@ -463,14 +463,21 @@ aws s3 cp s3://sqzhang26-2/path/to/folder ./folder \
   --endpoint-url https://eos-huhehaote-1.cmecloud.cn
 
 #上载整个目录
-aws s3 cp /Users/babyna/FactileLDM/data/press_button_4_times s3://sqzhang26-2/press_button_4_times  \
+aws s3 cp /Users/babyna/FactileLDM/data/press_button_4_times/press_button_1/meta s3://sqzhang26-2/meta_1  \
   --recursive \
   --endpoint-url https://eos-huhehaote-1.cmecloud.cn
 
+AWS_REQUEST_CHECKSUM_CALCULATION=when_required \
+AWS_RESPONSE_CHECKSUM_VALIDATION=when_required \
+aws s3 cp \
+"/Users/babyna/FactileLDM/data/press_button_4_times/press_button_0/meta" \
+"s3://sqzhang26-2/meta_0/" \
+--recursive \
+--endpoint-url "https://eos-huhehaote-1.cmecloud.cn"
 
 # 大文件上传  mac支持\
-s3cmd put //Users/babyna/FactileLDM/data/press_button_4_times.zip  \
-  s3://sqzhang26-2/press_button_4_times.zip
+s3cmd put /Users/babyna/FactileLDM/data/press_button_4_times/press_button_2.tar.gz  \
+  s3://sqzhang26-2/press_button_2.tar.gz
 
 
 
