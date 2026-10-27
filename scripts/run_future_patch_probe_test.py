@@ -1,6 +1,7 @@
 """Synthetic-cache integration tests; no policy checkpoint, robot, or real training data."""
 
 import argparse
+import importlib
 
 import numpy as np
 import pytest
@@ -8,8 +9,44 @@ import pytest
 from openpi.shared.future_patch_probe_utils import fingerprint
 from openpi.shared.future_patch_probe_utils import read_json
 from openpi.shared.future_patch_probe_utils import write_json
+from scripts.run_future_patch_probe import _require_gpu
+from scripts.run_future_patch_probe import _training_data_loader
 from scripts.run_future_patch_probe import evaluate
 from scripts.run_future_patch_probe import train
+
+
+def test_only_missing_lerobot_api_uses_local_reader(monkeypatch):
+    original = object()
+    with monkeypatch.context() as patch:
+        patch.setattr(importlib, "import_module", lambda _name: original)
+        assert _training_data_loader() is original
+
+    def missing_lerobot(_name):
+        raise ModuleNotFoundError("missing", name="lerobot.common")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(importlib, "import_module", missing_lerobot)
+        assert _training_data_loader() is None
+
+    def missing_other_dependency(_name):
+        raise ModuleNotFoundError("missing", name="some_other_dependency")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(importlib, "import_module", missing_other_dependency)
+        with pytest.raises(ModuleNotFoundError, match="missing"):
+            _training_data_loader()
+
+
+def test_gpu_check_rejects_silent_cpu_fallback():
+    class FakeJax:
+        def default_backend(self):
+            return "cpu"
+
+        def devices(self):
+            return ["cpu:0"]
+
+    with pytest.raises(RuntimeError, match="CUDA-enabled JAX GPU"):
+        _require_gpu(FakeJax())
 
 
 def synthetic_cache(root, split, protocol):

@@ -1,7 +1,7 @@
 import math
+from typing import Any
 
 import einops
-from diffusers import FlaxAutoencoderKL
 import flax.nnx as nnx
 import flax.nnx.bridge as nnx_bridge
 import jax
@@ -21,16 +21,19 @@ from openpi.models.tactile_ttt import TactileTTTMemory
 from openpi.shared import array_typing as at
 
 
-_FLOW_VAE_REGISTRY: dict[str, tuple[FlaxAutoencoderKL, at.Params]] = {}
+_FLOW_VAE_REGISTRY: dict[str, tuple[Any, at.Params]] = {}
 
 
-def register_flow_vae(model_name: str, flow_vae: FlaxAutoencoderKL, flow_vae_params: at.Params) -> None:
+def register_flow_vae(model_name: str, flow_vae: Any, flow_vae_params: at.Params) -> None:
     _FLOW_VAE_REGISTRY[model_name] = (flow_vae, flow_vae_params)
 
 
 def preload_flow_vae(model_name: str) -> None:
     if model_name in _FLOW_VAE_REGISTRY:
         return
+    # Tactile-only configurations do not require the optional visual flow VAE.
+    from diffusers import FlaxAutoencoderKL  # noqa: PLC0415
+
     flow_vae, flow_vae_params = FlaxAutoencoderKL.from_pretrained(
         model_name,
         from_pt=True,
@@ -39,7 +42,7 @@ def preload_flow_vae(model_name: str) -> None:
     register_flow_vae(model_name, flow_vae, flow_vae_params)
 
 
-def _get_flow_vae(model_name: str) -> tuple[FlaxAutoencoderKL, at.Params]:
+def _get_flow_vae(model_name: str) -> tuple[Any, at.Params]:
     if model_name not in _FLOW_VAE_REGISTRY:
         raise ValueError(
             f"Flow VAE '{model_name}' has not been preloaded. "

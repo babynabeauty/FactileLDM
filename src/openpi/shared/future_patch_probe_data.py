@@ -10,6 +10,8 @@ taxels from the causal policy input and uses them only for labels.
 
 from __future__ import annotations
 
+import json
+import logging
 from pathlib import Path
 
 import numpy as np
@@ -27,11 +29,16 @@ class LocalProbeDataset:
         self.state_offsets = np.asarray(state_offsets, dtype=np.int64)
         self.image_keys = tuple(dict.fromkeys(k for k in image_keys if k is not None))
         self.episode_info = {int(row["episode"]): row for row in episodes}
+        task_rows = [
+            json.loads(line) for line in (self.root / "meta/tasks.jsonl").read_text().splitlines() if line.strip()
+        ]
+        self.task_names = {int(row["task_index"]): str(row["task"]) for row in task_rows}
         self.episode_ids = np.concatenate([np.full(row["length"], row["episode"], dtype=np.int64) for row in episodes])
         self.frame_ids = np.concatenate([np.arange(row["length"], dtype=np.int64) for row in episodes])
         self._loaded_episode = None
         self._states = None
         self._timestamps = None
+        self._task_indices = None
         self._videos = {}
 
     def __len__(self):
@@ -49,7 +56,9 @@ class LocalProbeDataset:
 
         self.close()
         path = self._path(self.info["data_path"], episode)
-        table = pq.read_table(path, columns=["observation.state", "episode_index", "frame_index", "timestamp"])
+        table = pq.read_table(
+            path, columns=["observation.state", "episode_index", "frame_index", "timestamp", "task_index"]
+        )
         frame_ids = np.asarray(table["frame_index"].to_numpy(), dtype=np.int64)
         order = np.argsort(frame_ids)
         expected = int(self.episode_info[episode]["length"])
@@ -58,10 +67,22 @@ class LocalProbeDataset:
         if not np.all(np.asarray(table["episode_index"].to_numpy()) == episode):
             raise ValueError(f"Mixed episode IDs in {path}.")
         timestamps = np.asarray(table["timestamp"].to_numpy(), dtype=np.float64)[order]
-        if not np.allclose(timestamps, np.arange(expected) / self.fps, atol=1e-3, rtol=0):
+        if not np.allclose(np.diff(timestamps), 1 / self.fps, atol=1e-3, rtol=0):
             raise ValueError(f"Episode timestamps do not match declared FPS in {path}.")
         self._states = np.asarray(table["observation.state"].to_pylist(), dtype=np.float32)[order]
         self._timestamps = timestamps
+        self._task_indices = np.asarray(table["task_index"].to_numpy(), dtype=np.int64)[order]
+        missing_tasks = set(self._task_indices) - self.task_names.keys()
+        if missing_tasks:
+            raise ValueError(f"Task indices {sorted(missing_tasks)} are missing from meta/tasks.jsonl.")
+        actual_tasks = {self.task_names[int(index)] for index in self._task_indices}
+        if actual_tasks != {self.episode_info[episode]["task"]}:
+            logging.warning(
+                "Episode %s has prompt labels %s but episode group label %r; check metric grouping.",
+                episode,
+                sorted(actual_tasks),
+                self.episode_info[episode]["task"],
+            )
         self._loaded_episode = episode
 
     def _read_rgb(self, key, frame):
@@ -94,6 +115,15 @@ class LocalProbeDataset:
         ok, bgr = capture.read()
         if not ok:
             raise RuntimeError(f"Cannot decode RGB frame {frame} for {key}.")
+        video_timestamp = capture.get(cv2.CAP_PROP_POS_MSEC) / 1000.0
+        if not np.isfinite(video_timestamp) or not np.isclose(
+            video_timestamp, self._timestamps[frame], atol=1e-3, rtol=0
+        ):
+            raise ValueError(
+                f"Video timestamp mismatch for {key} frame {frame}: "
+                f"video={video_timestamp:.6f}s, state={self._timestamps[frame]:.6f}s. "
+                "Use the original training LeRobot reader or check video alignment."
+            )
         video.update(next_frame=frame + 1, frame=frame, rgb=cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB))
         return video["rgb"].copy()
 
@@ -109,7 +139,7 @@ class LocalProbeDataset:
             "episode_index": np.int64(episode),
             "frame_index": np.int64(frame),
             "timestamp": np.float64(self._timestamps[frame]),
-            "prompt": self.episode_info[episode]["task"],
+            "prompt": self.task_names[int(self._task_indices[frame])],
         }
         for key in self.image_keys:
             sample[key] = self._read_rgb(key, frame)

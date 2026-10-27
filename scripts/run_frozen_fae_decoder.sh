@@ -8,6 +8,7 @@ cd "$REPO_ROOT"
 # PYTHON_BIN can otherwise pull packages from a different openpi checkout.
 export PYTHONPATH="$REPO_ROOT/src:$REPO_ROOT"
 unset PYTHONHOME
+export HF_LEROBOT_HOME="${HF_LEROBOT_HOME:-$REPO_ROOT}"
 export XLA_PYTHON_CLIENT_PREALLOCATE="${XLA_PYTHON_CLIENT_PREALLOCATE:-false}"
 # Extraction is single-GPU; do not reserve all 16 A800s for a readout experiment.
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
@@ -42,17 +43,17 @@ run_probe() {
 
 stage="${1:-all}"
 case "$stage" in
-    all|prepare|extract|train|evaluate) ;;
-    *) echo "Usage: $0 [all|prepare|extract|train|evaluate]" >&2; exit 2 ;;
+    all|check|prepare|extract|train|evaluate) ;;
+    *) echo "Usage: $0 [all|check|prepare|extract|train|evaluate]" >&2; exit 2 ;;
 esac
 
-if [[ "$stage" == all || "$stage" == prepare ]]; then
+if [[ "$stage" == all || "$stage" == check || "$stage" == prepare ]]; then
     run_probe prepare --train-root "$TRAIN_ROOT" --test-root "$TEST_ROOT" \
         --manifest "$OUTPUT_ROOT/splits.json" --val-ratio "${VAL_RATIO:-0.1}" --seed "$SEED" \
         --test-task-scope "$TEST_TASK_SCOPE"
 fi
 
-if [[ "$stage" == all || "$stage" == extract ]]; then
+if [[ "$stage" == all || "$stage" == check || "$stage" == extract ]]; then
     extract_args=(extract --config-name "$CONFIG_NAME" --policy-params "$POLICY_PARAMS"
         --manifest "$OUTPUT_ROOT/splits.json" --cache-dir "$CACHE_DIR"
         --contact-threshold "$CONTACT_THRESHOLD" --contact-temperature "$CONTACT_TEMPERATURE"
@@ -61,6 +62,9 @@ if [[ "$stage" == all || "$stage" == extract ]]; then
         --seed "$SEED" --resume)
     if [[ -n "${NORM_STATS:-}" ]]; then
         extract_args+=(--norm-stats "$NORM_STATS")
+    fi
+    if [[ "$stage" == check ]]; then
+        extract_args+=(--smoke --splits train)
     fi
     run_probe "${extract_args[@]}"
 fi

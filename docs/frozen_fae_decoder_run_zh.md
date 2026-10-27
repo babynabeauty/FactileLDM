@@ -18,7 +18,7 @@
 
 本次日志确认：训练有 Pipette Press、测试有 Cabinet Retrieval，其余四项相同。因此启动脚本默认 `TEST_TASK_SCOPE=common`，仅测试 Cob Grasp、Bottle Grasp、Button Press、Sponge Wipe，保留训练／验证池的五项任务。排除的测试 episode ID 记录在 `splits.json`。这是按完全相同的原始任务标签取交集，不猜测同义描述。Python 入口 `prepare --test-task-scope all` 可保留所有测试任务。
 
-提取阶段直接读取本地 LeRobot v2.1 的 Parquet 和每 episode 的 MP4，使用 PyArrow／OpenCV，不依赖 LeRobot 包的 `common.datasets` 或 `datasets` 命名空间，也不改动原策略训练 loader。只解码当前 RGB 帧并按 BGR→RGB 转换；状态窗口的首尾补齐均返回掩码。实际帧号、时间戳、视频 FPS 和长度必须与 metadata 一致。主模型仍使用原 config 的输入变换及归一化统计。
+提取阶段优先使用仓库原训练的 LeRobot 数据读取器，保持按实际时间戳取视频帧及按 `task_index` 获取指令的行为。若环境中缺少其旧版 LeRobot API，才使用本地 v2.1 Parquet／MP4 读取器；后者逐帧核对视频时间戳，并按 parquet 的 `task_index` 获取指令。实际选用的读取器会写入缓存协议，不能混用。主模型仍使用原 config 的输入变换及归一化统计。
 
 ## 首次运行
 
@@ -27,6 +27,8 @@
 ```bash
 cd /workspace/mnt/sqzhang26/FactileLDM
 # 脚本直接使用本仓库 env/.venv/bin/python。
+CUDA_VISIBLE_DEVICES=0 bash scripts/run_frozen_fae_decoder.sh check
+# 确认输出 JAX gpu 和 SMOKE PASS 后，再运行完整流程。
 CUDA_VISIBLE_DEVICES=0 bash scripts/run_frozen_fae_decoder.sh all
 ```
 
@@ -55,12 +57,15 @@ bash scripts/run_frozen_fae_decoder.sh all
 
 ```bash
 bash scripts/run_frozen_fae_decoder.sh prepare
+bash scripts/run_frozen_fae_decoder.sh check
 bash scripts/run_frozen_fae_decoder.sh extract
 bash scripts/run_frozen_fae_decoder.sh train
 bash scripts/run_frozen_fae_decoder.sh evaluate
 ```
 
-主模型提取默认单 GPU、batch 2、每 4 帧取一个 anchor，按原配置递推 offsets 0/4/8/12，十步 Euler，fixed/refined 共用初始噪声。默认缓存 float16 特征，标签为 float32，建议预留几十 GB 磁盘。`EXTRACT_BATCH_SIZE`、`CACHE_STRIDE`、`NUM_WORKERS` 可调；采样规则在看测试结果之前锁定。
+`check` 加载真实 checkpoint、真实 RGB/触觉和原归一化参数，在选定 GPU 上执行一个 batch 的 slow/fast 提取，不写特征缓存、不训练 decoder。它先确认 GPU backend，并输出 latent/标签形状；该流程仍会启动 JAX 编译，可能需要等待。
+
+主模型提取默认单 GPU、batch 2、每 4 帧取一个 anchor，按原配置递推 offsets 0/4/8/12，十步 Euler，fixed/refined 共用初始噪声。默认缓存 float16 特征，标签为 float32，建议预留几十 GB 磁盘。`EXTRACT_BATCH_SIZE`、`CACHE_STRIDE` 可调；采样规则在看测试结果之前锁定。保持默认 `NUM_WORKERS=0`，避免 JAX 初始化后 fork 产生的不稳定性。
 
 缓存按固定大小分片，评估是一次有限遍历，没有无限 loader 或 drop-last。每个样本保留 episode、frame、task；根据原始 episode 长度及 padding mask 排除尾帧。`extract --resume` 跳过已完成的整个 split；中断的 split 会从头重算并原子覆盖其分片，不混用另一套参数。
 
@@ -110,7 +115,10 @@ PYTHONPATH=src:. JAX_PLATFORMS=cpu python -m pytest \
   scripts/extract_future_patch_probe_test.py \
   src/openpi/shared/future_patch_probe_utils_test.py \
   src/openpi/shared/future_patch_probe_data_test.py \
-  scripts/run_future_patch_probe_test.py
+  scripts/run_future_patch_probe_test.py \
+  scripts/run_frozen_fae_decoder_launcher_test.py \
+  scripts/extract_future_patch_probe_real_model_test.py \
+  scripts/run_future_patch_probe_real_pipeline_test.py
 ```
 
-包含原有 decoder/因果切片测试、episode 划分和共同任务筛选、严格参数校验、AP 并列分数、活动力误差、配对 episode CI，以及小型合成特征缓存上的 decoder 训练/保存/重载/测试集评估。新增真实 Parquet/MP4 测试覆盖视频当前帧、颜色通道、跨 episode 读取、时间戳和末尾掩码。它们不替代服务器上的真实 checkpoint、数据视频及 GPU 提取验证。
+包含 decoder/因果切片、episode 划分、指标及合成缓存训练测试。另有真实 `Pi0LatentFlow` 的小模型测试，以及本地 Parquet/MP4 → 原 XHand 输入变换 → 严格恢复模拟 checkpoint → FAE 的一批数据 smoke；这两项用小 Gemma 和替代视觉骨干、CPU，不下载真实主模型数据，不替代服务器上的真实 checkpoint、数据视频及 GPU 提取验证。

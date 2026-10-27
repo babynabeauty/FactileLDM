@@ -15,6 +15,7 @@ from collections import defaultdict
 import csv
 import dataclasses
 import hashlib
+import importlib
 import logging
 from pathlib import Path
 
@@ -78,8 +79,6 @@ class ProbeSampleDataset:
         return len(self.indices)
 
     def __getitem__(self, index):
-        from openpi.models import model_tavla
-
         row = int(self.indices[index])
         episode, frame = int(self.episodes[row]), int(self.frames[row])
         raw = self.dataset[row]
@@ -89,10 +88,6 @@ class ProbeSampleDataset:
         ):
             raise ValueError("LeRobot sample metadata disagrees with cache manifest.")
         info = self.episode_info[episode]
-        if "timestamp" in raw and not np.isclose(
-            float(np.asarray(raw["timestamp"]).item()), frame / info["fps"], atol=1e-3
-        ):
-            raise ValueError("Nonuniform timestamps: frame offsets cannot be used as future labels.")
         valid = future_validity(frame, info["length"], self.horizon)
         padding = raw.get("observation.state_is_pad")
         if padding is not None:
@@ -103,11 +98,13 @@ class ProbeSampleDataset:
         inputs = self.before_norm(raw)
         label_effort = np.asarray(inputs["effort"], dtype=np.float32).copy()
         inputs = self.after_norm(inputs)
-        # Observation excludes all ground-truth actions. extract_probe_batch
-        # subsequently removes future tactile/auxiliary label-only fields.
-        observation = model_tavla.Observation.from_dict(inputs)
+        # Construct the Observation after collation: single-frame image masks
+        # are NumPy scalars, whereas Observation expects batched arrays. Pass
+        # no ground-truth actions or future auxiliary fields to the policy.
+        fields = ("image", "image_mask", "state", "effort", "tokenized_prompt", "tokenized_prompt_mask")
+        observation = {key: inputs[key] for key in fields if key in inputs}
         return {
-            "observation": observation.to_dict(),
+            "observation": observation,
             "label_effort": label_effort,
             "valid_future_frames": valid,
             "episode_id": np.int32(episode),
@@ -140,6 +137,23 @@ def _checkpoint_and_norm(args):
     return params, norm
 
 
+def _training_data_loader():
+    """Prefer the training reader, falling back only when its LeRobot API is absent."""
+    try:
+        return importlib.import_module("openpi.training.data_loader")
+    except ModuleNotFoundError as exc:
+        if exc.name == "lerobot" or (exc.name and exc.name.startswith("lerobot.common")):
+            logging.warning("Training LeRobot reader unavailable (%s); using the checked v2.1 local reader.", exc.name)
+            return None
+        raise
+
+
+def _require_gpu(jax_module):
+    logging.info("JAX backend: %s; devices: %s", jax_module.default_backend(), jax_module.devices())
+    if jax_module.default_backend() != "gpu":
+        raise RuntimeError("FAE extraction requires a CUDA-enabled JAX GPU; check the FactileLDM environment.")
+
+
 def extract(args):
     import flax.nnx as nnx
     import jax
@@ -158,12 +172,16 @@ def extract(args):
     manifest = read_json(args.manifest)
     params_path, norm_path = _checkpoint_and_norm(args)
     config = configs.get_config(args.config_name)
+    training_loader = _training_data_loader()
+    reader_name = "training_lerobot" if training_loader is not None else "local_lerobot_v2.1_parquet_opencv_rgb"
     if args.batch_size <= 0 or args.stride <= 0 or args.shard_size <= 0:
         raise ValueError("Batch size, cache stride, and shard size must be positive.")
     expected_offsets = tuple(range(1 - config.model.force_input_frames, config.model.action_horizon + 1))
     if tuple(config.data.state_delta_timestamps) != expected_offsets:
         raise ValueError("Policy state offsets must be contiguous history through current, then t+1..t+H.")
 
+    _require_gpu(jax)
+    logging.info("Data reader: %s", reader_name)
     logging.info("Strictly restoring frozen policy from %s", params_path)
     shaped = nnx.eval_shape(config.model.create, jax.random.key(args.seed))
     graphdef, state = nnx.split(shaped)
@@ -208,14 +226,15 @@ def extract(args):
         "seed": args.seed,
         "extraction_batch_size": args.batch_size,
         "feature_dtype": "float16",
-        "dataset_reader": "local_lerobot_v2.1_parquet_opencv_rgb",
+        "dataset_reader": reader_name,
         "model": metadata,
     }
-    args.cache_dir.mkdir(parents=True, exist_ok=True)
-    protocol_path = args.cache_dir / "protocol.json"
-    if protocol_path.exists() and read_json(protocol_path) != protocol:
-        raise ValueError("Cache protocol differs. Use a new cache directory; do not mix checkpoints/units/splits.")
-    write_json(protocol_path, protocol)
+    if not args.smoke:
+        args.cache_dir.mkdir(parents=True, exist_ok=True)
+        protocol_path = args.cache_dir / "protocol.json"
+        if protocol_path.exists() and read_json(protocol_path) != protocol:
+            raise ValueError("Cache protocol differs. Use a new cache directory; do not mix checkpoints/units/splits.")
+        write_json(protocol_path, protocol)
 
     def forward(policy_state, observation, labels, valid, rng):
         frozen = nnx.merge(graphdef, policy_state)
@@ -242,7 +261,7 @@ def extract(args):
             raise ValueError("Dataset FPS differs from the checkpoint's tactile_sample_hz.")
         destination = args.cache_dir / split_name
         index_path = destination / "index.json"
-        if index_path.exists():
+        if not args.smoke and index_path.exists():
             index = read_json(index_path)
             if index.get("complete") and args.resume:
                 if not all((destination / s["file"]).is_file() for s in index["shards"]):
@@ -250,7 +269,8 @@ def extract(args):
                 logging.info("Reusing completed %s cache", split_name)
                 continue
             raise FileExistsError(f"Cache index already exists: {index_path}")
-        destination.mkdir(parents=True, exist_ok=True)
+        if not args.smoke:
+            destination.mkdir(parents=True, exist_ok=True)
         factory = dataclasses.replace(
             config.data,
             repo_id=dataset_info["root"],
@@ -260,19 +280,23 @@ def extract(args):
         data_config = dataclasses.replace(
             data_config, norm_stats=norm_stats, filter_dict_path=None, max_episodes=None, rcs_sample_enable=False
         )
-        features = read_json(Path(dataset_info["root"]) / "meta/info.json")["features"]
-        camera_keys = [config.data.primary_image_key, config.data.wrist_image_key]
-        if config.data.extra_image_key in features:
-            camera_keys.append(config.data.extra_image_key)
-        if any(key not in features or features[key].get("dtype") != "video" for key in camera_keys):
-            raise ValueError("Required policy cameras must have per-episode video features in this v2.1 dataset.")
-        dataset = LocalProbeDataset(
-            dataset_info["root"],
-            episodes=dataset_info["episodes"],
-            state_offsets=data_config.state_delta_timestamps,
-            image_keys=camera_keys,
-        )
-        episodes, frames = dataset.episode_ids, dataset.frame_ids
+        if training_loader is not None:
+            dataset = training_loader.create_torch_dataset(data_config, config.model.action_horizon, config.model)
+            episodes, frames = training_loader._frame_metadata(dataset)  # noqa: SLF001
+        else:
+            features = read_json(Path(dataset_info["root"]) / "meta/info.json")["features"]
+            camera_keys = [config.data.primary_image_key, config.data.wrist_image_key]
+            if config.data.extra_image_key in features:
+                camera_keys.append(config.data.extra_image_key)
+            if any(key not in features or features[key].get("dtype") != "video" for key in camera_keys):
+                raise ValueError("Required policy cameras must have per-episode video features in this v2.1 dataset.")
+            dataset = LocalProbeDataset(
+                dataset_info["root"],
+                episodes=dataset_info["episodes"],
+                state_offsets=data_config.state_delta_timestamps,
+                image_keys=camera_keys,
+            )
+            episodes, frames = dataset.episode_ids, dataset.frame_ids
         info_by_episode = {r["episode"]: {**r, "fps": dataset_info["fps"]} for r in dataset_info["episodes"]}
         selected = []
         for episode in split["episodes"]:
@@ -282,6 +306,8 @@ def extract(args):
             if not np.array_equal(frames[rows], np.arange(length)):
                 raise ValueError(f"Episode {episode} has missing/duplicate/nonzero-based frames.")
             selected.extend(rows[(frames[rows] % args.stride == 0) & (frames[rows] + 1 < length)].tolist())
+        if args.smoke:
+            selected = selected[: args.batch_size]
         wrapped = ProbeSampleDataset(
             dataset,
             selected,
@@ -345,6 +371,21 @@ def extract(args):
                 forward(state, observation, batch["label_effort"], batch["valid_future_frames"], rng)
             )
             records = {key: np.asarray(value) for key, value in records.items()}
+            if args.smoke:
+                for key in ("refined_hidden", "target_contact", "target_force"):
+                    if not np.isfinite(records[key]).all():
+                        raise ValueError(f"Non-finite values in smoke-test output {key}.")
+                logging.info(
+                    "SMOKE PASS: split=%s FAE=%s contact=%s force=%s valid_frames=%d; no cache written.",
+                    split_name,
+                    records["refined_hidden"].shape,
+                    records["target_contact"].shape,
+                    records["target_force"].shape,
+                    np.sum(records["valid_mask"]),
+                )
+                if hasattr(dataset, "close"):
+                    dataset.close()
+                return
             records["fixed_hidden"] = records["fixed_hidden"][:, 0]
             for key in ("fixed_hidden", "refined_hidden", "history_tokens"):
                 records[key] = records[key].astype(np.float16)
@@ -359,7 +400,8 @@ def extract(args):
             if batch_index % 25 == 0:
                 logging.info("%s: batch %d/%d", split_name, batch_index + 1, len(loader))
         flush()
-        dataset.close()
+        if hasattr(dataset, "close"):
+            dataset.close()
         if index["samples"] != len(selected) or not selected:
             raise ValueError("Cache did not cover exactly one finite pass over selected anchors.")
         index["complete"] = True
@@ -731,6 +773,7 @@ def build_parser():
     p.add_argument("--shard-size", type=int, default=256)
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--resume", action="store_true")
+    p.add_argument("--smoke", action="store_true", help="Run one real batch through frozen FAE without writing cache.")
     p.set_defaults(func=extract)
     p = sub.add_parser("train", help="Optimize only the small decoder from cached, frozen features.")
     p.add_argument("--cache-dir", type=Path, required=True)

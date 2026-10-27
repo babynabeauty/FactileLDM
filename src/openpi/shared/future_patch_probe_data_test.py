@@ -21,6 +21,9 @@ def write_fixture(root, *, video_fps=15, video_frames=6, timestamp_step=1 / 15, 
         "video_path": "videos/chunk-{episode_chunk:03d}/{video_key}/episode_{episode_index:06d}.mp4",
     }
     (root / "meta/info.json").write_text(json.dumps(info))
+    (root / "meta/tasks.jsonl").write_text(
+        "\n".join(json.dumps({"task_index": i, "task": f"task-{episode}"}) for i, episode in enumerate((0, 1001)))
+    )
     episodes = []
     for episode in (0, 1001):
         episodes.append({"episode": episode, "length": 6, "task": f"task-{episode}"})
@@ -35,6 +38,7 @@ def write_fixture(root, *, video_fps=15, video_frames=6, timestamp_step=1 / 15, 
                 "episode_index": [episode] * 6,
                 "frame_index": frame_ids,
                 "timestamp": np.arange(6) * timestamp_step,
+                "task_index": [int(episode == 1001)] * 6,
                 "observation.state": [[episode, frame, frame + 0.5] for frame in range(6)],
                 "action": [[999, 999] for _ in range(6)],
             }
@@ -94,6 +98,41 @@ def test_reader_rejects_temporal_misalignment(tmp_path, kwargs, message):
     dataset = reader(tmp_path, write_fixture(tmp_path, **kwargs))
     try:
         with pytest.raises(ValueError, match=message):
+            dataset[0]
+    finally:
+        dataset.close()
+
+
+def test_fallback_uses_parquet_task_index_for_prompt_not_episode_label(tmp_path, caplog):
+    episodes = write_fixture(tmp_path)
+    episodes[0]["task"] = "different episode label"
+    dataset = reader(tmp_path, episodes)
+    try:
+        assert dataset[0]["prompt"] == "task-0"
+        assert "different episode label" in caplog.text
+    finally:
+        dataset.close()
+
+
+def test_fallback_rejects_frame_timestamp_mismatch(tmp_path, monkeypatch):
+    dataset = reader(tmp_path, write_fixture(tmp_path))
+    original = cv2.VideoCapture
+
+    class IncorrectTimestamp:
+        def __init__(self, path):
+            self.inner = original(path)
+
+        def __getattr__(self, name):
+            return getattr(self.inner, name)
+
+        def get(self, prop):
+            if prop == cv2.CAP_PROP_POS_MSEC:
+                return 33.0
+            return self.inner.get(prop)
+
+    monkeypatch.setattr(cv2, "VideoCapture", IncorrectTimestamp)
+    try:
+        with pytest.raises(ValueError, match="Video timestamp mismatch"):
             dataset[0]
     finally:
         dataset.close()
