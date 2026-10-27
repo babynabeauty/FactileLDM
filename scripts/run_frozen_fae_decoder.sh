@@ -10,8 +10,13 @@ export PYTHONPATH="$REPO_ROOT/src:$REPO_ROOT"
 unset PYTHONHOME
 export HF_LEROBOT_HOME="${HF_LEROBOT_HOME:-$REPO_ROOT}"
 export XLA_PYTHON_CLIENT_PREALLOCATE="${XLA_PYTHON_CLIENT_PREALLOCATE:-false}"
-# Extraction is single-GPU; do not reserve all 16 A800s for a readout experiment.
-export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
+# One process with explicit JAX data sharding across the requested visible GPUs.
+export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1,2,3}"
+NUM_DEVICES="${NUM_DEVICES:-4}"
+if [[ ! "$NUM_DEVICES" =~ ^[1-9][0-9]*$ ]]; then
+    echo "ERROR: NUM_DEVICES must be a positive integer." >&2
+    exit 2
+fi
 PYTHON_BIN="$REPO_ROOT/env/.venv/bin/python"
 if [[ ! -x "$PYTHON_BIN" ]]; then
     echo "ERROR: FactileLDM Python not found or not executable: $PYTHON_BIN" >&2
@@ -24,7 +29,7 @@ CONFIG_NAME="${CONFIG_NAME:-pi0_xhand_dual_patch_pretrained_f4_h16_async}"
 TRAIN_ROOT="${TRAIN_ROOT:-$REPO_ROOT/data/task12345-2}"
 TEST_ROOT="${TEST_ROOT:-$REPO_ROOT/data/task-test-collect}"
 TEST_TASK_SCOPE="${TEST_TASK_SCOPE:-common}"
-OUTPUT_ROOT="${OUTPUT_ROOT:-$REPO_ROOT/outputs/frozen_fae_decoder_59999_${TEST_TASK_SCOPE}_tasks}"
+OUTPUT_ROOT="${OUTPUT_ROOT:-$REPO_ROOT/outputs/frozen_fae_decoder_59999_${TEST_TASK_SCOPE}_tasks_pyav_${NUM_DEVICES}gpu_v1}"
 CACHE_DIR="${CACHE_DIR:-$OUTPUT_ROOT/cache}"
 SOURCE="${SOURCE:-fae}"
 DECODER_TYPE="${DECODER_TYPE:-linear}"
@@ -57,7 +62,8 @@ if [[ "$stage" == all || "$stage" == check || "$stage" == extract ]]; then
     extract_args=(extract --config-name "$CONFIG_NAME" --policy-params "$POLICY_PARAMS"
         --manifest "$OUTPUT_ROOT/splits.json" --cache-dir "$CACHE_DIR"
         --contact-threshold "$CONTACT_THRESHOLD" --contact-temperature "$CONTACT_TEMPERATURE"
-        --force-unit "$FORCE_UNIT" --batch-size "${EXTRACT_BATCH_SIZE:-2}"
+        --force-unit "$FORCE_UNIT" --batch-size "${EXTRACT_BATCH_SIZE:-$((2 * NUM_DEVICES))}"
+        --num-devices "$NUM_DEVICES"
         --stride "${CACHE_STRIDE:-4}" --num-workers "${NUM_WORKERS:-0}"
         --seed "$SEED" --resume)
     if [[ -n "${NORM_STATS:-}" ]]; then
@@ -72,11 +78,12 @@ fi
 if [[ "$stage" == all || "$stage" == train ]]; then
     run_probe train --cache-dir "$CACHE_DIR" --output-dir "$PROBE_DIR" \
         --source "$SOURCE" --decoder-type "$DECODER_TYPE" --epochs "${EPOCHS:-20}" \
-        --batch-size "${PROBE_BATCH_SIZE:-128}" --learning-rate "${LEARNING_RATE:-0.001}" --seed "$SEED"
+        --batch-size "${PROBE_BATCH_SIZE:-128}" --num-devices "$NUM_DEVICES" \
+        --learning-rate "${LEARNING_RATE:-0.001}" --seed "$SEED"
 fi
 
 if [[ "$stage" == all || "$stage" == evaluate ]]; then
     run_probe evaluate --cache-dir "$CACHE_DIR" --probe-checkpoint "$PROBE_DIR/best_probe.npz" \
-        --output-dir "$PROBE_DIR" --batch-size "${PROBE_BATCH_SIZE:-128}" \
+        --output-dir "$PROBE_DIR" --batch-size "${PROBE_BATCH_SIZE:-128}" --num-devices "$NUM_DEVICES" \
         --bootstrap-samples "${BOOTSTRAP_SAMPLES:-200}" --seed "$SEED"
 fi

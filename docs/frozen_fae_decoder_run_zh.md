@@ -26,9 +26,10 @@
 
 ```bash
 cd /workspace/mnt/sqzhang26/FactileLDM
-uv pip install --python env/.venv/bin/python --only-binary=:all: 'av==17.0.0'
+env/.venv/bin/python -m pip --isolated install --no-cache-dir --only-binary=:all: \
+  -i https://mirrors.aliyun.com/pypi/simple/ 'av==17.0.0'
 env/.venv/bin/python -c 'import av; print(av.__version__); print(av.Codec("libdav1d", "r"))'
-CUDA_VISIBLE_DEVICES=0 bash scripts/run_frozen_fae_decoder.sh check
+CUDA_VISIBLE_DEVICES=0 NUM_DEVICES=1 bash scripts/run_frozen_fae_decoder.sh check
 ```
 
 安装目标必须是 `env/.venv/bin/python`，终端显示 `(openpi)` 不代表启动脚本使用该环境。解码依赖在恢复大 checkpoint 之前检查；不需重训主模型或转码原始数据。若仍失败，保留完整错误和具体视频路径，检查文件完整性及时间戳，不能用黑帧替代。
@@ -37,7 +38,7 @@ CUDA_VISIBLE_DEVICES=0 bash scripts/run_frozen_fae_decoder.sh check
 
 ```bash
 OUTPUT_ROOT=outputs/frozen_fae_decoder_59999_common_tasks_pyav \
-CUDA_VISIBLE_DEVICES=0 bash scripts/run_frozen_fae_decoder.sh all
+CUDA_VISIBLE_DEVICES=0 NUM_DEVICES=1 bash scripts/run_frozen_fae_decoder.sh all
 ```
 
 将改动同步到服务器，在原训练环境中运行：
@@ -45,9 +46,9 @@ CUDA_VISIBLE_DEVICES=0 bash scripts/run_frozen_fae_decoder.sh all
 ```bash
 cd /workspace/mnt/sqzhang26/FactileLDM
 # 脚本直接使用本仓库 env/.venv/bin/python。
-CUDA_VISIBLE_DEVICES=0 bash scripts/run_frozen_fae_decoder.sh check
+CUDA_VISIBLE_DEVICES=0 NUM_DEVICES=1 bash scripts/run_frozen_fae_decoder.sh check
 # 确认输出 JAX gpu 和 SMOKE PASS 后，再运行完整流程。
-CUDA_VISIBLE_DEVICES=0 bash scripts/run_frozen_fae_decoder.sh all
+CUDA_VISIBLE_DEVICES=0 NUM_DEVICES=1 bash scripts/run_frozen_fae_decoder.sh all
 ```
 
 脚本默认使用用户指定的服务器目录。可用 `REPO_ROOT`、`POLICY_PARAMS`、`CONFIG_NAME` 覆盖。Python 固定使用 `$REPO_ROOT/env/.venv/bin/python`，并清除外部 `PYTHONPATH` 和 `PYTHONHOME`，启动时显示实际解释器、`sys.prefix` 和 Flax 路径。checkpoint 参数可以指向 `59999` 或其 `params` 子目录。
@@ -56,7 +57,7 @@ CUDA_VISIBLE_DEVICES=0 bash scripts/run_frozen_fae_decoder.sh all
 
 ```bash
 NORM_STATS=/path/to/original/norm_stats.json \
-CUDA_VISIBLE_DEVICES=0 bash scripts/run_frozen_fae_decoder.sh all
+CUDA_VISIBLE_DEVICES=0 NUM_DEVICES=1 bash scripts/run_frozen_fae_decoder.sh all
 ```
 
 标签在策略归一化前生成。默认接触定义为 patch 内任一 taxel 的三轴向量模长大于 **1.0 原生传感器单位**，加权力的 sigmoid 温度为 **0.5 同单位**；这是显式的标签定义，不代表已标定为牛顿。应结合训练池的真实读数确认阈值。需要修改时：
@@ -83,7 +84,7 @@ bash scripts/run_frozen_fae_decoder.sh evaluate
 
 `check` 加载真实 checkpoint、真实 RGB/触觉和原归一化参数，在选定 GPU 上执行一个 batch 的 slow/fast 提取，不写特征缓存、不训练 decoder。它先确认 GPU backend，并输出 latent/标签形状；该流程仍会启动 JAX 编译，可能需要等待。
 
-主模型提取默认单 GPU、batch 2、每 4 帧取一个 anchor，按原配置递推 offsets 0/4/8/12，十步 Euler，fixed/refined 共用初始噪声。默认缓存 float16 特征，标签为 float32，建议预留几十 GB 磁盘。`EXTRACT_BATCH_SIZE`、`CACHE_STRIDE` 可调；采样规则在看测试结果之前锁定。保持默认 `NUM_WORKERS=0`，避免 JAX 初始化后 fork 产生的不稳定性。
+主模型提取现在默认四 GPU 数据并行、全局 batch 8（每卡 2）、每 4 帧取一个 anchor，按原配置递推 offsets 0/4/8/12，十步 Euler，fixed/refined 共用初始噪声。默认缓存 float16 特征，标签为 float32，建议预留几十 GB 磁盘。`EXTRACT_BATCH_SIZE`、`CACHE_STRIDE` 可调；采样规则在看测试结果之前锁定。保持默认 `NUM_WORKERS=0`；程序用一个后台线程预取下一批，重叠读取/变换和 GPU 计算。显式启用 DataLoader 多进程时使用 spawn，避免 JAX 初始化后 fork。
 
 缓存按固定大小分片，评估是一次有限遍历，没有无限 loader 或 drop-last。每个样本保留 episode、frame、task；根据原始 episode 长度及 padding mask 排除尾帧。`extract --resume` 跳过已完成的整个 split；中断的 split 会从头重算并原子覆盖其分片，不混用另一套参数。
 
@@ -102,7 +103,7 @@ RUN_TAG=$(date +%Y%m%d_%H%M%S)
 LOG_FILE="logs/frozen_fae_decoder_${RUN_TAG}.log"
 nohup env OUTPUT_ROOT=outputs/frozen_fae_decoder_59999_common_tasks_pyav \
   PROBE_DIR="outputs/frozen_fae_decoder_59999_common_tasks_pyav/fae_linear_20ep_${RUN_TAG}" \
-  CUDA_VISIBLE_DEVICES=0 EPOCHS=20 PYTHONUNBUFFERED=1 \
+  CUDA_VISIBLE_DEVICES=0 NUM_DEVICES=1 EPOCHS=20 PYTHONUNBUFFERED=1 \
   bash scripts/run_frozen_fae_decoder.sh all > "$LOG_FILE" 2>&1 < /dev/null &
 RUN_PID=$!
 echo "$RUN_PID" > "${LOG_FILE%.log}.pid"
@@ -126,9 +127,56 @@ SOURCE=history bash scripts/run_frozen_fae_decoder.sh evaluate
 
 history 基线合并每指 pooled-history/current 两个 tokens，附加 segment one-hot 和当前 offset；输入比 FAE probe 宽，结果会记录其参数量，不能宣称两者等参数。每种表示独立训练 probe；同一 FAE 的 fixed/refined 共用 probe。
 
+## 四卡提速版
+
+这次修改只增加并行和读取效率，不改变标签、模型冻结、20 轮训练、每轮 checkpoint、验证选优和最终测试流程。启动器默认 `NUM_DEVICES=4`，Python 入口默认 1 以兼容独立调用；只设置 `CUDA_VISIBLE_DEVICES` 并不能实现数据并行。
+
+- 特征提取：模型权重复制到四卡，全局 batch 8 按样本拆分，每卡 2；不是四份重复提取，也不是 FSDP。每张卡仍需容纳完整冻结模型。
+- decoder 训练与验证/测试预测：全局 batch 保持 128，每卡 32。训练在全局有效 patch 数量上归一化损失并同步梯度，不会错误地平均各卡不同分母的损失。
+- 尾批和过滤无效样本后的批次补齐至固定形状，以减少重复编译；训练/验证补齐行的 mask 为 false，提取/评估输出剔除补齐行。
+- 验证的预测和损失一起 JIT 编译；训练不再每一步把 loss 转成 Python 数值并同步 GPU。
+- 后台线程预取下一批；读取 NPZ 时只加载当前 FAE/history 分支需要的字段。
+- 日志区分 `EXTRACT`、`TRAIN`、`VALIDATE`、`CALIBRATE`、`EVALUATE`、`BOOTSTRAP`，并记录读取等待、推理/传输、写盘和每轮训练/验证时间。首批耗时包括编译；bootstrap 仍在 CPU 上执行。没有实际服务器计时前，不承诺四倍提速。
+
+**旧进程不会热更新。** 用户应先确认并停止旧任务，再拉取代码。不要让两个进程同时写同一缓存。若旧程序仍在 EXTRACT，四卡版应使用新缓存目录，因为全局 batch/随机数分组及协议发生变化，不能拼接旧的部分缓存。若旧 train/val/test 缓存均已完整生成，可保留 `CACHE_DIR` 指向旧缓存，直接运行新 `train`、`evaluate` 两阶段；不要用 `all` 强行把新提取协议写入旧缓存。
+
+四卡后台检查通过后再自动全量运行（只由用户在服务器执行）：
+
+```bash
+cd /workspace/mnt/sqzhang26/FactileLDM
+mkdir -p logs
+RUN_TAG=$(date +%Y%m%d_%H%M%S)
+LOG_FILE="logs/frozen_fae_decoder_4gpu_${RUN_TAG}.log"
+nohup env \
+  OUTPUT_ROOT=outputs/frozen_fae_decoder_59999_common_tasks_pyav_4gpu_v1 \
+  PROBE_DIR="outputs/frozen_fae_decoder_59999_common_tasks_pyav_4gpu_v1/fae_linear_20ep_${RUN_TAG}" \
+  CUDA_VISIBLE_DEVICES=0,1,2,3 NUM_DEVICES=4 \
+  EXTRACT_BATCH_SIZE=8 PROBE_BATCH_SIZE=128 NUM_WORKERS=0 \
+  EPOCHS=20 PYTHONUNBUFFERED=1 \
+  bash -c 'bash scripts/run_frozen_fae_decoder.sh check && bash scripts/run_frozen_fae_decoder.sh all' \
+  > "$LOG_FILE" 2>&1 < /dev/null &
+RUN_PID=$!
+echo "$RUN_PID" > "${LOG_FILE%.log}.pid"
+echo "PID: $RUN_PID; log: $LOG_FILE"
+tail -f "$LOG_FILE"
+```
+
+应看到 `Probe data parallel: devices=[CudaDevice(id=0), ..., CudaDevice(id=3)] global_batch=8 per_device_batch=2` 和 `SMOKE PASS`。训练阶段应显示 `global_batch=128 per_device_batch=32`。每个新 Python 进程的首次计算可能重新编译。若四卡提取显存不足，可以先降为 `EXTRACT_BATCH_SIZE=4`（每卡 1）并换一个新缓存目录；不要减少 Euler steps 来换取速度，那会改变实验。
+
+单卡运行需同时设置 `CUDA_VISIBLE_DEVICES=0 NUM_DEVICES=1`。GPU 数量不足或 batch 不能整除设备数时会明确报错，不会静默退回单卡。
+
+新增并行数值回归测试可由用户在服务器执行（只测试小 decoder，不加载主模型）：
+
+```bash
+PYTHONPATH=src:. CUDA_VISIBLE_DEVICES=0,1,2,3 env/.venv/bin/python -m pytest \
+  --confcutdir=src/openpi/shared -q src/openpi/shared/probe_parallel_test.py
+```
+
+测试包括补齐 mask、预取顺序/异常清理、按需读取，以及四卡与单卡的全局损失/梯度/预测/验证统计对齐。四卡不足时该数值测试会跳过；这不等于四卡验证通过。本次提交未运行训练或 GPU 测试，运行验证由用户完成。
+
 ## 结果及解释
 
-输出默认在 `outputs/frozen_fae_decoder_59999_common_tasks/`，与之前全任务尝试使用的目录分开：
+四卡输出默认在 `outputs/frozen_fae_decoder_59999_common_tasks_pyav_4gpu_v1/`，与之前单卡缓存分开：
 
 - `splits.json`：实际数据路径、元数据摘要及 episode 划分。
 - `cache/protocol.json`：主模型/config、checkpoint 文件清单摘要、归一化文件 SHA、标签阈值和单位、采样参数。

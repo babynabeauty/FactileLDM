@@ -18,6 +18,7 @@ import hashlib
 import importlib
 import logging
 from pathlib import Path
+import time
 
 import numpy as np
 
@@ -34,6 +35,11 @@ from openpi.shared.future_patch_probe_utils import summarize_groups
 from openpi.shared.future_patch_probe_utils import training_batches
 from openpi.shared.future_patch_probe_utils import training_force_scale
 from openpi.shared.future_patch_probe_utils import write_json
+from openpi.shared.probe_parallel import ProbeParallel
+from openpi.shared.probe_parallel import pad_array
+from openpi.shared.probe_parallel import pad_probe_batch
+from openpi.shared.probe_parallel import prefetch_batches
+from openpi.shared.probe_parallel import read_probe_cache
 
 
 def prepare(args):
@@ -184,6 +190,7 @@ def extract(args):
         raise ValueError("Policy state offsets must be contiguous history through current, then t+1..t+H.")
 
     _require_gpu(jax)
+    parallel = ProbeParallel(getattr(args, "num_devices", 1), args.batch_size)
     logging.info("Data reader: %s", reader_name)
     logging.info("Strictly restoring frozen policy from %s", params_path)
     shaped = nnx.eval_shape(config.model.create, jax.random.key(args.seed))
@@ -206,6 +213,9 @@ def extract(args):
     validate_probe_model(model)
     metadata = probe_metadata(model, num_steps=args.num_steps)
     graphdef, state = nnx.split(model)
+    action_horizon, history_length = model.action_horizon, model.force_input_frames
+    del model
+    state = parallel.replicate(state)
     # Reuse the checkpoint's statistics for train/val/test; never fit test statistics.
     norm_stats = normalize.deserialize_json(norm_path.read_text())
     checkpoint_files = [
@@ -232,6 +242,8 @@ def extract(args):
         "dataset_reader": reader_name,
         "model": metadata,
     }
+    protocol["extraction_num_devices"] = parallel.num_devices
+    protocol["extraction_execution"] = "global_batch_sharded_padded_v1"
     if not args.smoke:
         args.cache_dir.mkdir(parents=True, exist_ok=True)
         protocol_path = args.cache_dir / "protocol.json"
@@ -252,7 +264,19 @@ def extract(args):
             label_contact_temperature=args.contact_temperature,
         )
 
-    forward = jax.jit(forward)
+    record_shardings = {
+        key: parallel.data
+        for key in (
+            "refined_hidden", "fixed_hidden", "history_tokens", "target_contact",
+            "target_force", "current_contact", "current_force", "valid_mask",
+        )
+    }
+    record_shardings.update(offsets=parallel.replicated, future_frame_offsets=parallel.replicated)
+    forward = jax.jit(
+        forward,
+        in_shardings=(parallel.replicated, parallel.data, parallel.data, parallel.data, parallel.replicated),
+        out_shardings=record_shardings,
+    )
 
     for split_name in args.splits:
         split = manifest["splits"][split_name]
@@ -319,8 +343,8 @@ def extract(args):
             info_by_episode,
             manifest["task_names"],
             data_config,
-            model.action_horizon,
-            model.force_input_frames,
+            action_horizon,
+            history_length,
         )
         loader = torch.utils.data.DataLoader(
             wrapped,
@@ -329,6 +353,7 @@ def extract(args):
             num_workers=args.num_workers,
             drop_last=False,
             collate_fn=_collate,
+            **({"multiprocessing_context": "spawn"} if args.num_workers > 0 else {}),
         )
         index = {
             "version": 1,
@@ -364,44 +389,81 @@ def extract(args):
             index["samples"] += len(arrays["frame_index"])
             pending, pending_size = [], 0
 
-        for batch_index, batch in enumerate(loader):
-            observation = model_tavla.Observation.from_dict(batch["observation"])
-            rng = jax.random.fold_in(
-                jax.random.key(args.seed + (0 if split_name == "train" else 1 if split_name == "val" else 2)),
-                batch_index,
-            )
-            records = jax.device_get(
-                forward(state, observation, batch["label_effort"], batch["valid_future_frames"], rng)
-            )
-            records = {key: np.asarray(value) for key, value in records.items()}
-            if args.smoke:
-                for key in ("refined_hidden", "target_contact", "target_force"):
-                    if not np.isfinite(records[key]).all():
-                        raise ValueError(f"Non-finite values in smoke-test output {key}.")
-                logging.info(
-                    "SMOKE PASS: split=%s FAE=%s contact=%s force=%s valid_frames=%d; no cache written.",
-                    split_name,
-                    records["refined_hidden"].shape,
-                    records["target_contact"].shape,
-                    records["target_force"].shape,
-                    np.sum(records["valid_mask"]),
+        stage_start = time.perf_counter()
+        batch_ready_at = stage_start
+        read_wait_seconds = compute_seconds = write_seconds = 0.0
+        seen = 0
+        logging.info(
+            "EXTRACT %s: %d anchors, %d batches; first batch includes JAX compilation.",
+            split_name, len(selected), len(loader),
+        )
+        with prefetch_batches(loader) as batches:
+            for batch_index, batch in enumerate(batches):
+                now = time.perf_counter()
+                read_wait_seconds += now - batch_ready_at
+                real_count = len(batch["episode_id"])
+                padded_observation = jax.tree.map(lambda value: pad_array(value, args.batch_size), batch["observation"])
+                valid = pad_array(batch["valid_future_frames"], args.batch_size).copy()
+                valid[real_count:] = False
+                observation = model_tavla.Observation.from_dict(padded_observation)
+                rng = jax.random.fold_in(
+                    jax.random.key(args.seed + (0 if split_name == "train" else 1 if split_name == "val" else 2)),
+                    batch_index,
                 )
-                if hasattr(dataset, "close"):
-                    dataset.close()
-                return
-            records["fixed_hidden"] = records["fixed_hidden"][:, 0]
-            for key in ("fixed_hidden", "refined_hidden", "history_tokens"):
-                records[key] = records[key].astype(np.float16)
-                if not np.isfinite(records[key]).all():
-                    raise ValueError(f"Non-finite frozen features: {key}")
-            for key in ("episode_id", "frame_index", "task_id"):
-                records[key] = np.asarray(batch[key])
-            pending.append(records)
-            pending_size += len(records["frame_index"])
-            if pending_size >= args.shard_size:
-                flush()
-            if batch_index % 25 == 0:
-                logging.info("%s: batch %d/%d", split_name, batch_index + 1, len(loader))
+                records = jax.device_get(
+                    forward(
+                        state,
+                        parallel.shard(observation),
+                        parallel.shard(pad_array(batch["label_effort"], args.batch_size)),
+                        parallel.shard(valid),
+                        parallel.replicate(rng),
+                    )
+                )
+                records = {
+                    key: np.asarray(value) if key in ("offsets", "future_frame_offsets") else np.asarray(value)[:real_count]
+                    for key, value in records.items()
+                }
+                compute_seconds += time.perf_counter() - now
+                seen += real_count
+                if args.smoke:
+                    for key in ("refined_hidden", "target_contact", "target_force"):
+                        if not np.isfinite(records[key]).all():
+                            raise ValueError(f"Non-finite values in smoke-test output {key}.")
+                    logging.info(
+                        "SMOKE PASS: split=%s FAE=%s contact=%s force=%s valid_frames=%d; no cache written.",
+                        split_name,
+                        records["refined_hidden"].shape,
+                        records["target_contact"].shape,
+                        records["target_force"].shape,
+                        np.sum(records["valid_mask"]),
+                    )
+                    break
+                records["fixed_hidden"] = records["fixed_hidden"][:, 0]
+                for key in ("fixed_hidden", "refined_hidden", "history_tokens"):
+                    records[key] = records[key].astype(np.float16)
+                    if not np.isfinite(records[key]).all():
+                        raise ValueError(f"Non-finite frozen features: {key}")
+                for key in ("episode_id", "frame_index", "task_id"):
+                    records[key] = np.asarray(batch[key])
+                pending.append(records)
+                pending_size += len(records["frame_index"])
+                if pending_size >= args.shard_size:
+                    write_start = time.perf_counter()
+                    flush()
+                    write_seconds += time.perf_counter() - write_start
+                if batch_index % 25 == 0 or batch_index + 1 == len(loader):
+                    elapsed = time.perf_counter() - stage_start
+                    logging.info(
+                        "EXTRACT %s batch=%d/%d anchors=%d/%d rate=%.2f/s "
+                        "read_wait=%.1fs inference_and_transfer=%.1fs write=%.1fs",
+                        split_name, batch_index + 1, len(loader), seen, len(selected),
+                        seen / max(elapsed, 1e-6), read_wait_seconds, compute_seconds, write_seconds,
+                    )
+                batch_ready_at = time.perf_counter()
+        if args.smoke:
+            if hasattr(dataset, "close"):
+                dataset.close()
+            return
         flush()
         if hasattr(dataset, "close"):
             dataset.close()
@@ -476,21 +538,66 @@ def _load_probe(path, index):
     return graphdef, params, meta
 
 
-def _prediction_fn(graphdef):
+def _prediction_fn(graphdef, parallel=None):
     import flax.nnx as nnx
     import jax
 
-    return jax.jit(lambda params, x: nnx.merge(graphdef, params)(x))
+    def function(params, x):
+        return nnx.merge(graphdef, params)(x)
+
+    if parallel is None:
+        return jax.jit(function)
+    compiled = jax.jit(
+        function,
+        in_shardings=(parallel.replicated, parallel.data),
+        out_shardings=parallel.data,
+    )
+
+    def predict(params, features):
+        count = len(features)
+        padded = parallel.shard(pad_array(features, parallel.batch_size))
+        # Transfer once, then trim on the CPU rather than compiling dynamic
+        # device-side slices for every possible last-batch size.
+        outputs = jax.device_get(compiled(params, padded))
+        return {key: np.asarray(value)[:count] for key, value in outputs.items()}
+
+    return predict
 
 
-def _validation_loss(root, index, predict, params, force_scale, source, batch_size):
+def _validation_stats_fn(graphdef, parallel, force_scale):
+    import flax.nnx as nnx
+    import jax
+
+    from openpi.models.future_patch_probe import future_patch_probe_loss
+
+    scale = parallel.replicate(np.asarray(force_scale, dtype=np.float32))
+
+    def statistics(params, features, contact, force, mask):
+        _, stats = future_patch_probe_loss(
+            nnx.merge(graphdef, params)(features), contact, force / scale, valid_mask=mask
+        )
+        return stats
+
+    compiled = jax.jit(
+        statistics,
+        in_shardings=(parallel.replicated, parallel.data, parallel.data, parallel.data, parallel.data),
+        out_shardings=parallel.replicated,
+    )
+
+    def validate(params, features, contact, force, mask):
+        batch = pad_probe_batch((features, contact, force, mask), parallel.batch_size)
+        return jax.device_get(compiled(params, *parallel.shard(batch)))
+
+    return validate
+
+
+def _validation_loss(root, index, predict, params, force_scale, source, batch_size, *, statistics=None):
     from openpi.models.future_patch_probe import future_patch_probe_loss
 
     losses = []
     modes = (0, 1) if source == "fae" else (0,)
     for shard in index["shards"]:
-        with np.load(root / shard["file"], allow_pickle=False) as file:
-            cache = dict(file)
+        cache = read_probe_cache(root / shard["file"], source)
         for start in range(0, len(cache["frame_index"]), batch_size):
             rows = np.arange(start, min(start + batch_size, len(cache["frame_index"])))
             for offset in range(len(cache["offsets"])):
@@ -507,12 +614,17 @@ def _validation_loss(root, index, predict, params, force_scale, source, batch_si
                         num_segments=index["model"]["segments"],
                         num_fingers=index["model"]["fingers"],
                     )
-                    _, stats = future_patch_probe_loss(
-                        predict(params, features),
-                        cache["target_contact"][rows],
-                        cache["target_force"][rows] / force_scale,
-                        valid_mask=mask,
-                    )
+                    if statistics is None:
+                        _, stats = future_patch_probe_loss(
+                            predict(params, features),
+                            cache["target_contact"][rows],
+                            cache["target_force"][rows] / force_scale,
+                            valid_mask=mask,
+                        )
+                    else:
+                        stats = statistics(
+                            params, features, cache["target_contact"][rows], cache["target_force"][rows], mask
+                        )
                     losses.append({key: float(value) for key, value in stats.items()})
     if not losses:
         raise ValueError("No valid validation samples.")
@@ -535,8 +647,7 @@ def collect_metrics(root, index, predict, params, force_scale, *, source, batch_
     groups = defaultdict(MetricGroup)
     modes = (("fixed", 0), ("refined", 1)) if source == "fae" else (("history", 0),)
     for shard in index["shards"]:
-        with np.load(root / shard["file"], allow_pickle=False) as file:
-            cache = dict(file)
+        cache = read_probe_cache(root / shard["file"], source, metrics=True)
         for start in range(0, len(cache["frame_index"]), batch_size):
             rows = np.arange(start, min(start + batch_size, len(cache["frame_index"])))
             contact, target = cache["target_contact"][rows], cache["target_force"][rows]
@@ -610,12 +721,14 @@ def train(args):
     if checkpoint.exists() or (epoch_dir.exists() and any(epoch_dir.iterdir())):
         raise FileExistsError("Decoder checkpoint exists; choose a new output directory.")
     epoch_dir.mkdir(parents=True, exist_ok=True)
+    parallel = ProbeParallel(getattr(args, "num_devices", 1), args.batch_size)
     force_scale = training_force_scale(args.cache_dir / "train", train_index)
     probe = _make_probe(train_index, args.source, args.decoder_type, args.hidden_dim, args.seed)
     graphdef, params = nnx.split(probe)
+    params = parallel.replicate(params)
     tx = optax.adam(args.learning_rate)
-    opt_state = tx.init(params)
-    scale = jnp.asarray(force_scale)
+    opt_state = parallel.replicate(tx.init(params))
+    scale = parallel.replicate(jnp.asarray(force_scale))
 
     def step(params, opt_state, x, contact, force, mask):
         def objective(p):
@@ -626,7 +739,17 @@ def train(args):
         updates, opt_state = tx.update(grads, opt_state, params)
         return optax.apply_updates(params, updates), opt_state, loss
 
-    step, predict = jax.jit(step), _prediction_fn(graphdef)
+    step = jax.jit(
+        step,
+        in_shardings=(
+            parallel.replicated, parallel.replicated,
+            parallel.data, parallel.data, parallel.data, parallel.data,
+        ),
+        out_shardings=(parallel.replicated, parallel.replicated, parallel.replicated),
+        donate_argnums=(0, 1),
+    )
+    predict = _prediction_fn(graphdef, parallel)
+    statistics = _validation_stats_fn(graphdef, parallel, force_scale)
     metadata = {
         "source": args.source,
         "decoder_type": args.decoder_type,
@@ -639,6 +762,8 @@ def train(args):
         "threshold": 0.5,
         "learning_rate": args.learning_rate,
         "epochs": args.epochs,
+        "num_devices": parallel.num_devices,
+        "global_batch_size": args.batch_size,
         "policy_frozen": True,
         "train_episodes": train_index["episodes"],
         "val_episodes": val_index["episodes"],
@@ -648,23 +773,39 @@ def train(args):
     for epoch in range(args.epochs):
         rng = np.random.default_rng(args.seed + epoch)
         losses = []
-        for batch in training_batches(
+        epoch_start = time.perf_counter()
+        batch_stream = training_batches(
             args.cache_dir / "train", train_index, batch_size=args.batch_size, rng=rng, source=args.source
-        ):
-            params, opt_state, loss = step(params, opt_state, *batch)
-            losses.append(float(loss))
-            global_step += 1
-        if not losses or not np.isfinite(losses).all():
-            raise ValueError("Empty/non-finite probe training; inspect units, masks and input cache.")
-        val_loss = _validation_loss(
-            args.cache_dir / "val", val_index, predict, params, force_scale, args.source, args.batch_size
         )
+        logging.info("TRAIN epoch=%d/%d started; first step may compile.", epoch + 1, args.epochs)
+        with prefetch_batches(batch_stream) as batches:
+            for batch in batches:
+                batch = parallel.shard(pad_probe_batch(batch, args.batch_size))
+                params, opt_state, loss = step(params, opt_state, *batch)
+                losses.append(loss)
+                global_step += 1
+                if len(losses) % 100 == 0:
+                    jax.block_until_ready(loss)
+                    logging.info("TRAIN epoch=%d batch=%d step=%d", epoch + 1, len(losses), global_step)
+        losses = np.asarray(jax.device_get(losses), dtype=np.float64)
+        if not len(losses) or not np.isfinite(losses).all():
+            raise ValueError("Empty/non-finite probe training; inspect units, masks and input cache.")
+        train_seconds = time.perf_counter() - epoch_start
+        validation_start = time.perf_counter()
+        logging.info("VALIDATE epoch=%d started", epoch + 1)
+        val_loss = _validation_loss(
+            args.cache_dir / "val", val_index, predict, params, force_scale, args.source, args.batch_size,
+            statistics=statistics,
+        )
+        validation_seconds = time.perf_counter() - validation_start
         if not np.isfinite(val_loss):
             raise ValueError("Non-finite validation loss.")
         epoch_stats = {
             "epoch": epoch + 1,
             "global_step": global_step,
             "epoch_steps": len(losses),
+            "train_seconds": train_seconds,
+            "validation_seconds": validation_seconds,
             "train_batch_mean_loss": float(np.mean(losses)),
             "val_loss": val_loss,
         }
@@ -679,19 +820,23 @@ def train(args):
             _save_probe(checkpoint, params, {**snapshot_metadata, "best_epoch": epoch + 1, "best_val_loss": best})
         write_json(args.output_dir / "training_history.json", history)
         logging.info(
-            "epoch=%d step=%d train=%.5f val=%.5f best=%.5f checkpoint=%s",
+            "epoch=%d step=%d train=%.5f val=%.5f best=%.5f checkpoint=%s train_s=%.1f val_s=%.1f",
             epoch + 1,
             global_step,
             np.mean(losses),
             val_loss,
             best,
             epoch_checkpoint,
+            train_seconds,
+            validation_seconds,
         )
     graphdef, params, metadata = _load_probe(checkpoint, val_index)
+    params = parallel.replicate(params)
+    logging.info("CALIBRATE best epoch=%d on validation data", metadata["best_epoch"])
     groups = collect_metrics(
         args.cache_dir / "val",
         val_index,
-        _prediction_fn(graphdef),
+        _prediction_fn(graphdef, parallel),
         params,
         force_scale,
         source=args.source,
@@ -716,22 +861,26 @@ def train(args):
 
 
 def evaluate(args):
+    parallel = ProbeParallel(getattr(args, "num_devices", 1), args.batch_size)
     index = _cache_index(args.cache_dir, "test")
     graphdef, params, metadata = _load_probe(args.probe_checkpoint, index)
     if not metadata.get("training_complete"):
         raise ValueError(
             "Probe fitting/validation threshold selection is incomplete; finish train before final testing."
         )
+    params = parallel.replicate(params)
+    logging.info("EVALUATE held-out test data started")
     groups = collect_metrics(
         args.cache_dir / "test",
         index,
-        _prediction_fn(graphdef),
+        _prediction_fn(graphdef, parallel),
         params,
         np.asarray(metadata["force_scale"], dtype=np.float32),
         source=metadata["source"],
         batch_size=args.batch_size,
     )
     rows = summarize_groups(groups, metadata["threshold"])
+    logging.info("BOOTSTRAP %d repetitions on CPU", args.bootstrap_samples)
     ci = paired_episode_bootstrap(groups, metadata["threshold"], repetitions=args.bootstrap_samples, seed=args.seed)
     protocol = read_json(args.cache_dir / "protocol.json")
     result = {
@@ -795,6 +944,7 @@ def build_parser():
     p.add_argument("--force-unit", default="dataset_native")
     p.add_argument("--batch-size", type=int, default=2)
     p.add_argument("--num-workers", type=int, default=0)
+    p.add_argument("--num-devices", type=int, default=1, help="Number of visible devices for data parallelism.")
     p.add_argument("--num-steps", type=int, default=10)
     p.add_argument("--stride", type=int, default=4)
     p.add_argument("--shard-size", type=int, default=256)
@@ -811,6 +961,7 @@ def build_parser():
     p.add_argument("--epochs", type=int, default=20)
     p.add_argument("--batch-size", type=int, default=128)
     p.add_argument("--learning-rate", type=float, default=1e-3)
+    p.add_argument("--num-devices", type=int, default=1, help="Number of visible devices for data parallelism.")
     p.add_argument("--seed", type=int, default=42)
     p.set_defaults(func=train)
     p = sub.add_parser("evaluate", help="Evaluate the validation-selected decoder on final held-out test episodes.")
@@ -819,6 +970,7 @@ def build_parser():
     p.add_argument("--output-dir", type=Path, required=True)
     p.add_argument("--batch-size", type=int, default=128)
     p.add_argument("--bootstrap-samples", type=int, default=200)
+    p.add_argument("--num-devices", type=int, default=1, help="Number of visible devices for data parallelism.")
     p.add_argument("--seed", type=int, default=42)
     p.set_defaults(func=evaluate)
     return parser

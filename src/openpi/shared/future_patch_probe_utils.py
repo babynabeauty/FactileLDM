@@ -9,6 +9,8 @@ from pathlib import Path
 
 import numpy as np
 
+from openpi.shared.probe_parallel import read_probe_cache
+
 
 def read_json(path):
     return json.loads(Path(path).read_text())
@@ -154,8 +156,7 @@ def training_batches(cache_root, index, *, batch_size, rng, source, shuffle=True
     if shuffle:
         rng.shuffle(shards)
     for shard in shards:
-        with np.load(Path(cache_root) / shard["file"], allow_pickle=False) as file:
-            cache = dict(file)
+        cache = read_probe_cache(Path(cache_root) / shard["file"], source)
         rows = np.arange(len(cache["frame_index"]))
         if shuffle:
             rng.shuffle(rows)

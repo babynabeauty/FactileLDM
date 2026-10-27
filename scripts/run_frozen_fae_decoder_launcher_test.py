@@ -18,6 +18,8 @@ def test_launcher_uses_project_python_and_drops_inherited_pythonpath(tmp_path):
     env = {
         **os.environ,
         "REPO_ROOT": str(root),
+        "NUM_DEVICES": "4",
+        "EXTRACT_BATCH_SIZE": "8",
         "PYTHON_BIN": "/wrong/venv/bin/python",
         "PYTHONPATH": "/wrong/venv/lib/site-packages",
         "PYTHONHOME": "/wrong/venv",
@@ -30,6 +32,11 @@ def test_launcher_uses_project_python_and_drops_inherited_pythonpath(tmp_path):
 
     smoke = subprocess.run(["bash", str(SCRIPT), "check"], env=env, text=True, capture_output=True, check=True)
     assert "--smoke --splits train" in smoke.stdout
+    assert "--num-devices 4" in smoke.stdout
+    assert "--batch-size 8" in smoke.stdout
+
+    training = subprocess.run(["bash", str(SCRIPT), "train"], env=env, text=True, capture_output=True, check=True)
+    assert "--num-devices 4" in training.stdout
 
 
 def test_missing_project_python_fails_without_falling_back_to_path(tmp_path):
