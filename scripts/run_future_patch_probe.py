@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Prepare -> extract frozen FAE -> train readout -> evaluate on held-out episodes.
 
-Only ``extract`` imports the policy/LeRobot stack. ``train`` and ``evaluate``
+Only ``extract`` imports the policy/video/Parquet stack. ``train`` and ``evaluate``
 consume immutable feature caches and cannot update or even load the policy.
 """
 
-# Lazy imports isolate CPU-only preparation and cached readout fitting from the policy/LeRobot stack.
+# Lazy imports isolate CPU-only preparation and cached readout fitting from the policy/data stack.
 # ruff: noqa: PLC0415
 
 from __future__ import annotations
@@ -36,7 +36,9 @@ from openpi.shared.future_patch_probe_utils import write_json
 
 
 def prepare(args):
-    manifest = create_manifest(args.train_root, args.test_root, val_ratio=args.val_ratio, seed=args.seed)
+    manifest = create_manifest(
+        args.train_root, args.test_root, val_ratio=args.val_ratio, seed=args.seed, test_task_scope=args.test_task_scope
+    )
     if args.manifest.exists() and read_json(args.manifest) != manifest:
         raise FileExistsError("Manifest exists with different splits. Use a new output path.")
     write_json(args.manifest, manifest)
@@ -46,6 +48,10 @@ def prepare(args):
             {row["task"] for row in manifest["datasets"][split["dataset"]]["episodes"] if row["episode"] in selected}
         )
         logging.info("%s: %d episodes, task labels=%s", name, len(selected), tasks)
+    if manifest.get("excluded_test_episodes"):
+        logging.info(
+            "Excluded %d test episodes outside the shared task labels.", len(manifest["excluded_test_episodes"])
+        )
 
 
 class ProbeSampleDataset:
@@ -143,8 +149,8 @@ def extract(args):
     from openpi.models import model as policy_model
     from openpi.models import model_tavla
     from openpi.shared import normalize
+    from openpi.shared.future_patch_probe_data import LocalProbeDataset
     from openpi.training import config as configs
-    from openpi.training import data_loader
     from scripts.extract_future_patch_probe import extract_probe_batch
     from scripts.extract_future_patch_probe import probe_metadata
     from scripts.extract_future_patch_probe import validate_probe_model
@@ -202,6 +208,7 @@ def extract(args):
         "seed": args.seed,
         "extraction_batch_size": args.batch_size,
         "feature_dtype": "float16",
+        "dataset_reader": "local_lerobot_v2.1_parquet_opencv_rgb",
         "model": metadata,
     }
     args.cache_dir.mkdir(parents=True, exist_ok=True)
@@ -253,8 +260,19 @@ def extract(args):
         data_config = dataclasses.replace(
             data_config, norm_stats=norm_stats, filter_dict_path=None, max_episodes=None, rcs_sample_enable=False
         )
-        dataset = data_loader.create_torch_dataset(data_config, config.model.action_horizon, config.model)
-        episodes, frames = data_loader._frame_metadata(dataset)  # noqa: SLF001
+        features = read_json(Path(dataset_info["root"]) / "meta/info.json")["features"]
+        camera_keys = [config.data.primary_image_key, config.data.wrist_image_key]
+        if config.data.extra_image_key in features:
+            camera_keys.append(config.data.extra_image_key)
+        if any(key not in features or features[key].get("dtype") != "video" for key in camera_keys):
+            raise ValueError("Required policy cameras must have per-episode video features in this v2.1 dataset.")
+        dataset = LocalProbeDataset(
+            dataset_info["root"],
+            episodes=dataset_info["episodes"],
+            state_offsets=data_config.state_delta_timestamps,
+            image_keys=camera_keys,
+        )
+        episodes, frames = dataset.episode_ids, dataset.frame_ids
         info_by_episode = {r["episode"]: {**r, "fps": dataset_info["fps"]} for r in dataset_info["episodes"]}
         selected = []
         for episode in split["episodes"]:
@@ -341,6 +359,7 @@ def extract(args):
             if batch_index % 25 == 0:
                 logging.info("%s: batch %d/%d", split_name, batch_index + 1, len(loader))
         flush()
+        dataset.close()
         if index["samples"] != len(selected) or not selected:
             raise ValueError("Cache did not cover exactly one finite pass over selected anchors.")
         index["complete"] = True
@@ -687,6 +706,12 @@ def build_parser():
     p.add_argument("--test-root", type=Path, required=True)
     p.add_argument("--manifest", type=Path, required=True)
     p.add_argument("--val-ratio", type=float, default=0.1)
+    p.add_argument(
+        "--test-task-scope",
+        choices=("all", "common"),
+        default="all",
+        help="common evaluates only test episodes whose exact task labels occur in the training pool.",
+    )
     p.add_argument("--seed", type=int, default=42)
     p.set_defaults(func=prepare)
     p = sub.add_parser("extract", help="Cache deployed FAE states and native-label targets; never trains the policy.")

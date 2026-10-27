@@ -64,18 +64,24 @@ def dataset_metadata(root):
     }
 
 
-def create_manifest(train_root, test_root, *, val_ratio=0.1, seed=42):
+def create_manifest(train_root, test_root, *, val_ratio=0.1, seed=42, test_task_scope="all"):
     if not 0 < val_ratio < 1:
         raise ValueError("val_ratio must lie in (0, 1).")
     train, test = dataset_metadata(train_root), dataset_metadata(test_root)
     if train["root"] == test["root"]:
         raise ValueError("Training and final test datasets must be separate.")
     train_tasks = sorted({r["task"] for r in train["episodes"]})
-    test_tasks = sorted({r["task"] for r in test["episodes"]})
+    if test_task_scope not in ("all", "common"):
+        raise ValueError("test_task_scope must be all or common.")
+    selected_test = [r for r in test["episodes"] if test_task_scope == "all" or r["task"] in train_tasks]
+    if not selected_test:
+        raise ValueError(
+            "No test episodes match the training task labels. Inspect labels or use --test-task-scope all."
+        )
     # Task IDs are only metric-group identifiers, not policy inputs. Train/val
     # stratification uses training labels; test macro averages use test labels.
     # Keep every name verbatim rather than guessing cross-dataset equivalences.
-    task_names = sorted(set(train_tasks) | set(test_tasks))
+    task_names = sorted(set(train_tasks) | {r["task"] for r in selected_test})
     rng = np.random.default_rng(seed)
     train_ids, val_ids = [], []
     for task in train_tasks:
@@ -91,11 +97,13 @@ def create_manifest(train_root, test_root, *, val_ratio=0.1, seed=42):
         "seed": seed,
         "val_ratio": val_ratio,
         "task_names": task_names,
+        "test_task_scope": test_task_scope,
+        "excluded_test_episodes": sorted(r["episode"] for r in test["episodes"] if r not in selected_test),
         "datasets": {"train_pool": train, "test": test},
         "splits": {
             "train": {"dataset": "train_pool", "episodes": sorted(train_ids)},
             "val": {"dataset": "train_pool", "episodes": sorted(val_ids)},
-            "test": {"dataset": "test", "episodes": sorted(r["episode"] for r in test["episodes"])},
+            "test": {"dataset": "test", "episodes": sorted(r["episode"] for r in selected_test)},
         },
     }
 

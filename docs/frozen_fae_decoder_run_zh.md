@@ -9,12 +9,16 @@
 - 配置：`pi0_xhand_dual_patch_pretrained_f4_h16_async`。
 - 主模型：`checkpoints/pi0_xhand_dual_patch_pretrained_f4_h16_async/pi0_xhand_dual_patch_pretrained_f4_h16_async_task12345_2_patch_pretrain_fast_0709/59999`。
 - decoder 训练池：`data/task12345-2`，用户提供元数据为 559 个 episodes、5 个任务。
-- 最终测试：`data/task-test-collect`，用户提供元数据为 64 个 episodes、5 个任务。
+- 测试数据源：`data/task-test-collect`，用户提供元数据为 64 个 episodes、5 个任务；当前默认只评估其中与训练池共有的四个任务，实际测试 episode 数由筛选后清单决定。
 - 按任务分层从训练池留出约 10% 的 episodes 验证；不使用测试集选择 epoch、分类阈值或缩放统计。实际计数由服务器 metadata 决定。
 
 测试数据必须也未参与主模型训练。两个库的 `info.json` 即使都写 `splits.train`，在本实验中角色仍由 `splits.json` 决定，不会自动合并。
 
-两个库的任务名称不要求逐字相同。训练／验证按训练库原始名称分层，测试按测试库原始名称分组并计算宏平均；名称并集只用来分配指标分组 ID，不作为模型输入，也不自动猜测同义任务。`prepare` 会输出各 split 的任务名称，便于检查测试组是否对应预期的五项任务。
+两个库的任务名称不要求逐字相同。训练／验证按训练库原始名称分层，测试按测试库原始名称分组并计算宏平均；名称并集只用来分配指标分组 ID，不作为模型输入，也不自动猜测同义任务。`prepare` 会输出各 split 的任务名称，便于检查测试组是否对应预期任务集合。
+
+本次日志确认：训练有 Pipette Press、测试有 Cabinet Retrieval，其余四项相同。因此启动脚本默认 `TEST_TASK_SCOPE=common`，仅测试 Cob Grasp、Bottle Grasp、Button Press、Sponge Wipe，保留训练／验证池的五项任务。排除的测试 episode ID 记录在 `splits.json`。这是按完全相同的原始任务标签取交集，不猜测同义描述。Python 入口 `prepare --test-task-scope all` 可保留所有测试任务。
+
+提取阶段直接读取本地 LeRobot v2.1 的 Parquet 和每 episode 的 MP4，使用 PyArrow／OpenCV，不依赖 LeRobot 包的 `common.datasets` 或 `datasets` 命名空间，也不改动原策略训练 loader。只解码当前 RGB 帧并按 BGR→RGB 转换；状态窗口的首尾补齐均返回掩码。实际帧号、时间戳、视频 FPS 和长度必须与 metadata 一致。主模型仍使用原 config 的输入变换及归一化统计。
 
 ## 首次运行
 
@@ -44,6 +48,8 @@ bash scripts/run_frozen_fae_decoder.sh all
 ```
 
 修改 checkpoint、标签定义、数据划分、采样 stride 或归一化统计后必须换缓存目录，代码会拒绝混用。`FORCE_UNIT` 只记录单位，**不会**执行传感器标定或单位转换。
+
+`CONTACT_THRESHOLD` 与 `CONTACT_TEMPERATURE` 只在 `extract` 生成真实未来标签及 persistence 当前值时使用，不改动已训练 FAE 的内部触觉编码。前者定义 patch 接触标签，二者共同定义局部力的 sigmoid 加权平均；后续 decoder 用这些固定标签计算损失和指标。F1 的预测概率阈值是另一参数，在 `train` 末尾用验证集选择，和这里的温度无关。
 
 ## 分阶段运行及资源
 
@@ -76,7 +82,7 @@ history 基线合并每指 pooled-history/current 两个 tokens，附加 segment
 
 ## 结果及解释
 
-输出默认在 `outputs/frozen_fae_decoder_59999/`：
+输出默认在 `outputs/frozen_fae_decoder_59999_common_tasks/`，与之前全任务尝试使用的目录分开：
 
 - `splits.json`：实际数据路径、元数据摘要及 episode 划分。
 - `cache/protocol.json`：主模型/config、checkpoint 文件清单摘要、归一化文件 SHA、标签阈值和单位、采样参数。
@@ -103,7 +109,8 @@ PYTHONPATH=src:. JAX_PLATFORMS=cpu python -m pytest \
   src/openpi/models/future_patch_probe_test.py \
   scripts/extract_future_patch_probe_test.py \
   src/openpi/shared/future_patch_probe_utils_test.py \
+  src/openpi/shared/future_patch_probe_data_test.py \
   scripts/run_future_patch_probe_test.py
 ```
 
-包含原有 decoder/因果切片测试、episode 划分、严格参数校验、AP 并列分数、活动力误差、配对 episode CI，以及小型合成特征缓存上的 decoder 训练/保存/重载/测试集评估。它们不替代服务器上的真实 checkpoint、LeRobot 视频解码和 GPU 提取验证。
+包含原有 decoder/因果切片测试、episode 划分和共同任务筛选、严格参数校验、AP 并列分数、活动力误差、配对 episode CI，以及小型合成特征缓存上的 decoder 训练/保存/重载/测试集评估。新增真实 Parquet/MP4 测试覆盖视频当前帧、颜色通道、跨 episode 读取、时间戳和末尾掩码。它们不替代服务器上的真实 checkpoint、数据视频及 GPU 提取验证。

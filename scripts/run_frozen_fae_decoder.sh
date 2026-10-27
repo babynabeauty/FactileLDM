@@ -14,7 +14,8 @@ POLICY_PARAMS="${POLICY_PARAMS:-$REPO_ROOT/checkpoints/pi0_xhand_dual_patch_pret
 CONFIG_NAME="${CONFIG_NAME:-pi0_xhand_dual_patch_pretrained_f4_h16_async}"
 TRAIN_ROOT="${TRAIN_ROOT:-$REPO_ROOT/data/task12345-2}"
 TEST_ROOT="${TEST_ROOT:-$REPO_ROOT/data/task-test-collect}"
-OUTPUT_ROOT="${OUTPUT_ROOT:-$REPO_ROOT/outputs/frozen_fae_decoder_59999}"
+TEST_TASK_SCOPE="${TEST_TASK_SCOPE:-common}"
+OUTPUT_ROOT="${OUTPUT_ROOT:-$REPO_ROOT/outputs/frozen_fae_decoder_59999_${TEST_TASK_SCOPE}_tasks}"
 CACHE_DIR="${CACHE_DIR:-$OUTPUT_ROOT/cache}"
 SOURCE="${SOURCE:-fae}"
 DECODER_TYPE="${DECODER_TYPE:-linear}"
@@ -39,7 +40,8 @@ esac
 
 if [[ "$stage" == all || "$stage" == prepare ]]; then
     run_probe prepare --train-root "$TRAIN_ROOT" --test-root "$TEST_ROOT" \
-        --manifest "$OUTPUT_ROOT/splits.json" --val-ratio "${VAL_RATIO:-0.1}" --seed "$SEED"
+        --manifest "$OUTPUT_ROOT/splits.json" --val-ratio "${VAL_RATIO:-0.1}" --seed "$SEED" \
+        --test-task-scope "$TEST_TASK_SCOPE"
 fi
 
 if [[ "$stage" == all || "$stage" == extract ]]; then

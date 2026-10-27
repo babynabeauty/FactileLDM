@@ -59,6 +59,21 @@ def test_different_test_task_names_preserve_labels_and_training_split(tmp_path):
     assert manifest["splits"]["test"]["episodes"] == [0, 1, 2, 3]
 
 
+def test_common_task_scope_filters_only_test_and_records_exclusions(tmp_path):
+    make_dataset(tmp_path / "train", {"bottle": 10, "pipette": 10})
+    make_dataset(tmp_path / "test", {"cabinet": 3, "bottle": 2})
+    full = create_manifest(tmp_path / "train", tmp_path / "test")
+    common = create_manifest(tmp_path / "train", tmp_path / "test", test_task_scope="common")
+    assert common["splits"]["train"] == full["splits"]["train"]
+    assert common["splits"]["val"] == full["splits"]["val"]
+    assert common["splits"]["test"]["episodes"] == [3, 4]
+    assert common["excluded_test_episodes"] == [0, 1, 2]
+    assert common["task_names"] == ["bottle", "pipette"]
+    make_dataset(tmp_path / "other", {"unrelated": 2})
+    with pytest.raises(ValueError, match="No test episodes"):
+        create_manifest(tmp_path / "train", tmp_path / "other", test_task_scope="common")
+
+
 def test_future_mask_excludes_current_and_repeated_tail():
     np.testing.assert_array_equal(future_validity(7, 10, 4), [True, True, False, False])
     assert not future_validity(9, 10, 4).any()
