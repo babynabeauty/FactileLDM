@@ -41,7 +41,11 @@ def prepare(args):
         raise FileExistsError("Manifest exists with different splits. Use a new output path.")
     write_json(args.manifest, manifest)
     for name, split in manifest["splits"].items():
-        logging.info("%s: %d episodes", name, len(split["episodes"]))
+        selected = set(split["episodes"])
+        tasks = sorted(
+            {row["task"] for row in manifest["datasets"][split["dataset"]]["episodes"] if row["episode"] in selected}
+        )
+        logging.info("%s: %d episodes, task labels=%s", name, len(selected), tasks)
 
 
 class ProbeSampleDataset:

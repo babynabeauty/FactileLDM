@@ -37,14 +37,15 @@ def synthetic_cache(root, split, protocol):
         "future_frame_offsets": np.arange(1, 5),
         "episode_id": ids,
         "frame_index": np.tile(np.arange(count // 2), 2),
-        "task_id": np.zeros(count, dtype=np.int32),
+        # Different dataset labels must not require cross-split task matching.
+        "task_id": np.full(count, 0 if split == "test" else 1, dtype=np.int32),
     }
     np.savez(directory / "shard_00000.npz", **arrays)
     index = {
         "complete": True,
         "split": split,
         "model": {"segments": 2, "fingers": fingers, "steps_per_segment": 2, "patches": patches, "hidden_width": width},
-        "task_names": ["toy"],
+        "task_names": ["test_toy", "train_toy"],
         "protocol_sha256": fingerprint(protocol),
         "episodes": np.unique(ids).tolist(),
         "samples": count,
@@ -94,8 +95,10 @@ def test_cached_training_checkpoint_reload_and_heldout_metrics(tmp_path, source,
     assert result["test_anchors"] == 8
     rows = result["metrics"]
     assert any(r["mode"] == "persistence" for r in rows)
+    assert {r["task"] for r in rows} == {"test_toy", "__macro__"}
+    assert all(r["contact_ap_tasks"] == 1 for r in rows if r["task"] == "__macro__")
     if source == "fae":
-        initial = {r["mode"]: r for r in rows if r["task"] == "toy" and r["scope"] == "offset_0"}
+        initial = {r["mode"]: r for r in rows if r["task"] == "test_toy" and r["scope"] == "offset_0"}
         assert initial["fixed"]["contact_ap"] == initial["refined"]["contact_ap"]
         assert initial["fixed"]["active_force_rmse"] == initial["refined"]["active_force_rmse"]
     assert (output / "test_metrics.csv").is_file()

@@ -43,6 +43,22 @@ def test_strict_parameter_check_rejects_missing_and_mismatched_weights():
         check_parameter_tree(expected, {"branch": {0: {"weight": np.zeros((3, 2))}}})
 
 
+def test_different_test_task_names_preserve_labels_and_training_split(tmp_path):
+    make_dataset(tmp_path / "train", {"press_button": 10, "bottle_grasp": 10})
+    make_dataset(tmp_path / "test", {"press button test": 2, "grasp bottle test": 2})
+    make_dataset(tmp_path / "same_labels", {"press_button": 2, "bottle_grasp": 2})
+    manifest = create_manifest(tmp_path / "train", tmp_path / "test")
+    original = create_manifest(tmp_path / "train", tmp_path / "same_labels")
+    assert manifest["splits"]["train"] == original["splits"]["train"]
+    assert manifest["splits"]["val"] == original["splits"]["val"]
+    assert manifest["task_names"] == ["bottle_grasp", "grasp bottle test", "press button test", "press_button"]
+    assert {row["task"] for row in manifest["datasets"]["test"]["episodes"]} == {
+        "press button test",
+        "grasp bottle test",
+    }
+    assert manifest["splits"]["test"]["episodes"] == [0, 1, 2, 3]
+
+
 def test_future_mask_excludes_current_and_repeated_tail():
     np.testing.assert_array_equal(future_validity(7, 10, 4), [True, True, False, False])
     assert not future_validity(9, 10, 4).any()

@@ -72,8 +72,10 @@ def create_manifest(train_root, test_root, *, val_ratio=0.1, seed=42):
         raise ValueError("Training and final test datasets must be separate.")
     train_tasks = sorted({r["task"] for r in train["episodes"]})
     test_tasks = sorted({r["task"] for r in test["episodes"]})
-    if train_tasks != test_tasks:
-        raise ValueError("Train/test task names differ. Reconcile task labels before macro averaging.")
+    # Task IDs are only metric-group identifiers, not policy inputs. Train/val
+    # stratification uses training labels; test macro averages use test labels.
+    # Keep every name verbatim rather than guessing cross-dataset equivalences.
+    task_names = sorted(set(train_tasks) | set(test_tasks))
     rng = np.random.default_rng(seed)
     train_ids, val_ids = [], []
     for task in train_tasks:
@@ -88,7 +90,7 @@ def create_manifest(train_root, test_root, *, val_ratio=0.1, seed=42):
         "version": 1,
         "seed": seed,
         "val_ratio": val_ratio,
-        "task_names": train_tasks,
+        "task_names": task_names,
         "datasets": {"train_pool": train, "test": test},
         "splits": {
             "train": {"dataset": "train_pool", "episodes": sorted(train_ids)},
