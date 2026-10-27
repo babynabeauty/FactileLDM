@@ -89,6 +89,29 @@ bash scripts/run_frozen_fae_decoder.sh evaluate
 
 默认训练 20 个 decoder epochs，batch 128、Adam 1e-3；这是初始配置，不是已经调优的结果。验证损失选择 checkpoint，再在验证集固定接触 F1 的阈值。主结果使用共享线性双头（82,000 参数），同一个 decoder 平衡读取 fixed/refined 与各 offset。力按 **decoder 训练集活动 patch 的逐轴 RMS** 缩放后拟合，报告时还原至原生单位；缩放不影响接触标签。
 
+训练默认运行满 20 个 epochs，每轮结束后保存 `checkpoints/epoch_0001.npz` 至 `epoch_0020.npz` 及对应 JSON，并继续单独维护验证损失最低的 `best_probe.npz`。日志和 `training_history.json` 记录每轮实际更新次数 `epoch_steps` 和累计 `global_step`。最终在验证集上为最佳模型选择接触阈值，然后仅用该模型测试；不能用测试集挑选 epoch。
+
+中间 checkpoint 保存 decoder 权重、模型配置、force scale、来源和当轮指标，不包含 Adam 优化器状态，因此不是断点续训文件。它们还没有完成验证集阈值选择，`evaluate` 会拒绝直接将其作为最终测试模型。已有权重的目录不允许重跑覆盖；新一轮训练使用新的 `PROBE_DIR`，可以复用完整且协议一致的特征缓存。
+
+后台运行示例（由用户在训练服务器执行；先停止同一输出目录下的旧进程）：
+
+```bash
+cd /workspace/mnt/sqzhang26/FactileLDM
+mkdir -p logs
+RUN_TAG=$(date +%Y%m%d_%H%M%S)
+LOG_FILE="logs/frozen_fae_decoder_${RUN_TAG}.log"
+nohup env OUTPUT_ROOT=outputs/frozen_fae_decoder_59999_common_tasks_pyav \
+  PROBE_DIR="outputs/frozen_fae_decoder_59999_common_tasks_pyav/fae_linear_20ep_${RUN_TAG}" \
+  CUDA_VISIBLE_DEVICES=0 EPOCHS=20 PYTHONUNBUFFERED=1 \
+  bash scripts/run_frozen_fae_decoder.sh all > "$LOG_FILE" 2>&1 < /dev/null &
+RUN_PID=$!
+echo "$RUN_PID" > "${LOG_FILE%.log}.pid"
+echo "PID: $RUN_PID; log: $LOG_FILE"
+tail -f "$LOG_FILE"
+```
+
+`tail -f` 中按 Ctrl+C 只退出日志查看。关闭终端后 nohup 进程继续运行，但服务器重启或任务容器停止仍会结束进程。新 `PROBE_DIR` 中的 `best_probe.npz` 用于此次自动测试。
+
 新增模型使用新的 `PROBE_DIR`，不会覆盖已有 best checkpoint：
 
 ```bash
@@ -111,6 +134,7 @@ history 基线合并每指 pooled-history/current 两个 tokens，附加 segment
 - `cache/protocol.json`：主模型/config、checkpoint 文件清单摘要、归一化文件 SHA、标签阈值和单位、采样参数。
 - `cache/{train,val,test}/index.json` 和分片：有限、可追溯的冻结特征与真实标签。
 - `fae_linear/best_probe.npz` / `.json`：仅 decoder 参数、验证选定阈值、force scale、参数量和来源。
+- `fae_linear/checkpoints/epoch_0001.npz` 至 `epoch_0020.npz` 及对应 JSON：每轮 decoder 权重与当轮指标（默认 20 轮）。
 - `fae_linear/training_history.json`、`validation_metrics.json`。
 - `fae_linear/test_metrics.json`、`test_metrics.csv`：完整测试结果及主指标的置信区间。
 

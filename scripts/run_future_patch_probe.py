@@ -606,8 +606,10 @@ def train(args):
         raise ValueError("Epochs and batch size must be positive.")
     args.output_dir.mkdir(parents=True, exist_ok=True)
     checkpoint = args.output_dir / "best_probe.npz"
-    if checkpoint.exists():
+    epoch_dir = args.output_dir / "checkpoints"
+    if checkpoint.exists() or (epoch_dir.exists() and any(epoch_dir.iterdir())):
         raise FileExistsError("Decoder checkpoint exists; choose a new output directory.")
+    epoch_dir.mkdir(parents=True, exist_ok=True)
     force_scale = training_force_scale(args.cache_dir / "train", train_index)
     probe = _make_probe(train_index, args.source, args.decoder_type, args.hidden_dim, args.seed)
     graphdef, params = nnx.split(probe)
@@ -642,6 +644,7 @@ def train(args):
         "val_episodes": val_index["episodes"],
     }
     best, history = float("inf"), []
+    global_step = 0
     for epoch in range(args.epochs):
         rng = np.random.default_rng(args.seed + epoch)
         losses = []
@@ -650,6 +653,7 @@ def train(args):
         ):
             params, opt_state, loss = step(params, opt_state, *batch)
             losses.append(float(loss))
+            global_step += 1
         if not losses or not np.isfinite(losses).all():
             raise ValueError("Empty/non-finite probe training; inspect units, masks and input cache.")
         val_loss = _validation_loss(
@@ -657,12 +661,32 @@ def train(args):
         )
         if not np.isfinite(val_loss):
             raise ValueError("Non-finite validation loss.")
-        history.append({"epoch": epoch + 1, "train_batch_mean_loss": float(np.mean(losses)), "val_loss": val_loss})
+        epoch_stats = {
+            "epoch": epoch + 1,
+            "global_step": global_step,
+            "epoch_steps": len(losses),
+            "train_batch_mean_loss": float(np.mean(losses)),
+            "val_loss": val_loss,
+        }
+        history.append(epoch_stats)
+        # Preserve every epoch for inspection; threshold selection is performed
+        # only on the validation-selected best checkpoint after training.
+        epoch_checkpoint = epoch_dir / f"epoch_{epoch + 1:04d}.npz"
+        snapshot_metadata = {**metadata, **epoch_stats, "training_complete": False}
+        _save_probe(epoch_checkpoint, params, snapshot_metadata)
         if val_loss < best:
             best = val_loss
-            _save_probe(checkpoint, params, {**metadata, "best_epoch": epoch + 1, "best_val_loss": best})
+            _save_probe(checkpoint, params, {**snapshot_metadata, "best_epoch": epoch + 1, "best_val_loss": best})
         write_json(args.output_dir / "training_history.json", history)
-        logging.info("epoch=%d train=%.5f val=%.5f best=%.5f", epoch + 1, np.mean(losses), val_loss, best)
+        logging.info(
+            "epoch=%d step=%d train=%.5f val=%.5f best=%.5f checkpoint=%s",
+            epoch + 1,
+            global_step,
+            np.mean(losses),
+            val_loss,
+            best,
+            epoch_checkpoint,
+        )
     graphdef, params, metadata = _load_probe(checkpoint, val_index)
     groups = collect_metrics(
         args.cache_dir / "val",

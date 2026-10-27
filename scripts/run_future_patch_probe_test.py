@@ -117,7 +117,35 @@ def test_cached_training_checkpoint_reload_and_heldout_metrics(tmp_path, source,
     assert metadata["policy_frozen"]
     assert metadata["threshold_selected_on"].startswith("validation")
     assert set(metadata["train_episodes"]).isdisjoint(metadata["val_episodes"])
+    history = read_json(output / "training_history.json")
+    snapshots = sorted((output / "checkpoints").glob("epoch_*.npz"))
+    assert len(snapshots) == 2
+    for epoch, snapshot in enumerate(snapshots, start=1):
+        saved = read_json(snapshot.with_suffix(".json"))
+        assert saved["epoch"] == epoch
+        assert saved["global_step"] == epoch * 2
+        assert saved["epoch_steps"] == 2
+        assert saved["val_loss"] == history[epoch - 1]["val_loss"]
+        assert not saved["training_complete"]
+    chosen = snapshots[metadata["best_epoch"] - 1]
+    with np.load(chosen, allow_pickle=False) as saved, np.load(output / "best_probe.npz", allow_pickle=False) as best:
+        assert set(saved.files) == set(best.files)
+        for name in best.files:
+            np.testing.assert_array_equal(saved[name], best[name])
     synthetic_cache(cache_dir, "test", protocol)
+    # Intermediate weights have no validation-selected threshold and must not
+    # be treated as final test-ready checkpoints.
+    with pytest.raises(ValueError, match="threshold selection is incomplete"):
+        evaluate(
+            argparse.Namespace(
+                cache_dir=cache_dir,
+                probe_checkpoint=snapshots[0],
+                output_dir=output,
+                batch_size=4,
+                bootstrap_samples=5,
+                seed=42,
+            )
+        )
     evaluate(
         argparse.Namespace(
             cache_dir=cache_dir,
