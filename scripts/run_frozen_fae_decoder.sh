@@ -4,11 +4,19 @@ set -euo pipefail
 
 REPO_ROOT="${REPO_ROOT:-/workspace/mnt/sqzhang26/FactileLDM}"
 cd "$REPO_ROOT"
-export PYTHONPATH="$REPO_ROOT/src:$REPO_ROOT${PYTHONPATH:+:$PYTHONPATH}"
+# Use this checkout and its own environment only; an inherited PYTHONPATH or
+# PYTHON_BIN can otherwise pull packages from a different openpi checkout.
+export PYTHONPATH="$REPO_ROOT/src:$REPO_ROOT"
+unset PYTHONHOME
 export XLA_PYTHON_CLIENT_PREALLOCATE="${XLA_PYTHON_CLIENT_PREALLOCATE:-false}"
 # Extraction is single-GPU; do not reserve all 16 A800s for a readout experiment.
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
-PYTHON_BIN="${PYTHON_BIN:-python}"
+PYTHON_BIN="$REPO_ROOT/env/.venv/bin/python"
+if [[ ! -x "$PYTHON_BIN" ]]; then
+    echo "ERROR: FactileLDM Python not found or not executable: $PYTHON_BIN" >&2
+    exit 1
+fi
+"$PYTHON_BIN" -c 'import importlib.util, sys; spec = importlib.util.find_spec("flax"); print("Probe Python:", sys.executable, "\nEnvironment:", sys.prefix, "\nFlax:", spec.origin if spec else "not installed", flush=True)'
 
 POLICY_PARAMS="${POLICY_PARAMS:-$REPO_ROOT/checkpoints/pi0_xhand_dual_patch_pretrained_f4_h16_async/pi0_xhand_dual_patch_pretrained_f4_h16_async_task12345_2_patch_pretrain_fast_0709/59999}"
 CONFIG_NAME="${CONFIG_NAME:-pi0_xhand_dual_patch_pretrained_f4_h16_async}"

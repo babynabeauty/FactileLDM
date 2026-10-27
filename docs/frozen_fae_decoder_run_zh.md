@@ -26,11 +26,11 @@
 
 ```bash
 cd /workspace/mnt/sqzhang26/FactileLDM
-# 先激活原训练环境；python 应为能够运行原主模型的解释器。
+# 脚本直接使用本仓库 env/.venv/bin/python。
 CUDA_VISIBLE_DEVICES=0 bash scripts/run_frozen_fae_decoder.sh all
 ```
 
-脚本默认使用用户指定的服务器目录。可用 `REPO_ROOT`、`PYTHON_BIN`、`POLICY_PARAMS`、`CONFIG_NAME` 覆盖。checkpoint 参数可以指向 `59999` 或其 `params` 子目录。
+脚本默认使用用户指定的服务器目录。可用 `REPO_ROOT`、`POLICY_PARAMS`、`CONFIG_NAME` 覆盖。Python 固定使用 `$REPO_ROOT/env/.venv/bin/python`，并清除外部 `PYTHONPATH` 和 `PYTHONHOME`，启动时显示实际解释器、`sys.prefix` 和 Flax 路径。checkpoint 参数可以指向 `59999` 或其 `params` 子目录。
 
 归一化统计默认从该 checkpoint 的 `assets/*/norm_stats.json` 找唯一文件；若不存在或有多个，明确指定原主模型训练时的文件，不能重新用测试数据计算：
 
