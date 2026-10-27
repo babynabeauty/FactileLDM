@@ -458,7 +458,7 @@ aws s3 cp s3://sqzhang26-2/data.tar.gz data.tar.gz \
   --endpoint-url https://eos-huhehaote-1.cmecloud.cn
 
 #下载整个目录
-aws s3 cp s3://sqzhang26-2/path/to/folder ./folder \
+aws s3 cp s3://sqzhang26-2/FactileLDM_CKPT_BK/checkpoints/xhand_patch_tactile_encoder_pretrain/patch_informed_full_heads_taskall2_encoder_final_20k_0722 patch_informed_full_heads_taskall2_encoder_final_20k_0722 \
   --recursive \
   --endpoint-url https://eos-huhehaote-1.cmecloud.cn
 

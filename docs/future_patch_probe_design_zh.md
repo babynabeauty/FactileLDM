@@ -1,10 +1,12 @@
 # 未来触觉 patch 解码诊断：接入设计与评估协议
 
+> 接入更新：现已新增 `scripts/run_future_patch_probe.py` 与 `scripts/run_frozen_fae_decoder.sh`，连接严格权重恢复、数据划分、特征缓存、readout 训练及测试指标。具体命令、559/64 条数据协议和已实现边界见 [服务器运行说明](frozen_fae_decoder_run_zh.md)。真实服务器实验结果仍待运行。
+
 ## 1. 实验问题与实现边界
 
 本实验回答：冻结的 ReTouch 部署态 FAE latent，是否包含可以读出的真实未来接触状态与局部三轴力信息？仅拟合 HAE 隐状态不能回答这一问题。成功解码支持“包含信息”，不单独证明策略利用这些信息改善控制；NZE3 要求的 generic recurrent latent 因果消融仍是另一项实验。
 
-本改动提供 decoder、损失/时间掩码和部署特征提取组件，不修改原策略，也不把旧检查点再训练成触觉预测器。尚无真实 checkpoint 与数据的运行结果；下文训练步骤和结果表均为待执行协议。
+本改动提供 decoder、损失/时间掩码、部署特征提取组件以及完整的缓存、训练和评估入口，不修改原策略，也不把旧检查点再训练成触觉预测器。尚无真实 checkpoint 与数据的运行结果；下文结果表仍为待执行协议。
 
 代码核对基于仓库提交 `7ea50c280bce78c159ea560758272abd4f3511f6`，维度参照 `pi0_xhand_dual_patch_f4_h16_async`。实际运行必须使用与待评估 checkpoint 配套的配置，不能仅凭配置名称认定论文模型已经恢复。
 
@@ -42,11 +44,11 @@ future_frame_offsets 为 1…16。offset=4 时仅评估 5…16，offset=8 时评
 
 ## 5. 划分与训练顺序
 
-从原 800 条训练轨迹中按 episode 拆出 probe train/validation；原 100 条 held-out 轨迹仅用于最终 test。固定 episode 清单后才切窗口，禁止相邻窗口跨集合；已有 test 结果不用于选 decoder、阈值或正则。保存 checkpoint 标识、完整配置、数据清单、时间偏移、标签单位和随机种子。
+按 episode 从训练池拆出 probe train/validation，独立测试库仅用于最终 test。本次指定 `task12345-2`（559 条、5 任务）和 `task-test-collect`（64 条、5 任务），不得将此次结果描述成论文原先的 800/100 条划分。固定 episode 清单后才切窗口，禁止相邻窗口跨集合；已有 test 结果不用于选 decoder、阈值或正则。保存 checkpoint 标识、完整配置、数据清单、时间偏移、标签单位和随机种子。
 
 同一 probe 在训练集上平衡读取 fixed/refined 和各 offset，验证集选择 checkpoint，随后冻结它同时评估两种模式。这样避免只训练于 refined 再测试 fixed 带来的额外分布偏置。线性为预先指定主结果，MLP 为补充，不按 test 成绩挑选。
 
-以下为接入伪代码；manifest、缓存、训练循环和 episode 汇总需由运行方接入，不是已完成的训练命令：
+以下伪代码说明组件关系；实际的 manifest、缓存、训练及 episode 汇总已由 `scripts/run_future_patch_probe.py` 接入，运行命令见上述服务器说明：
 
 ~~~python
 # 先严格恢复部署策略；策略不进入 probe 的梯度函数或优化器。
@@ -83,11 +85,11 @@ for batch in finite_training_schedule:
 
 至少包含当前物理量保持不变的 persistence、当前/历史触觉表征 probe、固定预测及在线更新预测。加入只使用任务/时间先验的空特征基线，检查是否仅学到接触发生时机。历史基线应允许按预测 horizon 输出，或提供 lead-time 信息；简单重复当前 token 再接共享头，会使所有 segment 输出同样模式。报告其输入和参数量，不宣称这种基线严格等容量。
 
-接触报告 AUPRC 与全数据累计 TP/FP/FN 后的 F1；阈值在 validation 确定并锁定，不平均 batch F1。力报告活动 patch 的每坐标 RMSE/MAE，并注明单位。分 offset、预测提前量及任务报告；总体汇总明确是否按样本数加权。
+接触主指标采用 AP（non-interpolated average precision），不与梯形积分 AUPRC 混写；辅助报告全数据累计 TP/FP/FN 后的 F1，阈值在 validation 确定并锁定，不平均 batch F1。力报告活动 patch 的每坐标 RMSE/MAE，并注明单位。当前运行入口报告各 offset 和任务、全未来及接触变化帧子集，最终汇总按任务等权宏平均；逐预测提前量的细分可另行扩展。
 
 额外报告“未来接触状态相对当前 offset 改变”的子集，并给样本数；其真值只用于评估分层，不输入 decoder。对成对的 fixed/refined 差值按 episode bootstrap，保留同一轨迹内全部相关窗口。评估器必须在清单末尾停止；无限循环 loader、重复 episode 或把每帧当独立样本均会夸大证据。
 
-| 表征/基线 | 接触 AUPRC ↑ | 全局 F1 ↑ | 活动力 RMSE ↓（注明单位） | 接触变化子集 | 95% episode CI |
+| 表征/基线 | 接触 AP ↑ | 全局 F1 ↑ | 活动力 RMSE ↓（注明单位） | 接触变化子集 | 95% episode CI |
 | --- | --- | --- | --- | --- | --- |
 | 任务/时间先验或空特征 | 待测 | 待测 | 待测 | 待测 | 待测 |
 | 当前物理量 persistence | 待测 | 待测 | 待测 | 待测 | 待测 |
@@ -112,4 +114,4 @@ PYTHONPATH=src:. JAX_PLATFORMS=cpu python -m pytest \
   scripts/extract_future_patch_probe_test.py
 ~~~
 
-`--confcutdir` 避开仓库父级 conftest 的 GPU 管理依赖。真实运行尚需接入严格 checkpoint 加载、episode/frame 元数据、有限缓存与训练/指标汇总循环。
+`--confcutdir` 避开仓库父级 conftest 的 GPU 管理依赖。新增运行入口与 CPU 工具还通过 episode 划分、指标计算及合成缓存端到端测试；这些测试的命令和服务器验证边界见运行说明。
