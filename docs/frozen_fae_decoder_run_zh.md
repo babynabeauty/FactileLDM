@@ -22,6 +22,24 @@
 
 ## 首次运行
 
+本地 v2.1 备用读取器使用 **PyAV 软件解码**，支持 AV1 相机视频，保持 RGB 顺序，并用视频 PTS 对齐 Parquet 时间戳。它不依赖 OpenCV 的 AV1 硬件解码。若遇到 `Your platform doesn't support hardware accelerated AV1 decoding` / `Cannot decode RGB frame 0`，先拉取此次修复；在脚本实际使用的环境中安装仓库 `uv.lock` 对应的 PyAV wheel：
+
+```bash
+cd /workspace/mnt/sqzhang26/FactileLDM
+uv pip install --python env/.venv/bin/python --only-binary=:all: 'av==17.0.0'
+env/.venv/bin/python -c 'import av; print(av.__version__); print(av.Codec("libdav1d", "r"))'
+CUDA_VISIBLE_DEVICES=0 bash scripts/run_frozen_fae_decoder.sh check
+```
+
+安装目标必须是 `env/.venv/bin/python`，终端显示 `(openpi)` 不代表启动脚本使用该环境。解码依赖在恢复大 checkpoint 之前检查；不需重训主模型或转码原始数据。若仍失败，保留完整错误和具体视频路径，检查文件完整性及时间戳，不能用黑帧替代。
+
+本地读取器的缓存协议标识已更新为 `local_lerobot_v2.1_parquet_pyav_rgb`。`check` 不写缓存，直接重试即可；如果先前 `extract/all` 已写入旧协议缓存，使用新的 `OUTPUT_ROOT`（后续所有阶段保持相同设置），例如：
+
+```bash
+OUTPUT_ROOT=outputs/frozen_fae_decoder_59999_common_tasks_pyav \
+CUDA_VISIBLE_DEVICES=0 bash scripts/run_frozen_fae_decoder.sh all
+```
+
 将改动同步到服务器，在原训练环境中运行：
 
 ```bash

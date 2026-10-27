@@ -164,6 +164,7 @@ def extract(args):
     from openpi.models import model_tavla
     from openpi.shared import normalize
     from openpi.shared.future_patch_probe_data import LocalProbeDataset
+    from openpi.shared.future_patch_probe_data import require_video_decoder
     from openpi.training import config as configs
     from scripts.extract_future_patch_probe import extract_probe_batch
     from scripts.extract_future_patch_probe import probe_metadata
@@ -173,7 +174,9 @@ def extract(args):
     params_path, norm_path = _checkpoint_and_norm(args)
     config = configs.get_config(args.config_name)
     training_loader = _training_data_loader()
-    reader_name = "training_lerobot" if training_loader is not None else "local_lerobot_v2.1_parquet_opencv_rgb"
+    reader_name = "training_lerobot" if training_loader is not None else "local_lerobot_v2.1_parquet_pyav_rgb"
+    if training_loader is None:
+        require_video_decoder()
     if args.batch_size <= 0 or args.stride <= 0 or args.shard_size <= 0:
         raise ValueError("Batch size, cache stride, and shard size must be positive.")
     expected_offsets = tuple(range(1 - config.model.force_input_frames, config.model.action_horizon + 1))

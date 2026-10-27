@@ -13,10 +13,26 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
+import sys
 
 import numpy as np
 
 from openpi.shared.future_patch_probe_utils import read_json
+
+
+def require_video_decoder():
+    """Check the software AV1 decoder before loading a large policy checkpoint."""
+    try:
+        import av
+
+        av.Codec("libdav1d", "r")
+    except (ImportError, ValueError) as exc:
+        raise RuntimeError(
+            "The local probe reader requires PyAV with the libdav1d software AV1 decoder. "
+            "Install the wheel in the probe environment, then retry: "
+            f'uv pip install --python "{sys.executable}" --only-binary=:all: "av==17.0.0"'
+        ) from exc
+    return av
 
 
 class LocalProbeDataset:
@@ -85,46 +101,74 @@ class LocalProbeDataset:
             )
         self._loaded_episode = episode
 
-    def _read_rgb(self, key, frame):
-        import cv2
-
-        if key not in self._videos:
-            path = self._path(self.info["video_path"], self._loaded_episode, video_key=key)
-            capture = cv2.VideoCapture(str(path))
-            if not capture.isOpened():
-                capture.release()
-                raise FileNotFoundError(f"Cannot decode camera video: {path}")
-            video_fps = capture.get(cv2.CAP_PROP_FPS)
-            frame_count = round(capture.get(cv2.CAP_PROP_FRAME_COUNT))
-            if not np.isclose(video_fps, self.fps, atol=0.05, rtol=0) or frame_count < len(self._states):
-                capture.release()
+    def _open_video(self, key):
+        av = require_video_decoder()
+        path = self._path(self.info["video_path"], self._loaded_episode, video_key=key)
+        if not path.is_file():
+            raise FileNotFoundError(f"Camera video not found: {path}")
+        container = av.open(str(path))
+        try:
+            if not container.streams.video:
+                raise ValueError(f"No video stream in camera file: {path}")
+            stream = container.streams.video[0]
+            video_fps = float(stream.average_rate) if stream.average_rate is not None else float("nan")
+            # A zero count means unknown; decoding below still rejects premature EOF.
+            if not np.isclose(video_fps, self.fps, atol=0.05, rtol=0) or (
+                stream.frames and stream.frames < len(self._states)
+            ):
                 raise ValueError(f"Video FPS/frame count does not match episode metadata: {path}")
-            self._videos[key] = {"capture": capture, "next_frame": 0, "frame": -1, "rgb": None}
+            stream.codec_context.thread_count = 2
+            logging.debug("Camera video %s: PyAV decoder=%s", path, stream.codec_context.name)
+            self._videos[key] = {
+                "container": container,
+                "frames": iter(container.decode(stream)),
+                "path": path,
+                "next_frame": 0,
+                "frame": -1,
+                "rgb": None,
+            }
+        except Exception:
+            container.close()
+            raise
+
+    def _read_rgb(self, key, frame):
+        if key in self._videos:
+            video = self._videos[key]
+            if video["frame"] == frame:
+                return video["rgb"].copy()
+            if frame < video["next_frame"]:
+                # Reopen instead of approximate keyframe seeking: index and PTS
+                # must still agree exactly with the Parquet state timeline.
+                video["container"].close()
+                del self._videos[key]
+        if key not in self._videos:
+            self._open_video(key)
         video = self._videos[key]
-        if video["frame"] == frame:
-            return video["rgb"].copy()
-        capture = video["capture"]
-        if frame < video["next_frame"]:
-            if not capture.set(cv2.CAP_PROP_POS_FRAMES, frame):
-                raise RuntimeError(f"Cannot seek to RGB frame {frame} for {key}.")
-            video["next_frame"] = frame
-        while video["next_frame"] < frame:
-            if not capture.grab():
-                raise RuntimeError(f"Missing RGB frame before {frame} for {key}.")
-            video["next_frame"] += 1
-        ok, bgr = capture.read()
-        if not ok:
-            raise RuntimeError(f"Cannot decode RGB frame {frame} for {key}.")
-        video_timestamp = capture.get(cv2.CAP_PROP_POS_MSEC) / 1000.0
-        if not np.isfinite(video_timestamp) or not np.isclose(
-            video_timestamp, self._timestamps[frame], atol=1e-3, rtol=0
-        ):
-            raise ValueError(
-                f"Video timestamp mismatch for {key} frame {frame}: "
-                f"video={video_timestamp:.6f}s, state={self._timestamps[frame]:.6f}s. "
-                "Use the original training LeRobot reader or check video alignment."
-            )
-        video.update(next_frame=frame + 1, frame=frame, rgb=cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB))
+        while video["next_frame"] <= frame:
+            current = video["next_frame"]
+            try:
+                decoded = next(video["frames"])
+            except StopIteration as exc:
+                raise RuntimeError(
+                    f"Missing RGB frame {current} while reading {key} frame {frame}: {video['path']}"
+                ) from exc
+            except Exception as exc:
+                raise RuntimeError(
+                    f"Cannot decode RGB frame {current} for {key} with PyAV: {video['path']}: {exc}"
+                ) from exc
+            video_timestamp = decoded.time
+            if (
+                video_timestamp is None
+                or not np.isfinite(video_timestamp)
+                or not np.isclose(video_timestamp, self._timestamps[current], atol=1e-3, rtol=0)
+            ):
+                raise ValueError(
+                    f"Video timestamp mismatch for {key} frame {current}: "
+                    f"video={video_timestamp}s, state={self._timestamps[current]:.6f}s; {video['path']}. "
+                    "Use the original training LeRobot reader or check video alignment."
+                )
+            video["next_frame"] = current + 1
+        video.update(frame=frame, rgb=decoded.to_ndarray(format="rgb24"))
         return video["rgb"].copy()
 
     def __getitem__(self, index):
@@ -147,7 +191,7 @@ class LocalProbeDataset:
 
     def close(self):
         for video in self._videos.values():
-            video["capture"].release()
+            video["container"].close()
         self._videos.clear()
         self._loaded_episode = None
 
