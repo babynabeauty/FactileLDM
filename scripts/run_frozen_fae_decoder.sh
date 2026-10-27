@@ -48,8 +48,8 @@ run_probe() {
 
 stage="${1:-all}"
 case "$stage" in
-    all|check|prepare|extract|train|evaluate) ;;
-    *) echo "Usage: $0 [all|check|prepare|extract|train|evaluate]" >&2; exit 2 ;;
+    all|check|prepare|extract|train|evaluate|controls) ;;
+    *) echo "Usage: $0 [all|check|prepare|extract|train|evaluate|controls]" >&2; exit 2 ;;
 esac
 
 if [[ "$stage" == all || "$stage" == check || "$stage" == prepare ]]; then
@@ -87,3 +87,14 @@ if [[ "$stage" == all || "$stage" == evaluate ]]; then
         --output-dir "$PROBE_DIR" --batch-size "${PROBE_BATCH_SIZE:-128}" --num-devices "$NUM_DEVICES" \
         --bootstrap-samples "${BOOTSTRAP_SAMPLES:-200}" --seed "$SEED"
 fi
+
+# Explicit opt-in: never retrain or re-extract when adding contact controls.
+if [[ "$stage" == controls ]]; then
+    "$PYTHON_BIN" scripts/eval_fae_contact_controls.py \
+        --cache-dir "$CACHE_DIR" --probe-checkpoint "$PROBE_DIR/best_probe.npz" \
+        --output-dir "${CONTROLS_DIR:-$PROBE_DIR/contact_controls}" \
+        --batch-size "${PROBE_BATCH_SIZE:-128}" --num-devices "$NUM_DEVICES" \
+        --shuffle-repeats "${SHUFFLE_REPEATS:-20}" \
+        --bootstrap-samples "${BOOTSTRAP_SAMPLES:-200}" --seed "$SEED"
+fi
+
