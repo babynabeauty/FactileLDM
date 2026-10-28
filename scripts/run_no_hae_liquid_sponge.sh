@@ -17,8 +17,8 @@ GPUS="${GPUS:-0,1,2,3,4,5,6,7}"
 BATCH_SIZE="${BATCH_SIZE:-8}"
 FSDP_DEVICES="${FSDP_DEVICES:-4}"
 NUM_WORKERS="${NUM_WORKERS:-2}"
-STAGE2A_STEPS="${STAGE2A_STEPS:-5000}"
-STAGE2B_STEPS="${STAGE2B_STEPS:-60000}"
+STAGE2A_STEPS=5000
+STAGE2B_STEPS=50000
 RUN_TAG="${RUN_TAG:-task_liquid_sponge_no_hae_$(date +%Y%m%d_%H%M%S)}"
 EXP_A="${CONFIG_A}_${RUN_TAG}"
 EXP_B="${CONFIG_B}_${RUN_TAG}"
@@ -86,7 +86,7 @@ if [[ "$stage" == all || "$stage" == train ]]; then
         --data.assets.asset-id "$ASSET_ID" --data.assets.assets-dir "$ASSET_DIR" \
         --weight-loader.pi0-params-path "$STAGE2A_PARAMS" --weight-loader.encoder-params-path "$ENCODER_PARAMS" \
         --num-train-steps "$STAGE2B_STEPS" --batch-size "$BATCH_SIZE" --fsdp-devices "$FSDP_DEVICES" \
-        --num-workers "$NUM_WORKERS" --save-interval 10000 --keep-period 10000 --no-wandb-enabled \
+        --num-workers "$NUM_WORKERS" --save-interval 39999 --keep-period 10000 --no-wandb-enabled \
         2>&1 | tee -a "$LOG_B"
     echo "Final checkpoint: $CHECKPOINT_B/$((STAGE2B_STEPS - 1))"
 fi
