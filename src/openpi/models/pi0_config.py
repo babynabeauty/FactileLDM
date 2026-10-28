@@ -270,6 +270,7 @@ class Pi0LatentFlowConfig(Pi0Config):
     tactile_patch_aux_loss_weight: float = 0.0
     disable_future_tactile: bool = False
     direct_future_tactile_align: bool = False
+    disable_teacher_ae: bool = False
     tactile_ttt_enabled: bool = False
     tactile_ttt_memory_dim: int = 256
     tactile_ttt_inner_lr: float = 0.1
@@ -387,6 +388,17 @@ class Pi0LatentFlowConfig(Pi0Config):
                     )
             if self.disable_future_tactile and self.direct_future_tactile_align:
                 raise ValueError("disable_future_tactile and direct_future_tactile_align are mutually exclusive.")
+            if self.disable_teacher_ae:
+                if self.direct_future_tactile_align or self.use_future_flow:
+                    raise ValueError("disable_teacher_ae requires direct_future_tactile_align=False and use_future_flow=False.")
+                if any((
+                    self.teacher_action_loss_weight,
+                    self.future_force_align_loss_weight,
+                    self.future_flow_align_loss_weight,
+                    self.cached_vlm_async_future_align_loss_weight,
+                    self.tactile_patch_aux_loss_weight,
+                )):
+                    raise ValueError("disable_teacher_ae requires all teacher and alignment loss weights to be zero.")
             if self.disable_future_tactile:
                 object.__setattr__(self, "future_force_align_loss_weight", 0.0)
                 object.__setattr__(self, "future_flow_align_loss_weight", 0.0)

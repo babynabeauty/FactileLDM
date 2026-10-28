@@ -191,7 +191,9 @@ class Pi0LatentFlow(_model.BaseModel):
         self.tactile_ttt_enabled = bool(getattr(config, "tactile_ttt_enabled", False))
         self.tactile_ttt_write_segments = int(getattr(config, "tactile_ttt_write_segments", 4))
         self.sequence_training = self.tactile_ttt_enabled
-        self.use_teacher_ae = not (self.disable_future_tactile or self.direct_future_tactile_align)
+        self.use_teacher_ae = not (
+            self.disable_future_tactile or self.direct_future_tactile_align or config.disable_teacher_ae
+        )
         self.tactile_patch_fingers = tuple(int(finger) for finger in getattr(config, "tactile_patch_fingers", (0, 1, 2)))
         self.tactile_num_patches = int(getattr(config, "tactile_num_patches", 5))
         self.tactile_patch_aux_loss_weight = float(getattr(config, "tactile_patch_aux_loss_weight", 0.0))
@@ -660,7 +662,7 @@ class Pi0LatentFlow(_model.BaseModel):
 
         if require_future and future_effort is None:
             raise ValueError(
-                "Teacher training requires merged history+future effort. "
+                "Training requires merged history+future effort. "
                 f"Expected more than action_horizon={self.action_horizon} effort steps, got {effort.shape[1]}."
             )
 
@@ -2005,7 +2007,7 @@ class Pi0LatentFlow(_model.BaseModel):
         )
         history_effort, future_effort = self._split_effort(
             observation,
-            require_future=self.use_teacher_ae,
+            require_future=self.use_teacher_ae or self.direct_future_tactile_align or self.cached_vlm_async_ae_enabled,
             dtype=actions.dtype,
         )
         if self.use_teacher_ae and future_effort is None:
@@ -2200,7 +2202,7 @@ class Pi0LatentFlow(_model.BaseModel):
             )
             cached_token_mask = self._cached_async_token_mask(actions.shape[0], cached_async_offset)
             cached_force_losses = []
-            if self.disable_future_tactile:
+            if self.disable_future_tactile or (not self.use_teacher_ae and not self.direct_future_tactile_align):
                 cached_async_future_align_loss = jnp.zeros_like(student_action_loss)
             elif self.direct_future_tactile_align:
                 direct_target = jax.lax.stop_gradient(self._project_future_force_student_target(future_effort))
@@ -2247,7 +2249,7 @@ class Pi0LatentFlow(_model.BaseModel):
             cached_async_future_align_loss = jnp.zeros_like(student_action_loss)
             cached_prefix_consistency_loss = jnp.zeros_like(student_action_loss)
 
-        if self.disable_future_tactile:
+        if self.disable_future_tactile or (not self.use_teacher_ae and not self.direct_future_tactile_align):
             raw_future_force_align_loss = jnp.zeros_like(student_action_loss)
         elif self.direct_future_tactile_align:
             direct_target = jax.lax.stop_gradient(self._project_future_force_student_target(future_effort))

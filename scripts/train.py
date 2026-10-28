@@ -450,6 +450,7 @@ def main(config: _config.TrainConfig):
         keep_period=config.keep_period,
         overwrite=config.overwrite,
         resume=config.resume,
+        preserve_all_checkpoints=getattr(config.model, "disable_teacher_ae", False),
     )
     init_wandb(config, resuming=resuming, enabled=config.wandb_enabled)
 
