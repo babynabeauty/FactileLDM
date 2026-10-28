@@ -40,16 +40,10 @@ export XLA_PYTHON_CLIENT_PREALLOCATE=false
 export CUDA_VISIBLE_DEVICES="$GPUS"
 
 # Fail before creating output if the server checkout or environment is not ready.
-"$PYTHON" -B -c 'import importlib.util
-try:
-    spec = importlib.util.find_spec("lerobot.common.datasets.lerobot_dataset")
-except ModuleNotFoundError:
-    spec = None
-if spec is None:
-    raise SystemExit("Missing lerobot.common.datasets.lerobot_dataset in FactileLDM env/.venv; use the training-compatible LeRobot installation.")
-from openpi.training import config
+"$PYTHON" -B -c 'from openpi.training import config, data_loader
 for name in ("pi0_xhand_dual_patch_pretrained_f4_h16_async_no_hae_freeze", "pi0_xhand_dual_patch_pretrained_f4_h16_async_no_hae"):
     config.get_config(name)
+print("LeRobot dataset module:", data_loader.lerobot_dataset.__name__)
 print("Environment and no-HAE configurations: OK")'
 
 if [[ "$stage" == all || "$stage" == train ]]; then

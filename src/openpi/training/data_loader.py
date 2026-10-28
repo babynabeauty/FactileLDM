@@ -9,7 +9,6 @@ from typing import Literal, Protocol, SupportsIndex, TypeVar
 
 import jax
 import jax.numpy as jnp
-import lerobot.common.datasets.lerobot_dataset as lerobot_dataset
 import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -18,12 +17,13 @@ import torch
 # import openpi.models.model as _model
 import openpi.models.model_tavla as _model
 import openpi.models.pi0_config as pi0_config
+from openpi.shared.effort_type import EffortType
+from openpi.shared.lerobot_compat import import_lerobot_dataset
 import openpi.training.config as _config
 import openpi.transforms as _transforms
-from openpi.shared.effort_type import EffortType
-
 
 T_co = TypeVar("T_co", covariant=True)
+lerobot_dataset = import_lerobot_dataset()
 
 
 def _load_episode_indices(filter_dict_path: str | None) -> list[int] | None:
