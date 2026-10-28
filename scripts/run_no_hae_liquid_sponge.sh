@@ -4,6 +4,10 @@ set -euo pipefail
 
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
+export PROJECT_ROOT="$ROOT"
+export VIRTUAL_ENV="$ROOT/env/.venv"
+export PATH="$VIRTUAL_ENV/bin:$PATH"
+unset PYTHONHOME
 PYTHON="$ROOT/env/.venv/bin/python"
 DATA="$ROOT/data/task_liquid_sponge"
 ASSET_ID="task_liquid_sponge"
@@ -40,7 +44,12 @@ export XLA_PYTHON_CLIENT_PREALLOCATE=false
 export CUDA_VISIBLE_DEVICES="$GPUS"
 
 # Fail before creating output if the server checkout or environment is not ready.
-"$PYTHON" -B -c 'from openpi.training import config, data_loader
+"$PYTHON" -B -c 'import os, sys
+from pathlib import Path
+print("Python:", sys.executable, "Environment:", sys.prefix, "Working directory:", os.getcwd(), flush=True)
+if Path(sys.prefix).resolve() != (Path(os.environ["PROJECT_ROOT"]) / "env/.venv").resolve():
+    raise SystemExit("Python is not using the FactileLDM virtual environment.")
+from openpi.training import config, data_loader
 for name in ("pi0_xhand_dual_patch_pretrained_f4_h16_async_no_hae_freeze", "pi0_xhand_dual_patch_pretrained_f4_h16_async_no_hae"):
     config.get_config(name)
 print("LeRobot dataset module:", data_loader.lerobot_dataset.__name__)
@@ -57,7 +66,8 @@ fi
 
 if [[ "$stage" == all || "$stage" == norm ]]; then
     [[ ! -e "$NORM_FILE" ]] || { echo "Normalization file already exists: $NORM_FILE. Use train to reuse it." >&2; exit 1; }
-    "$PYTHON" -B scripts/compute_norm_stats.py --config-name "$CONFIG_B" \
+    cd "$ROOT"
+    "$PYTHON" -B "$ROOT/scripts/compute_norm_stats.py" --config-name "$CONFIG_B" \
         --repo-id "$DATA" --asset-id "$ASSET_ID" --batch-size "$BATCH_SIZE" --num-workers 0
 fi
 
@@ -65,7 +75,8 @@ if [[ "$stage" == all || "$stage" == train ]]; then
     [[ -f "$NORM_FILE" ]] || { echo "Missing normalization file: $NORM_FILE. Run norm first." >&2; exit 1; }
     mkdir -p "$ROOT/logs"
     echo "Stage 2A: $EXP_A"
-    "$PYTHON" -B scripts/train.py "$CONFIG_A" \
+    cd "$ROOT"
+    "$PYTHON" -B "$ROOT/scripts/train.py" "$CONFIG_A" \
         --exp-name "$EXP_A" --data.repo-id "data/$ASSET_ID" \
         --data.assets.asset-id "$ASSET_ID" --data.assets.assets-dir "$ASSET_DIR" \
         --weight-loader.pi0-params-path "$BASE_PARAMS" --weight-loader.encoder-params-path "$ENCODER_PARAMS" \
@@ -75,7 +86,8 @@ if [[ "$stage" == all || "$stage" == train ]]; then
     STAGE2A_PARAMS="$CHECKPOINT_A/$((STAGE2A_STEPS - 1))/params"
     [[ -d "$STAGE2A_PARAMS" ]] || { echo "Missing Stage 2A final params: $STAGE2A_PARAMS" >&2; exit 1; }
     echo "Stage 2B: $EXP_B"
-    "$PYTHON" -B scripts/train.py "$CONFIG_B" \
+    cd "$ROOT"
+    "$PYTHON" -B "$ROOT/scripts/train.py" "$CONFIG_B" \
         --exp-name "$EXP_B" --data.repo-id "data/$ASSET_ID" \
         --data.assets.asset-id "$ASSET_ID" --data.assets.assets-dir "$ASSET_DIR" \
         --weight-loader.pi0-params-path "$STAGE2A_PARAMS" --weight-loader.encoder-params-path "$ENCODER_PARAMS" \
