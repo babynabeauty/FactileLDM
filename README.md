@@ -25,9 +25,9 @@ ASSET_ID="$(basename "$DATA_REPO")"
 # 合并数据集
 python scripts/merge_lerobot_v21_datasets.py \
   --sources \
-    /workspace/mnt/sqzhang26/FactileLDM/data/grasp_pipette_and_press_button_106ep \
-    /workspace/mnt/sqzhang26/FactileLDM/data/0623_grasp_bottle_100 \
-  --output /workspace/mnt/sqzhang26/FactileLDM/data/task1_2_206ep \
+    /workspace/mnt/sqzhang26/FactileLDM/data/0715_transfer_the_liquid \
+    /workspace/mnt/sqzhang26/FactileLDM/data/sponge_collect \
+  --output /workspace/mnt/sqzhang26/FactileLDM/data/task_liquid_sponge \
   --overwrite
   
 
